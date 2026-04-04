@@ -4,7 +4,8 @@
 
 // NavigatorGraph — extends Navigator with the graph attribute.
 
-[Exposed=Window, SecureContext]
-partial interface Navigator {
-  [SameObject] readonly attribute PersonalGraphManager graph;
+[
+    ImplementedAs=NavigatorGraph
+] partial interface Navigator {
+  [SecureContext, SameObject] readonly attribute PersonalGraphManager graph;
 };
