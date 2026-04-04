@@ -1,0 +1,22 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("graph_governance") {
+  sources = [
+    "content_validator.h",
+    "governance_engine.cc",
+    "governance_engine.h",
+    "scope_resolver.h",
+    "temporal_engine.h",
+    "zcap_verifier.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/browser/graph",
+    "//content/browser/did",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph:graph_governance",
+  ]
+}

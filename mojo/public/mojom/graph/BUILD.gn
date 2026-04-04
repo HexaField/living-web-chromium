@@ -1,0 +1,36 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//mojo/public/tools/bindings/mojom.gni")
+
+mojom("graph") {
+  sources = [
+    "graph.mojom",
+  ]
+
+  deps = [
+    "//mojo/public/mojom/base",
+    "//url/mojom:url_mojom_gurl",
+  ]
+}
+
+mojom("graph_sync") {
+  sources = [
+    "graph_sync.mojom",
+  ]
+
+  deps = [
+    ":graph",
+  ]
+}
+
+mojom("graph_governance") {
+  sources = [
+    "graph_governance.mojom",
+  ]
+
+  deps = [
+    ":graph",
+  ]
+}

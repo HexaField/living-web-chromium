@@ -1,0 +1,25 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//third_party/blink/renderer/modules/modules.gni")
+
+blink_modules_sources("graph") {
+  sources = [
+    "navigator_graph.cc",
+    "navigator_graph.h",
+    "personal_graph.cc",
+    "personal_graph.h",
+    "shared_graph.cc",
+    "shared_graph.h",
+  ]
+
+  deps = [
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+    "//mojo/public/mojom/graph:graph_sync",
+    "//mojo/public/mojom/graph:graph_governance",
+    "//third_party/blink/renderer/core",
+    "//third_party/blink/renderer/platform",
+  ]
+}

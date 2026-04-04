@@ -1,0 +1,21 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("graph") {
+  sources = [
+    "graph_manager.cc",
+    "graph_manager.h",
+    "graph_store.cc",
+    "graph_store.h",
+    "sparql_engine.cc",
+    "sparql_engine.h",
+    "triple.h",
+  ]
+
+  deps = [
+    "//base",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+  ]
+}
