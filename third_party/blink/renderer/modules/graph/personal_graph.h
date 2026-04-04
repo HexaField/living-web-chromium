@@ -5,63 +5,42 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_PERSONAL_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_PERSONAL_GRAPH_H_
 
-#include "mojo/public/cpp/bindings/remote.h"
-#include "mojo/public/mojom/graph/graph.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/modules/graph/semantic_triple.h"
-#include "third_party/blink/renderer/modules/graph/signed_triple.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
-class ExecutionContext;
-class ScriptPromiseResolverBase;
-class ScriptState;
-class SharedGraph;
-
-// PersonalGraphManager implements the navigator.graph interface.
 class PersonalGraphManager final : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  PersonalGraphManager(
-      ExecutionContext*,
-      mojo::Remote<graph::mojom::blink::PersonalGraphService>);
-  ~PersonalGraphManager() override;
+  explicit PersonalGraphManager(ExecutionContext*);
 
-  // Web IDL methods
   ScriptPromise<IDLAny> create(ScriptState*, const String& name);
   ScriptPromise<IDLAny> list(ScriptState*);
+  ScriptPromise<IDLAny> listShared(ScriptState*);
   ScriptPromise<IDLAny> get(ScriptState*, const String& uuid);
-  ScriptPromise<IDLBoolean> remove(ScriptState*, const String& uuid);
+  ScriptPromise<IDLAny> remove(ScriptState*, const String& uuid);
   ScriptPromise<IDLAny> join(ScriptState*, const String& uri);
 
   void Trace(Visitor*) const override;
 
  private:
   Member<ExecutionContext> execution_context_;
-  mojo::Remote<graph::mojom::blink::PersonalGraphService> service_;
 };
 
-// Forward declare for return types used in templates.
-class PersonalGraph;
-
-// PersonalGraph implements the PersonalGraph Web IDL interface.
 class PersonalGraph : public EventTarget {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  PersonalGraph(ExecutionContext*,
-                const String& uuid,
-                const String& name,
-                mojo::Remote<graph::mojom::blink::PersonalGraphHost>);
-  ~PersonalGraph() override;
+  PersonalGraph(ExecutionContext*, const String& uuid);
 
   // Attributes
   const String& uuid() const { return uuid_; }
@@ -69,38 +48,27 @@ class PersonalGraph : public EventTarget {
   String state() const;
 
   // Triple operations
-  ScriptPromise<IDLAny> addTriple(ScriptState*, SemanticTriple*);
-  ScriptPromise<IDLAny> addTriples(
-      ScriptState*, const HeapVector<Member<SemanticTriple>>&);
-  ScriptPromise<IDLBoolean> removeTriple(ScriptState*, SignedTriple*);
-  ScriptPromise<IDLAny> queryTriples(
-      ScriptState*, const ScriptValue& query);
-  ScriptPromise<IDLAny> querySparql(ScriptState*, const String& sparql);
+  ScriptPromise<IDLAny> addTriple(ScriptState*, ScriptValue);
+  ScriptPromise<IDLAny> addTriples(ScriptState*, ScriptValue);
+  ScriptPromise<IDLAny> removeTriple(ScriptState*, ScriptValue);
+  ScriptPromise<IDLAny> queryTriples(ScriptState*, ScriptValue);
+  ScriptPromise<IDLAny> querySparql(ScriptState*, const String&);
   ScriptPromise<IDLAny> snapshot(ScriptState*);
 
-  // Cross-origin sharing
-  ScriptPromise<IDLUndefined> grantAccess(ScriptState*,
-                                           const String& origin,
-                                           const String& level);
-  ScriptPromise<IDLUndefined> revokeAccess(ScriptState*, const String& origin);
+  // Access control
+  ScriptPromise<IDLAny> grantAccess(ScriptState*, const String&, const String&);
+  ScriptPromise<IDLAny> revokeAccess(ScriptState*, const String&);
 
   // Shape operations
-  ScriptPromise<IDLUndefined> addShape(ScriptState*,
-                                        const String& name,
-                                        const String& shacl_json);
-  ScriptPromise<IDLSequence<IDLString>> getShapeInstances(
-      ScriptState*, const String& shape_name);
-  ScriptPromise<IDLString> createShapeInstance(ScriptState*,
-                                                const String& shape_name,
-                                                const ScriptValue& data);
-  ScriptPromise<IDLAny> getShapeInstanceData(ScriptState*,
-                                                    const String& shape_name,
-                                                    const String& instance_uri);
+  ScriptPromise<IDLAny> addShape(ScriptState*, const String&, const String&);
+  ScriptPromise<IDLAny> getShapeInstances(ScriptState*, const String&);
+  ScriptPromise<IDLAny> createShapeInstance(ScriptState*, const String&, ScriptValue);
+  ScriptPromise<IDLAny> getShapeInstanceData(ScriptState*, const String&, const String&);
 
   // Sharing
-  ScriptPromise<IDLAny> share(ScriptState*, const ScriptValue& options);
+  ScriptPromise<IDLAny> share(ScriptState*, ScriptValue);
 
-  // EventTarget
+  // EventTarget overrides
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
 
@@ -109,10 +77,7 @@ class PersonalGraph : public EventTarget {
  protected:
   String uuid_;
   String name_;
-  graph::mojom::blink::GraphSyncState state_ =
-      graph::mojom::blink::GraphSyncState::kPrivate;
   Member<ExecutionContext> execution_context_;
-  mojo::Remote<graph::mojom::blink::PersonalGraphHost> host_;
 };
 
 }  // namespace blink

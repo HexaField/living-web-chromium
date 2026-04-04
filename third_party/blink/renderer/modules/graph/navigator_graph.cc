@@ -4,17 +4,13 @@
 
 #include "third_party/blink/renderer/modules/graph/navigator_graph.h"
 
-#include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/frame/local_dom_window.h"
-#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
-#include "third_party/blink/renderer/platform/browser_interface_broker_proxy.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 
 namespace blink {
 
 const char NavigatorGraph::kSupplementName[] = "NavigatorGraph";
 
-// static
 NavigatorGraph& NavigatorGraph::From(Navigator& navigator) {
   NavigatorGraph* supplement =
       Supplement<Navigator>::From<NavigatorGraph>(navigator);
@@ -33,20 +29,10 @@ PersonalGraphManager* NavigatorGraph::graph(Navigator& navigator) {
 NavigatorGraph::NavigatorGraph(Navigator& navigator)
     : Supplement<Navigator>(navigator) {}
 
-NavigatorGraph::~NavigatorGraph() = default;
-
 PersonalGraphManager* NavigatorGraph::graph() {
   if (!graph_manager_) {
-    auto* execution_context = GetSupplementable()->GetExecutionContext();
-    if (!execution_context)
-      return nullptr;
-
-    // Connect to the browser-process PersonalGraphService via Mojo.
-    execution_context->GetBrowserInterfaceBroker().GetInterface(
-        service_remote_.BindNewPipeAndPassReceiver());
-
     graph_manager_ = MakeGarbageCollected<PersonalGraphManager>(
-        execution_context, std::move(service_remote_));
+        GetSupplementable()->GetExecutionContext());
   }
   return graph_manager_.Get();
 }

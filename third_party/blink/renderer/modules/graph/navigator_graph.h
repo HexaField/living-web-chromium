@@ -5,8 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_NAVIGATOR_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_NAVIGATOR_GRAPH_H_
 
-#include "mojo/public/cpp/bindings/remote.h"
-#include "mojo/public/mojom/graph/graph.mojom-blink.h"
 #include "third_party/blink/renderer/core/frame/navigator.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -25,7 +23,6 @@ class NavigatorGraph final : public GarbageCollected<NavigatorGraph>,
   static PersonalGraphManager* graph(Navigator&);
 
   explicit NavigatorGraph(Navigator&);
-  ~NavigatorGraph();
 
   PersonalGraphManager* graph();
 
@@ -33,7 +30,6 @@ class NavigatorGraph final : public GarbageCollected<NavigatorGraph>,
 
  private:
   Member<PersonalGraphManager> graph_manager_;
-  mojo::Remote<graph::mojom::blink::PersonalGraphService> service_remote_;
 };
 
 }  // namespace blink
