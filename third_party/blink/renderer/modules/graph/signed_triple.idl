@@ -1,0 +1,19 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// ContentProof — cryptographic proof attached to signed data.
+[Exposed=(Window,Worker)]
+interface ContentProof {
+  readonly attribute USVString key;        // DID URI of signing key
+  readonly attribute USVString signature;  // hex-encoded Ed25519 signature
+};
+
+// SignedTriple — a SemanticTriple with cryptographic provenance.
+[Exposed=(Window,Worker)]
+interface SignedTriple {
+  readonly attribute SemanticTriple data;
+  readonly attribute USVString author;     // DID URI
+  readonly attribute DOMString timestamp;  // RFC 3339
+  readonly attribute ContentProof proof;
+};

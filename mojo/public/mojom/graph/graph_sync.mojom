@@ -1,0 +1,109 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Mojo interface definitions for P2P Graph Synchronisation.
+
+module graph.mojom;
+
+import "mojo/public/mojom/graph/graph.mojom";
+
+// Sync state for shared graphs.
+enum SyncState {
+  kIdle,
+  kSyncing,
+  kSynced,
+  kError,
+};
+
+// Info about a shared graph.
+struct SharedGraphInfo {
+  string uri;
+  string name;
+  SyncState sync_state;
+  uint32 peer_count;
+};
+
+// An online peer.
+struct OnlinePeer {
+  string did;
+  double last_seen;  // milliseconds since epoch
+};
+
+// A graph diff — unit of change for sync.
+struct GraphDiff {
+  string revision;                   // content-addressed hash
+  array<SignedTriple> additions;
+  array<SignedTriple> removals;
+  array<string> dependencies;        // parent revision hashes
+  string author;                     // DID of diff author
+  double timestamp;                  // milliseconds since epoch
+};
+
+// Options for sharing a graph.
+struct SharedGraphOptions {
+  string sync_protocol;  // e.g. "webrtc-crdt"
+  string? name;
+  string? description;
+};
+
+// ============================================================
+// GraphSyncService — manages shared graph sync
+// ============================================================
+
+interface GraphSyncService {
+  // Share a personal graph, making it a SharedGraph.
+  ShareGraph(string graph_uuid, SharedGraphOptions options)
+      => (SharedGraphInfo? info);
+
+  // Join an existing shared graph by URI.
+  JoinGraph(string shared_graph_uri) => (SharedGraphInfo? info);
+
+  // List all shared graphs.
+  ListSharedGraphs() => (array<SharedGraphInfo> graphs);
+
+  // Bind to a shared graph for sync operations.
+  BindSharedGraph(string uri, pending_receiver<SharedGraphHost> receiver);
+};
+
+// ============================================================
+// SharedGraphHost — operations on a shared graph
+// ============================================================
+
+interface SharedGraphHost {
+  // Get all known peers (by DID).
+  GetPeers() => (array<string> peer_dids);
+
+  // Get currently online peers.
+  GetOnlinePeers() => (array<OnlinePeer> peers);
+
+  // Send a signal (ephemeral message) to a specific peer.
+  SendSignal(string remote_did, string payload_json) => (bool success);
+
+  // Broadcast a signal to all peers.
+  Broadcast(string payload_json) => (bool success);
+
+  // Force a sync round.
+  Sync() => (GraphDiff? received_diff);
+
+  // Commit a local diff.
+  Commit(GraphDiff diff) => (string? revision);
+
+  // Get current revision.
+  GetCurrentRevision() => (string revision);
+
+  // Subscribe to sync events.
+  Subscribe(pending_remote<SharedGraphClient> client);
+};
+
+// ============================================================
+// SharedGraphClient — events pushed from browser to renderer
+// ============================================================
+
+interface SharedGraphClient {
+  OnPeerJoined(string did);
+  OnPeerLeft(string did);
+  OnSyncStateChanged(SyncState new_state);
+  OnDiffReceived(GraphDiff diff);
+  OnSignalReceived(string sender_did, string payload_json);
+};

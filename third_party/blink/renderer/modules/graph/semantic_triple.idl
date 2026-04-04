@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SemanticTriple — a single assertion: source → predicate → target.
+
+[Exposed=(Window,Worker)]
+interface SemanticTriple {
+  constructor(USVString source, USVString target,
+              optional USVString? predicate = null);
+  readonly attribute USVString source;
+  readonly attribute USVString target;
+  readonly attribute USVString? predicate;
+};

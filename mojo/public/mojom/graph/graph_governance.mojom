@@ -1,0 +1,125 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Mojo interface definitions for Graph Governance.
+// Constraint enforcement for shared linked data graphs.
+
+module graph.mojom;
+
+import "mojo/public/mojom/graph/graph.mojom";
+
+// Constraint kinds.
+enum ConstraintKind {
+  kCapability,
+  kTemporal,
+  kContent,
+  kCredential,
+};
+
+// Validation result for a triple against governance rules.
+struct ValidationResult {
+  bool accepted;
+  string? rejecting_constraint_id;
+  ConstraintKind? rejecting_kind;
+  string? reason;
+};
+
+// A capability (ZCAP) document.
+struct ZcapDocument {
+  string id;                       // URN UUID
+  string invoker;                  // DID of authorized agent
+  string? parent_capability;       // parent ZCAP id (null for root-issued)
+  array<string> predicates;        // authorized predicate URIs
+  string? scope_within;            // entity address (null = whole graph)
+  string scope_graph;              // shared graph identifier
+  string? expires;                 // RFC 3339 or null
+  string proof_json;               // JSON-serialized proof object
+};
+
+// Capability constraint configuration.
+struct CapabilityConstraint {
+  string constraint_id;
+  string enforcement;              // "required" or "optional"
+  array<string> predicates;        // empty = all predicates
+};
+
+// Temporal constraint configuration.
+struct TemporalConstraint {
+  string constraint_id;
+  uint32? min_interval_seconds;
+  uint32? max_count_per_window;
+  uint32 window_seconds;           // default 60
+  array<string> applies_to_predicates;
+};
+
+// Content constraint configuration.
+struct ContentConstraint {
+  string constraint_id;
+  array<string> blocked_patterns;  // regex patterns
+  uint32? max_text_length;
+  uint32? min_text_length;
+  string? url_policy;              // "allow_all", "block_all", "allowlist", "blocklist"
+  array<string> url_list;          // for allowlist/blocklist
+  array<string> allowed_media_types;
+  array<string> applies_to_predicates;
+};
+
+// Credential constraint configuration.
+struct CredentialConstraint {
+  string constraint_id;
+  string required_credential_type;
+  string? issuer_pattern;          // glob pattern for issuer DID
+  uint32 min_age_hours;            // default 0
+};
+
+// Info about what an agent can do in a scope.
+struct AgentCapabilities {
+  array<string> allowed_predicates;
+  bool can_add_triples;
+  bool can_remove_triples;
+  array<string> required_credentials;
+  TemporalConstraint? rate_limit;
+  ContentConstraint? content_rules;
+};
+
+// ============================================================
+// GovernanceService — governance engine for shared graphs
+// ============================================================
+
+interface GovernanceService {
+  // Validate a triple against all governance constraints in scope.
+  ValidateTriple(string shared_graph_uri, SignedTriple triple)
+      => (ValidationResult result);
+
+  // Validate a batch of triples.
+  ValidateTriples(string shared_graph_uri, array<SignedTriple> triples)
+      => (array<ValidationResult> results);
+
+  // Query: can a specific agent add a triple with this predicate in this scope?
+  CanAddTriple(string shared_graph_uri, string agent_did,
+               string predicate, string? scope_entity)
+      => (ValidationResult result);
+
+  // Query: what constraints apply to a given scope?
+  ConstraintsFor(string shared_graph_uri, string? scope_entity)
+      => (array<CapabilityConstraint> capabilities,
+          array<TemporalConstraint> temporals,
+          array<ContentConstraint> contents,
+          array<CredentialConstraint> credentials);
+
+  // Query: what can this agent do?
+  MyCapabilities(string shared_graph_uri, string agent_did)
+      => (AgentCapabilities capabilities);
+
+  // ZCAP management
+  StoreZcap(string shared_graph_uri, ZcapDocument zcap) => (bool success);
+  RevokeZcap(string shared_graph_uri, string revoking_did, string zcap_id)
+      => (bool success);
+  VerifyZcap(ZcapDocument zcap) => (bool valid, string? reason);
+
+  // Credential verification
+  VerifyCredential(string credential_json, string expected_type,
+                   string? issuer_pattern, uint32 min_age_hours)
+      => (bool valid, string? reason);
+};

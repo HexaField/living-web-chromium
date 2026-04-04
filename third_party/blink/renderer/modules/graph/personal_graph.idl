@@ -1,0 +1,43 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// PersonalGraph — a named, persistent collection of signed triples.
+
+[Exposed=(Window,Worker), SecureContext]
+interface PersonalGraph : EventTarget {
+  readonly attribute USVString uuid;
+  readonly attribute DOMString? name;
+  readonly attribute GraphSyncState state;
+
+  // Triple operations
+  [NewObject] Promise<SignedTriple> addTriple(SemanticTriple triple);
+  [NewObject] Promise<sequence<SignedTriple>> addTriples(
+      sequence<SemanticTriple> triples);
+  [NewObject] Promise<boolean> removeTriple(SignedTriple triple);
+  [NewObject] Promise<sequence<SignedTriple>> queryTriples(TripleQuery query);
+  [NewObject] Promise<SparqlResult> querySparql(USVString sparql);
+  [NewObject] Promise<sequence<SignedTriple>> snapshot();
+
+  // Cross-origin sharing
+  [NewObject] Promise<undefined> grantAccess(
+      USVString origin, GraphAccessLevel level);
+  [NewObject] Promise<undefined> revokeAccess(USVString origin);
+
+  // Shape operations (Dynamic Graph Shape Validation spec)
+  Promise<undefined> addShape(USVString name, USVString shaclJson);
+  [NewObject] Promise<sequence<USVString>> getShapeInstances(
+      USVString shapeName);
+  [NewObject] Promise<USVString> createShapeInstance(
+      USVString shapeName, object data);
+  [NewObject] Promise<object> getShapeInstanceData(
+      USVString shapeName, USVString instanceUri);
+
+  // Sharing — converts to SharedGraph (P2P Sync spec)
+  [NewObject] Promise<SharedGraph> share(
+      optional SharedGraphOptions options = {});
+
+  // Events
+  attribute EventHandler ontripleadded;
+  attribute EventHandler ontripleremoved;
+};

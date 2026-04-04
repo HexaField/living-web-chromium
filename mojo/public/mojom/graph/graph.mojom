@@ -1,0 +1,193 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Mojo interface definitions for the Personal Linked Data Graphs API.
+// Defines the IPC contract between Blink renderer and browser process
+// for navigator.graph operations.
+
+module graph.mojom;
+
+import "mojo/public/mojom/base/string16.mojom";
+import "url/mojom/url.mojom";
+
+// Represents a semantic triple (source, predicate, target).
+struct SemanticTriple {
+  string source;
+  string target;
+  string? predicate;
+};
+
+// Cryptographic proof attached to a signed triple.
+struct ContentProof {
+  string key;        // DID URI of the signing key
+  string signature;  // hex-encoded Ed25519 signature
+};
+
+// A signed semantic triple with provenance metadata.
+struct SignedTriple {
+  SemanticTriple data;
+  string author;     // DID URI
+  string timestamp;  // RFC 3339
+  ContentProof proof;
+};
+
+// Filter for querying triples.
+struct TripleQuery {
+  string? source;
+  string? target;
+  string? predicate;
+  string? from_date;   // RFC 3339, inclusive
+  string? until_date;  // RFC 3339, exclusive
+  uint32? limit;
+};
+
+// Result of a SPARQL query.
+struct SparqlResult {
+  // "bindings" for SELECT, "graph" for CONSTRUCT
+  string result_type;
+  // JSON-serialized bindings array (for SELECT)
+  string bindings_json;
+  // Triples (for CONSTRUCT)
+  array<SemanticTriple>? triples;
+};
+
+// Metadata about a personal graph.
+struct GraphInfo {
+  string uuid;
+  string? name;
+  GraphSyncState state;
+};
+
+// Sync state of a graph.
+enum GraphSyncState {
+  kPrivate,
+  kSyncing,
+  kSynced,
+  kError,
+};
+
+// Access level for cross-origin sharing.
+enum GraphAccessLevel {
+  kRead,
+  kReadWrite,
+};
+
+// Shape definition for dynamic graph shape validation.
+struct ShapeDefinition {
+  string name;
+  string target_class;
+  string properties_json;   // JSON array of property definitions
+  string constructor_json;  // JSON array of constructor actions
+};
+
+// ============================================================
+// PersonalGraphService — main entry point (navigator.graph)
+// ============================================================
+
+interface PersonalGraphService {
+  // Create a new personal graph.
+  CreateGraph(string? name) => (GraphInfo? info);
+
+  // List all graphs for the calling origin.
+  ListGraphs() => (array<GraphInfo> graphs);
+
+  // Get a specific graph by UUID.
+  GetGraph(string uuid) => (GraphInfo? info);
+
+  // Remove a graph permanently.
+  RemoveGraph(string uuid) => (bool success);
+
+  // Bind to a specific graph for triple operations.
+  BindGraph(string uuid, pending_receiver<PersonalGraphHost> receiver);
+};
+
+// ============================================================
+// PersonalGraphHost — operations on a single graph
+// ============================================================
+
+interface PersonalGraphHost {
+  // Triple CRUD
+  AddTriple(SemanticTriple triple) => (SignedTriple? result);
+  AddTriples(array<SemanticTriple> triples) => (array<SignedTriple>? results);
+  RemoveTriple(SignedTriple triple) => (bool success);
+  QueryTriples(TripleQuery query) => (array<SignedTriple> results);
+  QuerySparql(string sparql) => (SparqlResult? result);
+  Snapshot() => (array<SignedTriple> triples);
+
+  // Cross-origin sharing
+  GrantAccess(string origin, GraphAccessLevel level) => (bool success);
+  RevokeAccess(string origin) => (bool success);
+
+  // Shape operations (Dynamic Graph Shape Validation spec)
+  AddShape(string name, string shacl_json) => (bool success);
+  GetShapeInstances(string shape_name) => (array<string> instance_uris);
+  CreateShapeInstance(string shape_name, string data_json)
+      => (string? instance_uri);
+  GetShapeInstanceData(string shape_name, string instance_uri)
+      => (string? data_json);
+
+  // Event subscription — browser pushes events to renderer
+  Subscribe(pending_remote<PersonalGraphClient> client);
+};
+
+// ============================================================
+// PersonalGraphClient — events pushed from browser to renderer
+// ============================================================
+
+interface PersonalGraphClient {
+  OnTripleAdded(SignedTriple triple);
+  OnTripleRemoved(SignedTriple triple);
+  OnSyncStateChanged(GraphSyncState new_state);
+};
+
+// ============================================================
+// DIDCredentialService — decentralised identity management
+// ============================================================
+
+struct DIDCredentialInfo {
+  string id;           // Credential ID
+  string did;          // did:key:... URI
+  string algorithm;    // "Ed25519"
+  string display_name;
+  string created_at;   // RFC 3339
+  bool is_locked;
+};
+
+struct SignedContent {
+  string author;       // DID URI
+  string timestamp;    // RFC 3339
+  string data_json;    // JSON-serialized signed data
+  ContentProof proof;
+};
+
+interface DIDCredentialService {
+  // Create a new DID credential (Ed25519 keypair).
+  CreateCredential(string display_name, string algorithm)
+      => (DIDCredentialInfo? credential);
+
+  // List all DID credentials.
+  ListCredentials() => (array<DIDCredentialInfo> credentials);
+
+  // Get the active (default) credential.
+  GetActiveCredential() => (DIDCredentialInfo? credential);
+
+  // Set the active credential.
+  SetActiveCredential(string credential_id) => (bool success);
+
+  // Delete a credential.
+  DeleteCredential(string credential_id) => (bool success);
+
+  // Sign data with a credential.
+  Sign(string credential_id, string data_json) => (SignedContent? result);
+
+  // Verify signed content.
+  Verify(SignedContent content) => (bool valid);
+
+  // Lock/unlock a credential.
+  Lock(string credential_id) => (bool success);
+  Unlock(string credential_id) => (bool success);
+
+  // Resolve a did:key to a DID Document.
+  ResolveDID(string did) => (string? did_document_json);
+};

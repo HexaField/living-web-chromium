@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Graph Governance - Constraint Enforcement</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// Graph Governance — Web Platform Tests
+// Tests SharedGraph governance: canAddTriple(), constraintsFor(), myCapabilities()
+
+promise_test(async t => {
+  // Create a personal graph, share it to make it a SharedGraph.
+  const graph = await navigator.graph.create('Governed');
+  const shared = await graph.share({ meta: { name: 'Test Community' } });
+
+  assert_true(shared instanceof SharedGraph);
+  assert_true(shared.uri.length > 0, 'has URI');
+
+  // With no constraints, canAddTriple should return true.
+  const can = await shared.canAddTriple('app://body');
+  assert_true(can, 'no constraints = allowed');
+
+  await navigator.graph.remove(graph.uuid);
+}, 'SharedGraph with no governance allows all triples');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Constrained');
+  const shared = await graph.share();
+
+  // Add a content constraint: max 100 chars.
+  await shared.addTriple(new SemanticTriple(
+    shared.uri, 'constraint://content-limit',
+    'governance://has_constraint'));
+  await shared.addTriple(new SemanticTriple(
+    'constraint://content-limit',
+    'governance://constraint',
+    'governance://entry_type'));
+  await shared.addTriple(new SemanticTriple(
+    'constraint://content-limit',
+    'content',
+    'governance://constraint_kind'));
+  await shared.addTriple(new SemanticTriple(
+    'constraint://content-limit',
+    '100',
+    'governance://content_max_text_length'));
+
+  // Query constraints.
+  const constraints = await shared.constraintsFor();
+  assert_true(constraints !== null, 'returns constraints object');
+
+  await navigator.graph.remove(graph.uuid);
+}, 'constraintsFor() returns active constraints');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Capabilities');
+  const shared = await graph.share();
+
+  // Query own capabilities.
+  const caps = await shared.myCapabilities();
+  assert_true(caps !== null);
+  assert_true(typeof caps.can_add_triples === 'boolean' ||
+              typeof caps.canAddTriples === 'boolean',
+              'has add triples capability');
+
+  await navigator.graph.remove(graph.uuid);
+}, 'myCapabilities() returns agent capabilities');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('SharedPeers');
+  const shared = await graph.share({
+    syncProtocol: 'webrtc-crdt',
+    meta: { name: 'Peer Test' }
+  });
+
+  // Initially no peers.
+  const peers = await shared.peers();
+  assert_true(Array.isArray(peers), 'peers returns array');
+
+  const online = await shared.onlinePeers();
+  assert_true(Array.isArray(online), 'onlinePeers returns array');
+
+  await navigator.graph.remove(graph.uuid);
+}, 'peers() and onlinePeers() return arrays');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Signals');
+  const shared = await graph.share();
+
+  let signalReceived = false;
+  shared.onsignal = (e) => { signalReceived = true; };
+
+  // Broadcast a signal (no peers, so no real delivery).
+  await shared.broadcast({ type: 'ping' });
+
+  await navigator.graph.remove(graph.uuid);
+}, 'broadcast() sends signal without error');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('ShapeGov');
+  const shared = await graph.share();
+
+  // Add a shape definition.
+  const shape = JSON.stringify({
+    targetClass: 'ex:Message',
+    properties: [
+      { path: 'app://body', name: 'body', minCount: 1, maxCount: 1 }
+    ],
+    constructor: [
+      { action: 'addLink', predicate: 'rdf:type', value: 'ex:Message' },
+      { action: 'addLink', predicate: 'app://body', target: 'body' }
+    ]
+  });
+
+  await shared.addShape('Message', shape);
+
+  // Create an instance via shape.
+  const uri = await shared.createShapeInstance('Message', { body: 'Hello!' });
+  assert_true(uri.length > 0, 'instance URI returned');
+
+  // Query instances.
+  const instances = await shared.getShapeInstances('Message');
+  assert_true(instances.includes(uri), 'instance is discoverable');
+
+  await navigator.graph.remove(graph.uuid);
+}, 'Shape validation works within shared graphs');
+
+promise_test(async t => {
+  // Join a shared graph by URI.
+  const graph = await navigator.graph.create('Joinable');
+  const shared = await graph.share({ meta: { name: 'Joinable Space' } });
+
+  // Another context joins.
+  const joined = await navigator.graph.join(shared.uri);
+  assert_true(joined instanceof SharedGraph);
+  assert_equals(joined.uri, shared.uri);
+
+  await navigator.graph.remove(graph.uuid);
+}, 'navigator.graph.join() joins a shared graph');
+</script>

@@ -1,0 +1,63 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SharedGraph — a PersonalGraph extended with P2P sync capabilities.
+
+dictionary SharedGraphOptions {
+  USVString syncProtocol = "webrtc-crdt";
+  SharedGraphMetadata meta;
+};
+
+dictionary SharedGraphMetadata {
+  USVString name;
+  USVString description;
+};
+
+dictionary SharedGraphInfo {
+  USVString uri;
+  USVString name;
+  SyncState syncState;
+  unsigned long peerCount;
+};
+
+dictionary OnlinePeer {
+  USVString did;
+  DOMTimeStamp lastSeen;
+};
+
+enum SyncState { "idle", "syncing", "synced", "error" };
+
+[Exposed=(Window,Worker)]
+interface GraphDiff {
+  readonly attribute USVString revision;
+  readonly attribute FrozenArray<SignedTriple> additions;
+  readonly attribute FrozenArray<SignedTriple> removals;
+  readonly attribute FrozenArray<USVString> dependencies;
+  readonly attribute USVString author;
+  readonly attribute DOMTimeStamp timestamp;
+};
+
+[Exposed=(Window,Worker), SecureContext]
+interface SharedGraph : PersonalGraph {
+  readonly attribute USVString uri;
+  readonly attribute SyncState syncState;
+
+  [NewObject] Promise<sequence<USVString>> peers();
+  [NewObject] Promise<sequence<OnlinePeer>> onlinePeers();
+
+  Promise<undefined> sendSignal(USVString remoteDid, any payload);
+  Promise<undefined> broadcast(any payload);
+
+  // Governance queries (Graph Governance spec)
+  [NewObject] Promise<boolean> canAddTriple(
+      USVString predicate, optional USVString? scopeEntity = null);
+  [NewObject] Promise<object> constraintsFor(
+      optional USVString? scopeEntity = null);
+  [NewObject] Promise<object> myCapabilities();
+
+  attribute EventHandler onpeerjoined;
+  attribute EventHandler onpeerleft;
+  attribute EventHandler onsyncstatechange;
+  attribute EventHandler onsignal;
+};

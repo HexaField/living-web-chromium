@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DID Identity - Credential Management Extension</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// Decentralised Identity — Web Platform Tests
+// Tests navigator.credentials.create({ did: ... }), sign(), verify()
+
+promise_test(async t => {
+  // Create a DID credential (requires user gesture in real browser).
+  const credential = await navigator.credentials.create({
+    did: { displayName: 'Test Identity' }
+  });
+
+  assert_true(credential instanceof DIDCredential);
+  assert_equals(credential.type, 'did');
+  assert_true(credential.did.startsWith('did:key:'));
+  assert_equals(credential.algorithm, 'Ed25519');
+  assert_equals(credential.displayName, 'Test Identity');
+  assert_true(credential.createdAt.length > 0, 'has createdAt');
+  assert_false(credential.isLocked);
+}, 'credentials.create({ did }) creates Ed25519 DIDCredential');
+
+promise_test(async t => {
+  const credential = await navigator.credentials.create({
+    did: { displayName: 'Signer' }
+  });
+
+  // Sign data.
+  const data = { message: 'Hello, World!', number: 42 };
+  const signed = await credential.sign(data);
+
+  assert_equals(signed.author, credential.did);
+  assert_true(signed.timestamp.length > 0);
+  assert_equals(signed.proof.key, credential.did);
+  assert_true(signed.proof.signature.length > 0);
+}, 'DIDCredential.sign() produces SignedContent');
+
+promise_test(async t => {
+  const credential = await navigator.credentials.create({
+    did: { displayName: 'Verifier' }
+  });
+
+  const data = { test: true };
+  const signed = await credential.sign(data);
+
+  // Verify should return true for valid signature.
+  const valid = await credential.verify(signed);
+  assert_true(valid, 'valid signature verifies');
+}, 'DIDCredential.verify() validates signatures');
+
+promise_test(async t => {
+  const credential = await navigator.credentials.create({
+    did: { displayName: 'Verifier2' }
+  });
+
+  const data = { test: true };
+  const signed = await credential.sign(data);
+
+  // Tamper with the data.
+  const tampered = {
+    author: signed.author,
+    timestamp: signed.timestamp,
+    data: { test: false },  // Changed!
+    proof: signed.proof
+  };
+
+  const valid = await credential.verify(tampered);
+  assert_false(valid, 'tampered signature fails verification');
+}, 'verify() rejects tampered content');
+
+promise_test(async t => {
+  const cred1 = await navigator.credentials.create({
+    did: { displayName: 'Identity 1' }
+  });
+  const cred2 = await navigator.credentials.create({
+    did: { displayName: 'Identity 2' }
+  });
+
+  // Each should have a unique DID.
+  assert_not_equals(cred1.did, cred2.did, 'unique DIDs');
+  assert_not_equals(cred1.id, cred2.id, 'unique IDs');
+}, 'Multiple credentials have unique DIDs');
+
+promise_test(async t => {
+  const credential = await navigator.credentials.create({
+    did: { displayName: 'Lockable' }
+  });
+
+  await credential.lock();
+  assert_true(credential.isLocked, 'credential is locked');
+
+  // Signing while locked should fail.
+  try {
+    await credential.sign({ data: 'test' });
+    assert_unreached('should have thrown');
+  } catch (e) {
+    assert_equals(e.name, 'InvalidStateError');
+  }
+
+  await credential.unlock();
+  assert_false(credential.isLocked, 'credential is unlocked');
+}, 'lock() prevents signing, unlock() restores it');
+
+promise_test(async t => {
+  const credential = await navigator.credentials.create({
+    did: { displayName: 'Retrievable' }
+  });
+
+  // Retrieve via credentials.get.
+  const retrieved = await navigator.credentials.get({ did: {} });
+  assert_true(retrieved instanceof DIDCredential);
+  assert_true(retrieved.did.startsWith('did:key:'));
+}, 'credentials.get({ did }) retrieves existing DIDCredential');
+</script>
