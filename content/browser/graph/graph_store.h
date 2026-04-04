@@ -5,11 +5,12 @@
 #ifndef CONTENT_BROWSER_GRAPH_GRAPH_STORE_H_
 #define CONTENT_BROWSER_GRAPH_GRAPH_STORE_H_
 
+#include <cstdint>
 #include <memory>
-#include <string>
-#include <vector>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "content/browser/graph/triple.h"
 
@@ -17,6 +18,13 @@ namespace content {
 
 // TripleQuery — filter for querying triples.
 struct TripleQuery {
+  TripleQuery();
+  ~TripleQuery();
+  TripleQuery(const TripleQuery&);
+  TripleQuery& operator=(const TripleQuery&);
+  TripleQuery(TripleQuery&&);
+  TripleQuery& operator=(TripleQuery&&);
+
   std::optional<std::string> source;
   std::optional<std::string> target;
   std::optional<std::string> predicate;

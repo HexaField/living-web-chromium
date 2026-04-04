@@ -10,6 +10,7 @@ source_set("graph") {
     "graph_store.h",
     "sparql_engine.cc",
     "sparql_engine.h",
+    "triple.cc",
     "triple.h",
   ]
 

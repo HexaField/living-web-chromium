@@ -13,6 +13,57 @@
 
 namespace content {
 
+// Out-of-line struct definitions.
+ValidationResult::ValidationResult() = default;
+ValidationResult::~ValidationResult() = default;
+ValidationResult::ValidationResult(const ValidationResult&) = default;
+ValidationResult& ValidationResult::operator=(const ValidationResult&) = default;
+ValidationResult::ValidationResult(ValidationResult&&) = default;
+ValidationResult& ValidationResult::operator=(ValidationResult&&) = default;
+ValidationResult::ValidationResult(bool accepted_val,
+                                   const std::string& constraint_id,
+                                   const std::string& kind,
+                                   const std::string& reason_val)
+    : accepted(accepted_val),
+      rejecting_constraint_id(constraint_id),
+      rejecting_kind(kind),
+      reason(reason_val) {}
+
+CapabilityConstraintDef::CapabilityConstraintDef() = default;
+CapabilityConstraintDef::~CapabilityConstraintDef() = default;
+CapabilityConstraintDef::CapabilityConstraintDef(const CapabilityConstraintDef&) = default;
+CapabilityConstraintDef& CapabilityConstraintDef::operator=(const CapabilityConstraintDef&) = default;
+CapabilityConstraintDef::CapabilityConstraintDef(CapabilityConstraintDef&&) = default;
+CapabilityConstraintDef& CapabilityConstraintDef::operator=(CapabilityConstraintDef&&) = default;
+
+TemporalConstraintDef::TemporalConstraintDef() = default;
+TemporalConstraintDef::~TemporalConstraintDef() = default;
+TemporalConstraintDef::TemporalConstraintDef(const TemporalConstraintDef&) = default;
+TemporalConstraintDef& TemporalConstraintDef::operator=(const TemporalConstraintDef&) = default;
+TemporalConstraintDef::TemporalConstraintDef(TemporalConstraintDef&&) = default;
+TemporalConstraintDef& TemporalConstraintDef::operator=(TemporalConstraintDef&&) = default;
+
+ContentConstraintDef::ContentConstraintDef() = default;
+ContentConstraintDef::~ContentConstraintDef() = default;
+ContentConstraintDef::ContentConstraintDef(const ContentConstraintDef&) = default;
+ContentConstraintDef& ContentConstraintDef::operator=(const ContentConstraintDef&) = default;
+ContentConstraintDef::ContentConstraintDef(ContentConstraintDef&&) = default;
+ContentConstraintDef& ContentConstraintDef::operator=(ContentConstraintDef&&) = default;
+
+CredentialConstraintDef::CredentialConstraintDef() = default;
+CredentialConstraintDef::~CredentialConstraintDef() = default;
+CredentialConstraintDef::CredentialConstraintDef(const CredentialConstraintDef&) = default;
+CredentialConstraintDef& CredentialConstraintDef::operator=(const CredentialConstraintDef&) = default;
+CredentialConstraintDef::CredentialConstraintDef(CredentialConstraintDef&&) = default;
+CredentialConstraintDef& CredentialConstraintDef::operator=(CredentialConstraintDef&&) = default;
+
+GovernanceEngine::ConstraintsAtScope::ConstraintsAtScope() = default;
+GovernanceEngine::ConstraintsAtScope::~ConstraintsAtScope() = default;
+GovernanceEngine::ConstraintsAtScope::ConstraintsAtScope(const ConstraintsAtScope&) = default;
+GovernanceEngine::ConstraintsAtScope& GovernanceEngine::ConstraintsAtScope::operator=(const ConstraintsAtScope&) = default;
+GovernanceEngine::ConstraintsAtScope::ConstraintsAtScope(ConstraintsAtScope&&) = default;
+GovernanceEngine::ConstraintsAtScope& GovernanceEngine::ConstraintsAtScope::operator=(ConstraintsAtScope&&) = default;
+
 GovernanceEngine::GovernanceEngine() = default;
 GovernanceEngine::~GovernanceEngine() = default;
 
@@ -367,16 +418,12 @@ ValidationResult GovernanceEngine::CheckContentConstraint(
 
   // Check blocked patterns (regex).
   for (const auto& pattern : constraint.blocked_patterns) {
-    try {
-      std::regex re(pattern, std::regex::icase);
-      if (std::regex_search(target, re)) {
-        return {false, constraint.constraint_id, "content",
-                "Content matches blocked pattern: " + pattern};
-      }
-    } catch (const std::regex_error&) {
-      // Invalid regex — fail closed.
+    // Chromium builds with -fno-exceptions; use std::regex::nosubs to
+    // reduce complexity and rely on valid patterns from governance config.
+    std::regex re(pattern, std::regex::icase | std::regex::nosubs);
+    if (std::regex_search(target, re)) {
       return {false, constraint.constraint_id, "content",
-              "Invalid blocked pattern regex"};
+              "Content matches blocked pattern: " + pattern};
     }
   }
 

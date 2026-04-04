@@ -21,20 +21,23 @@ class GraphStore;
 
 // SyncSession — tracks the sync state for one shared graph.
 struct SyncSession {
+  SyncSession();
+  ~SyncSession();
+  SyncSession(const SyncSession&) = delete;
+  SyncSession& operator=(const SyncSession&) = delete;
+  SyncSession(SyncSession&&);
+  SyncSession& operator=(SyncSession&&);
+
   std::string graph_uuid;
-  std::string uri;                              // Shared graph URI
+  std::string uri;
   std::string name;
   graph::mojom::SyncState state = graph::mojom::SyncState::kIdle;
-  std::unordered_set<std::string> peer_dids;    // Known peers
-  std::vector<std::string> revision_dag;        // Revision history
+  std::unordered_set<std::string> peer_dids;
+  std::vector<std::string> revision_dag;
   std::string current_revision;
 };
 
 // SyncService — manages P2P synchronisation of shared graphs.
-//
-// In this reference implementation, the transport layer (WebRTC
-// DataChannel) is stubbed. The service maintains sync state and
-// the revision DAG, with hooks for a real transport implementation.
 class SyncService : public graph::mojom::GraphSyncService {
  public:
   SyncService();
@@ -54,7 +57,6 @@ class SyncService : public graph::mojom::GraphSyncService {
       const std::string& uri,
       mojo::PendingReceiver<graph::mojom::SharedGraphHost> receiver) override;
 
-  // Direct access for testing.
   SyncSession* GetSession(const std::string& uri);
   size_t session_count() const { return sessions_.size(); }
 

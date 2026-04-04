@@ -5,49 +5,59 @@
 #ifndef CONTENT_BROWSER_GRAPH_TRIPLE_H_
 #define CONTENT_BROWSER_GRAPH_TRIPLE_H_
 
-#include <string>
 #include <optional>
+#include <string>
 
 namespace content {
 
 // SemanticTriple — a single assertion in a graph.
 struct SemanticTriple {
+  SemanticTriple();
+  ~SemanticTriple();
+  SemanticTriple(const SemanticTriple&);
+  SemanticTriple& operator=(const SemanticTriple&);
+  SemanticTriple(SemanticTriple&&);
+  SemanticTriple& operator=(SemanticTriple&&);
+
   std::string source;
   std::string target;
   std::optional<std::string> predicate;
 
   bool Matches(const std::optional<std::string>& q_source,
                const std::optional<std::string>& q_target,
-               const std::optional<std::string>& q_predicate) const {
-    if (q_source && *q_source != source) return false;
-    if (q_target && *q_target != target) return false;
-    if (q_predicate && predicate != q_predicate) return false;
-    return true;
-  }
+               const std::optional<std::string>& q_predicate) const;
 
-  bool operator==(const SemanticTriple& other) const {
-    return source == other.source && target == other.target &&
-           predicate == other.predicate;
-  }
+  bool operator==(const SemanticTriple& other) const;
 };
 
 // ContentProof — cryptographic proof.
 struct ContentProof {
+  ContentProof();
+  ~ContentProof();
+  ContentProof(const ContentProof&);
+  ContentProof& operator=(const ContentProof&);
+  ContentProof(ContentProof&&);
+  ContentProof& operator=(ContentProof&&);
+
   std::string key;        // DID URI of signing key
   std::string signature;  // hex-encoded Ed25519 signature
 };
 
 // SignedTriple — a SemanticTriple with provenance.
 struct SignedTriple {
+  SignedTriple();
+  ~SignedTriple();
+  SignedTriple(const SignedTriple&);
+  SignedTriple& operator=(const SignedTriple&);
+  SignedTriple(SignedTriple&&);
+  SignedTriple& operator=(SignedTriple&&);
+
   SemanticTriple data;
   std::string author;     // DID URI
   std::string timestamp;  // RFC 3339
   ContentProof proof;
 
-  bool operator==(const SignedTriple& other) const {
-    return data == other.data && author == other.author &&
-           timestamp == other.timestamp;
-  }
+  bool operator==(const SignedTriple& other) const;
 };
 
 }  // namespace content

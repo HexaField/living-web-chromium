@@ -15,6 +15,13 @@
 
 namespace content {
 
+TripleQuery::TripleQuery() = default;
+TripleQuery::~TripleQuery() = default;
+TripleQuery::TripleQuery(const TripleQuery&) = default;
+TripleQuery& TripleQuery::operator=(const TripleQuery&) = default;
+TripleQuery::TripleQuery(TripleQuery&&) = default;
+TripleQuery& TripleQuery::operator=(TripleQuery&&) = default;
+
 GraphStore::GraphStore(const std::string& uuid, const std::string& name)
     : uuid_(uuid), name_(name) {}
 
@@ -194,7 +201,7 @@ std::string GraphStore::QuerySparql(const std::string& sparql) const {
 bool GraphStore::AddShape(const std::string& name,
                            const std::string& shacl_json) {
   // Parse JSON to validate structure.
-  auto value = base::JSONReader::Read(shacl_json);
+  auto value = base::JSONReader::Read(shacl_json, base::JSON_PARSE_RFC);
   if (!value || !value->is_dict()) {
     LOG(WARNING) << "Invalid shape JSON for " << name;
     return false;
@@ -231,7 +238,7 @@ std::vector<std::string> GraphStore::GetShapeInstances(
     return {};
 
   // Parse the shape to get targetClass.
-  auto value = base::JSONReader::Read(it->second);
+  auto value = base::JSONReader::Read(it->second, base::JSON_PARSE_RFC);
   if (!value || !value->is_dict())
     return {};
 
@@ -257,11 +264,11 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
   if (shape_it == shapes_.end())
     return "";
 
-  auto shape = base::JSONReader::Read(shape_it->second);
+  auto shape = base::JSONReader::Read(shape_it->second, base::JSON_PARSE_RFC);
   if (!shape || !shape->is_dict())
     return "";
 
-  auto data = base::JSONReader::Read(data_json);
+  auto data = base::JSONReader::Read(data_json, base::JSON_PARSE_RFC);
   if (!data || !data->is_dict())
     return "";
 

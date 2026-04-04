@@ -10,6 +10,11 @@
 
 namespace content {
 
+SyncSession::SyncSession() = default;
+SyncSession::~SyncSession() = default;
+SyncSession::SyncSession(SyncSession&&) = default;
+SyncSession& SyncSession::operator=(SyncSession&&) = default;
+
 SyncService::SyncService() = default;
 SyncService::~SyncService() = default;
 

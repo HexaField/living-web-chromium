@@ -10,6 +10,21 @@
 
 namespace content {
 
+SparqlEngine::SparqlEngine() = default;
+SparqlEngine::~SparqlEngine() = default;
+
+SparqlEngine::TriplePattern::TriplePattern() = default;
+SparqlEngine::TriplePattern::~TriplePattern() = default;
+SparqlEngine::TriplePattern::TriplePattern(const TriplePattern&) = default;
+SparqlEngine::TriplePattern& SparqlEngine::TriplePattern::operator=(const TriplePattern&) = default;
+
+SparqlEngine::ParsedQuery::ParsedQuery() = default;
+SparqlEngine::ParsedQuery::~ParsedQuery() = default;
+SparqlEngine::ParsedQuery::ParsedQuery(const ParsedQuery&) = default;
+SparqlEngine::ParsedQuery& SparqlEngine::ParsedQuery::operator=(const ParsedQuery&) = default;
+SparqlEngine::ParsedQuery::ParsedQuery(ParsedQuery&&) = default;
+SparqlEngine::ParsedQuery& SparqlEngine::ParsedQuery::operator=(ParsedQuery&&) = default;
+
 SparqlEngine::ParsedQuery SparqlEngine::Parse(
     const std::string& sparql) const {
   ParsedQuery query;

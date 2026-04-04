@@ -15,6 +15,20 @@
 
 namespace content {
 
+DIDKeyPair::DIDKeyPair() = default;
+DIDKeyPair::~DIDKeyPair() = default;
+DIDKeyPair::DIDKeyPair(const DIDKeyPair&) = default;
+DIDKeyPair& DIDKeyPair::operator=(const DIDKeyPair&) = default;
+DIDKeyPair::DIDKeyPair(DIDKeyPair&&) = default;
+DIDKeyPair& DIDKeyPair::operator=(DIDKeyPair&&) = default;
+
+SignedContentResult::SignedContentResult() = default;
+SignedContentResult::~SignedContentResult() = default;
+SignedContentResult::SignedContentResult(const SignedContentResult&) = default;
+SignedContentResult& SignedContentResult::operator=(const SignedContentResult&) = default;
+SignedContentResult::SignedContentResult(SignedContentResult&&) = default;
+SignedContentResult& SignedContentResult::operator=(SignedContentResult&&) = default;
+
 DIDKeyProvider::DIDKeyProvider() = default;
 DIDKeyProvider::~DIDKeyProvider() = default;
 
