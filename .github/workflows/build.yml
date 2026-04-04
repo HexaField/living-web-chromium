@@ -1,0 +1,133 @@
+name: Build Living Web Browser
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14  # Apple Silicon runner
+    timeout-minutes: 360  # 6 hours
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
+          echo "$HOME/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch Chromium (shallow)
+        run: |
+          mkdir -p $HOME/chromium && cd $HOME/chromium
+          fetch --nohooks --no-history chromium
+          cd src
+          gclient sync --no-history --shallow
+
+      - name: Integrate Living Web
+        run: |
+          cd $HOME/chromium/src
+          bash $GITHUB_WORKSPACE/integrate.sh $GITHUB_WORKSPACE $HOME/chromium/src
+
+      - name: Configure build
+        run: |
+          cd $HOME/chromium/src
+          gn gen out/LivingWeb --args='
+            is_debug = false
+            is_component_build = false
+            target_cpu = "arm64"
+            enable_nacl = false
+            blink_symbol_level = 0
+            symbol_level = 0
+            is_official_build = false
+          '
+
+      - name: Build Chrome
+        run: |
+          cd $HOME/chromium/src
+          autoninja -C out/LivingWeb chrome
+
+      - name: Package
+        run: |
+          cd $HOME/chromium/src/out/LivingWeb
+          # Create a zip of the Chromium.app bundle
+          zip -r $GITHUB_WORKSPACE/living-web-browser-macos-arm64.zip Chromium.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: living-web-browser-macos-arm64
+          path: living-web-browser-macos-arm64.zip
+          retention-days: 30
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: living-web-browser-macos-arm64.zip
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lsb-release
+
+      - name: Install depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
+          echo "$HOME/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch Chromium (shallow)
+        run: |
+          mkdir -p $HOME/chromium && cd $HOME/chromium
+          fetch --nohooks --no-history chromium
+          cd src
+          ./build/install-build-deps.sh --no-prompt
+          gclient sync --no-history --shallow
+
+      - name: Integrate Living Web
+        run: |
+          cd $HOME/chromium/src
+          bash $GITHUB_WORKSPACE/integrate.sh $GITHUB_WORKSPACE $HOME/chromium/src
+
+      - name: Configure build
+        run: |
+          cd $HOME/chromium/src
+          gn gen out/LivingWeb --args='
+            is_debug = false
+            is_component_build = false
+            target_cpu = "x64"
+            enable_nacl = false
+            blink_symbol_level = 0
+            symbol_level = 0
+            is_official_build = false
+          '
+
+      - name: Build Chrome
+        run: |
+          cd $HOME/chromium/src
+          autoninja -C out/LivingWeb chrome
+
+      - name: Package
+        run: |
+          cd $HOME/chromium/src/out/LivingWeb
+          tar -czf $GITHUB_WORKSPACE/living-web-browser-linux-x64.tar.gz chrome chrome_sandbox *.so *.pak *.bin *.dat locales/ resources/ || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: living-web-browser-linux-x64
+          path: living-web-browser-linux-x64.tar.gz
+          retention-days: 30
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: living-web-browser-linux-x64.tar.gz
