@@ -254,6 +254,7 @@ echo "[5/6] Registering browser interface binder..."
 BINDERS_CC="$CHROMIUM_SRC/content/browser/browser_interface_binders.cc"
 if [ -f "$BINDERS_CC" ] && ! grep -q "PersonalGraphService" "$BINDERS_CC"; then
   python3 -c "
+import re
 with open('$BINDERS_CC', 'r') as f:
     content = f.read()
 
@@ -261,7 +262,6 @@ with open('$BINDERS_CC', 'r') as f:
 include_line = '#include \"content/browser/graph/graph_manager.h\"  // Living Web'
 if include_line not in content:
     # Add after the last #include
-    import re
     includes = list(re.finditer(r'^#include .+$', content, re.MULTILINE))
     if includes:
         last = includes[-1]
