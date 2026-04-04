@@ -5,10 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_SHARED_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_SHARED_GRAPH_H_
 
-#include "third_party/blink/renderer/modules/graph/personal_graph.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
 #include "mojo/public/mojom/graph/graph_governance.mojom-blink.h"
+#include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/modules/graph/personal_graph.h"
 
 namespace blink {
 
@@ -32,27 +35,22 @@ class SharedGraph final : public PersonalGraph {
 
   // Peer operations
   ScriptPromise<IDLSequence<IDLString>> peers(ScriptState*);
-  ScriptPromise<IDLSequence<OnlinePeer>> onlinePeers(ScriptState*);
+  ScriptPromise<IDLAny> onlinePeers(ScriptState*);
 
   // Signalling
   ScriptPromise<IDLUndefined> sendSignal(ScriptState*,
                                           const String& remote_did,
-                                          ScriptValue payload);
-  ScriptPromise<IDLUndefined> broadcast(ScriptState*, ScriptValue payload);
+                                          const ScriptValue& payload);
+  ScriptPromise<IDLUndefined> broadcast(ScriptState*,
+                                         const ScriptValue& payload);
 
   // Governance queries
   ScriptPromise<IDLBoolean> canAddTriple(ScriptState*,
                                           const String& predicate,
                                           const String& scope_entity);
-  ScriptPromise<ScriptValue> constraintsFor(ScriptState*,
+  ScriptPromise<IDLAny> constraintsFor(ScriptState*,
                                               const String& scope_entity);
-  ScriptPromise<ScriptValue> myCapabilities(ScriptState*);
-
-  // Events
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerjoined, kPeerjoined)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerleft, kPeerleft)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(syncstatechange, kSyncstatechange)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
+  ScriptPromise<IDLAny> myCapabilities(ScriptState*);
 
   void Trace(Visitor*) const override;
 

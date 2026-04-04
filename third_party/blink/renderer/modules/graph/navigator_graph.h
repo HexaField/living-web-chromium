@@ -5,19 +5,17 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_NAVIGATOR_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_NAVIGATOR_GRAPH_H_
 
-#include "third_party/blink/renderer/core/frame/navigator.h"
-#include "third_party/blink/renderer/modules/graph/personal_graph.h"
-#include "third_party/blink/renderer/platform/supplementable.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
+#include "third_party/blink/renderer/core/frame/navigator.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/supplementable.h"
 
 namespace blink {
 
 class PersonalGraphManager;
 
-// NavigatorGraph is a Supplement<Navigator> that provides the
-// navigator.graph property. Lazily creates the PersonalGraphManager
-// on first access.
 class NavigatorGraph final : public GarbageCollected<NavigatorGraph>,
                              public Supplement<Navigator> {
  public:

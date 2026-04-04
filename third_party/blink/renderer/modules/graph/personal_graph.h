@@ -5,19 +5,27 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_PERSONAL_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_PERSONAL_GRAPH_H_
 
-#include "third_party/blink/renderer/core/dom/events/event_target.h"
-#include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/core/dom/events/event_target.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/graph/semantic_triple.h"
+#include "third_party/blink/renderer/modules/graph/signed_triple.h"
+#include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 
 namespace blink {
 
 class ExecutionContext;
-class ScriptPromiseResolver;
+class ScriptPromiseResolverBase;
 class ScriptState;
+class SharedGraph;
 
 // PersonalGraphManager implements the navigator.graph interface.
-// Delegates all operations to the browser process via Mojo.
 class PersonalGraphManager final : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -32,8 +40,6 @@ class PersonalGraphManager final : public ScriptWrappable {
   ScriptPromise<IDLSequence<PersonalGraph>> list(ScriptState*);
   ScriptPromise<PersonalGraph> get(ScriptState*, const String& uuid);
   ScriptPromise<IDLBoolean> remove(ScriptState*, const String& uuid);
-
-  // From P2P Sync spec
   ScriptPromise<SharedGraph> join(ScriptState*, const String& uri);
 
   void Trace(Visitor*) const override;
@@ -43,9 +49,10 @@ class PersonalGraphManager final : public ScriptWrappable {
   mojo::Remote<graph::mojom::blink::PersonalGraphService> service_;
 };
 
+// Forward declare for return types used in templates.
+class PersonalGraph;
+
 // PersonalGraph implements the PersonalGraph Web IDL interface.
-// Each instance is bound to a specific graph UUID and communicates
-// with the browser process via a PersonalGraphHost Mojo interface.
 class PersonalGraph : public EventTarget {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -67,8 +74,8 @@ class PersonalGraph : public EventTarget {
       ScriptState*, const HeapVector<Member<SemanticTriple>>&);
   ScriptPromise<IDLBoolean> removeTriple(ScriptState*, SignedTriple*);
   ScriptPromise<IDLSequence<SignedTriple>> queryTriples(
-      ScriptState*, const TripleQuery*);
-  ScriptPromise<SparqlResult> querySparql(ScriptState*, const String& sparql);
+      ScriptState*, const ScriptValue& query);
+  ScriptPromise<IDLAny> querySparql(ScriptState*, const String& sparql);
   ScriptPromise<IDLSequence<SignedTriple>> snapshot(ScriptState*);
 
   // Cross-origin sharing
@@ -85,25 +92,21 @@ class PersonalGraph : public EventTarget {
       ScriptState*, const String& shape_name);
   ScriptPromise<IDLString> createShapeInstance(ScriptState*,
                                                 const String& shape_name,
-                                                ScriptValue data);
-  ScriptPromise<ScriptValue> getShapeInstanceData(ScriptState*,
+                                                const ScriptValue& data);
+  ScriptPromise<IDLAny> getShapeInstanceData(ScriptState*,
                                                     const String& shape_name,
                                                     const String& instance_uri);
 
   // Sharing
-  ScriptPromise<SharedGraph> share(ScriptState*, const SharedGraphOptions*);
+  ScriptPromise<SharedGraph> share(ScriptState*, const ScriptValue& options);
 
   // EventTarget
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
 
-  // Events
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleadded, kTripleadded)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleremoved, kTripleremoved)
-
   void Trace(Visitor*) const override;
 
- private:
+ protected:
   String uuid_;
   String name_;
   graph::mojom::blink::GraphSyncState state_ =

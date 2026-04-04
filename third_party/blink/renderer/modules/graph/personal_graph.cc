@@ -5,10 +5,33 @@
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
 
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/graph/content_proof.h"
+#include "third_party/blink/renderer/modules/graph/semantic_triple.h"
+#include "third_party/blink/renderer/modules/graph/signed_triple.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 
 namespace blink {
+
+namespace {
+
+// Helper to convert mojo SignedTriple to blink SignedTriple.
+SignedTriple* ConvertSignedTriple(
+    const graph::mojom::blink::SignedTriplePtr& mojo_triple) {
+  if (!mojo_triple)
+    return nullptr;
+  auto* data = MakeGarbageCollected<SemanticTriple>(
+      mojo_triple->data->source,
+      mojo_triple->data->target,
+      mojo_triple->data->predicate.value_or(String()));
+  auto* proof = MakeGarbageCollected<ContentProof>(
+      mojo_triple->proof->key, mojo_triple->proof->signature);
+  return MakeGarbageCollected<SignedTriple>(
+      data, mojo_triple->author, mojo_triple->timestamp, proof);
+}
+
+}  // namespace
 
 // =============================================================
 // PersonalGraphManager
@@ -27,33 +50,9 @@ ScriptPromise<PersonalGraph> PersonalGraphManager::create(
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<PersonalGraph>>(
       script_state);
   auto promise = resolver->Promise();
-
-  service_->CreateGraph(
-      name,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<PersonalGraph>* resolver,
-             ExecutionContext* context,
-             mojo::Remote<graph::mojom::blink::PersonalGraphService>& service,
-             graph::mojom::blink::GraphInfoPtr info) {
-            if (!info) {
-              resolver->Reject(MakeGarbageCollected<DOMException>(
-                  DOMExceptionCode::kOperationError,
-                  "Failed to create graph"));
-              return;
-            }
-            // Bind a PersonalGraphHost for this graph.
-            mojo::Remote<graph::mojom::blink::PersonalGraphHost> host;
-            service->BindGraph(info->uuid,
-                               host.BindNewPipeAndPassReceiver());
-
-            auto* graph = MakeGarbageCollected<PersonalGraph>(
-                context, info->uuid, info->name, std::move(host));
-            resolver->Resolve(graph);
-          },
-          WrapPersistent(resolver),
-          WrapPersistent(execution_context_.Get()),
-          std::ref(service_)));
-
+  // TODO: wire to service_->CreateGraph
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -63,24 +62,8 @@ ScriptPromise<IDLSequence<PersonalGraph>> PersonalGraphManager::list(
       MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<PersonalGraph>>>(
           script_state);
   auto promise = resolver->Promise();
-
-  service_->ListGraphs(WTF::BindOnce(
-      [](ScriptPromiseResolver<IDLSequence<PersonalGraph>>* resolver,
-         ExecutionContext* context,
-         WTF::Vector<graph::mojom::blink::GraphInfoPtr> infos) {
-        HeapVector<Member<PersonalGraph>> graphs;
-        for (auto& info : infos) {
-          // Note: In production, each would need its own BindGraph call.
-          // Simplified here — real impl would batch-bind.
-          graphs.push_back(MakeGarbageCollected<PersonalGraph>(
-              context, info->uuid, info->name,
-              mojo::Remote<graph::mojom::blink::PersonalGraphHost>()));
-        }
-        resolver->Resolve(graphs);
-      },
-      WrapPersistent(resolver),
-      WrapPersistent(execution_context_.Get())));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -90,24 +73,8 @@ ScriptPromise<PersonalGraph> PersonalGraphManager::get(
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<PersonalGraph>>(
       script_state);
   auto promise = resolver->Promise();
-
-  service_->GetGraph(
-      uuid,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<PersonalGraph>* resolver,
-             ExecutionContext* context,
-             graph::mojom::blink::GraphInfoPtr info) {
-            if (!info) {
-              resolver->Resolve(nullptr);
-              return;
-            }
-            resolver->Resolve(MakeGarbageCollected<PersonalGraph>(
-                context, info->uuid, info->name,
-                mojo::Remote<graph::mojom::blink::PersonalGraphHost>()));
-          },
-          WrapPersistent(resolver),
-          WrapPersistent(execution_context_.Get())));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -117,15 +84,19 @@ ScriptPromise<IDLBoolean> PersonalGraphManager::remove(
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLBoolean>>(script_state);
   auto promise = resolver->Promise();
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
+  return promise;
+}
 
-  service_->RemoveGraph(
-      uuid,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLBoolean>* resolver, bool success) {
-            resolver->Resolve(success);
-          },
-          WrapPersistent(resolver)));
-
+ScriptPromise<SharedGraph> PersonalGraphManager::join(
+    ScriptState* script_state,
+    const String& uri) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<SharedGraph>>(script_state);
+  auto promise = resolver->Promise();
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -170,30 +141,8 @@ ScriptPromise<SignedTriple> PersonalGraph::addTriple(
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<SignedTriple>>(script_state);
   auto promise = resolver->Promise();
-
-  auto mojo_triple = graph::mojom::blink::SemanticTriple::New();
-  mojo_triple->source = triple->source();
-  mojo_triple->target = triple->target();
-  mojo_triple->predicate = triple->predicate();
-
-  host_->AddTriple(
-      std::move(mojo_triple),
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<SignedTriple>* resolver,
-             graph::mojom::blink::SignedTriplePtr result) {
-            if (!result) {
-              resolver->Reject(MakeGarbageCollected<DOMException>(
-                  DOMExceptionCode::kInvalidStateError,
-                  "Failed to add triple — no active identity?"));
-              return;
-            }
-            // Convert Mojo SignedTriple to Blink SignedTriple.
-            // In full implementation, this creates the Blink wrapper objects.
-            // Simplified: resolver->Resolve(ConvertSignedTriple(result));
-            resolver->Resolve(nullptr);  // TODO: proper conversion
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -201,30 +150,11 @@ ScriptPromise<IDLSequence<SignedTriple>> PersonalGraph::addTriples(
     ScriptState* script_state,
     const HeapVector<Member<SemanticTriple>>& triples) {
   auto* resolver =
-      MakeGarbageCollected<
-          ScriptPromiseResolver<IDLSequence<SignedTriple>>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<SignedTriple>>>(
+          script_state);
   auto promise = resolver->Promise();
-
-  WTF::Vector<graph::mojom::blink::SemanticTriplePtr> mojo_triples;
-  for (const auto& triple : triples) {
-    auto mt = graph::mojom::blink::SemanticTriple::New();
-    mt->source = triple->source();
-    mt->target = triple->target();
-    mt->predicate = triple->predicate();
-    mojo_triples.push_back(std::move(mt));
-  }
-
-  host_->AddTriples(
-      std::move(mojo_triples),
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLSequence<SignedTriple>>* resolver,
-             WTF::Vector<graph::mojom::blink::SignedTriplePtr> results) {
-            // TODO: convert and resolve
-            HeapVector<Member<SignedTriple>> converted;
-            resolver->Resolve(converted);
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -234,80 +164,42 @@ ScriptPromise<IDLBoolean> PersonalGraph::removeTriple(
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLBoolean>>(script_state);
   auto promise = resolver->Promise();
-
-  // TODO: convert Blink SignedTriple to Mojo and call host_->RemoveTriple
-  host_->RemoveTriple(
-      graph::mojom::blink::SignedTriplePtr(),
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLBoolean>* resolver, bool success) {
-            resolver->Resolve(success);
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
 ScriptPromise<IDLSequence<SignedTriple>> PersonalGraph::queryTriples(
     ScriptState* script_state,
-    const TripleQuery* query) {
+    const ScriptValue& query) {
   auto* resolver =
-      MakeGarbageCollected<
-          ScriptPromiseResolver<IDLSequence<SignedTriple>>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<SignedTriple>>>(
+          script_state);
   auto promise = resolver->Promise();
-
-  auto mojo_query = graph::mojom::blink::TripleQuery::New();
-  // Map TripleQuery fields to mojo struct.
-  // In full implementation, each field is mapped.
-
-  host_->QueryTriples(
-      std::move(mojo_query),
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLSequence<SignedTriple>>* resolver,
-             WTF::Vector<graph::mojom::blink::SignedTriplePtr> results) {
-            HeapVector<Member<SignedTriple>> converted;
-            // TODO: convert each result
-            resolver->Resolve(converted);
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
-ScriptPromise<SparqlResult> PersonalGraph::querySparql(
+ScriptPromise<IDLAny> PersonalGraph::querySparql(
     ScriptState* script_state,
     const String& sparql) {
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<SparqlResult>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
-
-  host_->QuerySparql(
-      sparql,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<SparqlResult>* resolver,
-             graph::mojom::blink::SparqlResultPtr result) {
-            // TODO: convert to Blink SparqlResult
-            resolver->Resolve(nullptr);
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
 ScriptPromise<IDLSequence<SignedTriple>> PersonalGraph::snapshot(
     ScriptState* script_state) {
   auto* resolver =
-      MakeGarbageCollected<
-          ScriptPromiseResolver<IDLSequence<SignedTriple>>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<SignedTriple>>>(
+          script_state);
   auto promise = resolver->Promise();
-
-  host_->Snapshot(WTF::BindOnce(
-      [](ScriptPromiseResolver<IDLSequence<SignedTriple>>* resolver,
-         WTF::Vector<graph::mojom::blink::SignedTriplePtr> triples) {
-        HeapVector<Member<SignedTriple>> converted;
-        resolver->Resolve(converted);
-      },
-      WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -318,24 +210,8 @@ ScriptPromise<IDLUndefined> PersonalGraph::grantAccess(
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   auto promise = resolver->Promise();
-
-  auto access_level = (level == "readwrite")
-      ? graph::mojom::blink::GraphAccessLevel::kReadWrite
-      : graph::mojom::blink::GraphAccessLevel::kRead;
-
-  host_->GrantAccess(
-      origin, access_level,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLUndefined>* resolver, bool success) {
-            if (success)
-              resolver->Resolve();
-            else
-              resolver->Reject(MakeGarbageCollected<DOMException>(
-                  DOMExceptionCode::kNotAllowedError,
-                  "Access grant denied"));
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -345,15 +221,8 @@ ScriptPromise<IDLUndefined> PersonalGraph::revokeAccess(
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   auto promise = resolver->Promise();
-
-  host_->RevokeAccess(
-      origin,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLUndefined>* resolver, bool success) {
-            resolver->Resolve();
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -364,20 +233,8 @@ ScriptPromise<IDLUndefined> PersonalGraph::addShape(
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   auto promise = resolver->Promise();
-
-  host_->AddShape(
-      name, shacl_json,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLUndefined>* resolver, bool success) {
-            if (success)
-              resolver->Resolve();
-            else
-              resolver->Reject(MakeGarbageCollected<DOMException>(
-                  DOMExceptionCode::kSyntaxError,
-                  "Invalid shape definition"));
-          },
-          WrapPersistent(resolver)));
-
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
@@ -385,24 +242,52 @@ ScriptPromise<IDLSequence<IDLString>> PersonalGraph::getShapeInstances(
     ScriptState* script_state,
     const String& shape_name) {
   auto* resolver =
-      MakeGarbageCollected<
-          ScriptPromiseResolver<IDLSequence<IDLString>>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<IDLString>>>(
+          script_state);
   auto promise = resolver->Promise();
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
+  return promise;
+}
 
-  host_->GetShapeInstances(
-      shape_name,
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLSequence<IDLString>>* resolver,
-             WTF::Vector<String> uris) {
-            resolver->Resolve(uris);
-          },
-          WrapPersistent(resolver)));
+ScriptPromise<IDLString> PersonalGraph::createShapeInstance(
+    ScriptState* script_state,
+    const String& shape_name,
+    const ScriptValue& data) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLString>>(script_state);
+  auto promise = resolver->Promise();
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
+  return promise;
+}
 
+ScriptPromise<IDLAny> PersonalGraph::getShapeInstanceData(
+    ScriptState* script_state,
+    const String& shape_name,
+    const String& instance_uri) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto promise = resolver->Promise();
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
+  return promise;
+}
+
+ScriptPromise<SharedGraph> PersonalGraph::share(
+    ScriptState* script_state,
+    const ScriptValue& options) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<SharedGraph>>(script_state);
+  auto promise = resolver->Promise();
+  resolver->Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kNotSupportedError, "Not yet implemented"));
   return promise;
 }
 
 const AtomicString& PersonalGraph::InterfaceName() const {
-  return event_target_names::kPersonalGraph;
+  DEFINE_STATIC_LOCAL(const AtomicString, kPersonalGraph, ("PersonalGraph"));
+  return kPersonalGraph;
 }
 
 ExecutionContext* PersonalGraph::GetExecutionContext() const {
