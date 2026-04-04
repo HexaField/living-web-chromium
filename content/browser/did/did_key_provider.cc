@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/uuid.h"
 #include "crypto/sha2.h"
 #include "third_party/boringssl/src/include/openssl/curve25519.h"
@@ -242,14 +243,7 @@ std::string DIDKeyProvider::CurrentTimestamp() const {
 
 std::string DIDKeyProvider::HexEncode(
     const std::vector<uint8_t>& bytes) const {
-  static const char hex_chars[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(bytes.size() * 2);
-  for (uint8_t b : bytes) {
-    result += hex_chars[b >> 4];
-    result += hex_chars[b & 0x0f];
-  }
-  return result;
+  return base::HexEncode(bytes);
 }
 
 std::vector<uint8_t> DIDKeyProvider::HexDecode(const std::string& hex) const {
