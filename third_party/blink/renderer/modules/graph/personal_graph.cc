@@ -64,7 +64,7 @@ void PersonalGraphManager::Trace(Visitor* visitor) const {
 // --- PersonalGraph ---
 
 PersonalGraph::PersonalGraph(ExecutionContext* context, const String& uuid)
-    : EventTarget(context), uuid_(uuid), execution_context_(context) {}
+    : uuid_(uuid), execution_context_(context) {}
 
 String PersonalGraph::state() const {
   return "private";
