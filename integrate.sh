@@ -218,6 +218,59 @@ elif [ ! -f "$IDL_LIST" ]; then
   echo "  WARNING: idl_in_modules.gni not found — IDL registration may need manual patching"
 fi
 
+# Register generated V8 binding files in generated_in_modules.gni
+GENERATED_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/generated_in_modules.gni"
+if [ -f "$GENERATED_LIST" ] && ! grep -q "v8_personal_graph" "$GENERATED_LIST"; then
+  python3 -c "
+with open('$GENERATED_LIST', 'r') as f:
+    content = f.read()
+
+import re
+
+# Add enumeration entries (GraphSyncState, SyncState)
+enum_entries = '''  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h\",'''
+
+# Find last entry in generated_enumeration_sources_in_modules
+pattern = r'(generated_enumeration_sources_in_modules\s*=\s*\[.*?)(^\])'
+match = re.search(pattern, content, re.DOTALL | re.MULTILINE)
+if match:
+    insert = match.start(2)
+    content = content[:insert] + enum_entries + '\n' + content[insert:]
+
+# Add interface entries
+iface_entries = '''  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.h\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.cc\",
+  \"\\\$root_gen_dir/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.h\",'''
+
+# Find last entry in generated_interface_sources_in_modules
+pattern2 = r'(generated_interface_sources_in_modules\s*=\s*\[.*?)(^\])'
+match2 = re.search(pattern2, content, re.DOTALL | re.MULTILINE)
+if match2:
+    insert2 = match2.start(2)
+    content = content[:insert2] + iface_entries + '\n' + content[insert2:]
+
+with open('$GENERATED_LIST', 'w') as f:
+    f.write(content)
+print('  Added generated V8 bindings to generated_in_modules.gni')
+"
+else
+  echo "  Generated bindings already registered or file not found"
+fi
+
 echo ""
 
 # ------------------------------------------------------------------
