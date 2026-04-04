@@ -171,39 +171,51 @@ else
   echo "  Already registered"
 fi
 
-# Register IDL files in the generated_in_modules list
-IDL_LIST="$CHROMIUM_SRC/third_party/blink/renderer/modules/modules_idl_files.gni"
+# Register IDL files in idl_in_modules.gni (the central list of all module IDL files)
+IDL_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/idl_in_modules.gni"
 if [ -f "$IDL_LIST" ] && ! grep -q "graph/" "$IDL_LIST"; then
   python3 -c "
 with open('$IDL_LIST', 'r') as f:
     content = f.read()
 
-idl_entries = '''
+idl_entries = '''  \"//third_party/blink/renderer/modules/graph/content_proof.idl\",
+  \"//third_party/blink/renderer/modules/graph/graph_diff.idl\",
   \"//third_party/blink/renderer/modules/graph/navigator_graph.idl\",
   \"//third_party/blink/renderer/modules/graph/personal_graph.idl\",
+  \"//third_party/blink/renderer/modules/graph/personal_graph_manager.idl\",
   \"//third_party/blink/renderer/modules/graph/semantic_triple.idl\",
-  \"//third_party/blink/renderer/modules/graph/signed_triple.idl\",
-  \"//third_party/blink/renderer/modules/graph/shared_graph.idl\",'''
+  \"//third_party/blink/renderer/modules/graph/shared_graph.idl\",
+  \"//third_party/blink/renderer/modules/graph/signed_triple.idl\",'''
 
 if 'graph/navigator_graph.idl' not in content:
-    # Find the last .idl entry and add after it
     import re
-    pattern = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)'
-    matches = list(re.finditer(pattern, content))
-    if matches:
-        last = matches[-1]
-        insert = last.end()
+    # Find last entry before closing ] in static_idl_files_in_modules
+    pattern = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)\s*\]'
+    match = re.search(pattern, content)
+    if match:
+        insert = match.start(1) + len(match.group(1))
         content = content[:insert] + '\n' + idl_entries + content[insert:]
         with open('$IDL_LIST', 'w') as f:
             f.write(content)
-        print('  Added IDL files to modules_idl_files.gni')
+        print('  Added IDL files to idl_in_modules.gni')
     else:
-        print('  WARNING: Could not find IDL entries')
+        # Fallback: find last .idl entry anywhere
+        pattern2 = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)'
+        matches = list(re.finditer(pattern2, content))
+        if matches:
+            last = matches[-1]
+            insert = last.end()
+            content = content[:insert] + '\n' + idl_entries + content[insert:]
+            with open('$IDL_LIST', 'w') as f:
+                f.write(content)
+            print('  Added IDL files to idl_in_modules.gni (fallback)')
+        else:
+            print('  WARNING: Could not find IDL entries in idl_in_modules.gni')
 else:
     print('  Already added')
 "
 elif [ ! -f "$IDL_LIST" ]; then
-  echo "  WARNING: modules_idl_files.gni not found — IDL registration may need manual patching"
+  echo "  WARNING: idl_in_modules.gni not found — IDL registration may need manual patching"
 fi
 
 echo ""

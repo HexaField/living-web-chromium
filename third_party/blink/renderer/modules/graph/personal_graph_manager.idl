@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// PersonalGraphManager — navigator.graph entry point.
+
+[Exposed=Window, SecureContext]
+interface PersonalGraphManager {
+  [NewObject] Promise<any> create(optional DOMString name);
+  [NewObject] Promise<any> list();
+  [NewObject] Promise<any> get(USVString uuid);
+  [NewObject] Promise<any> remove(USVString uuid);
+  [NewObject] Promise<any> join(USVString sharedGraphURI);
+  [NewObject] Promise<any> listShared();
+};

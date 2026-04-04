@@ -4,7 +4,7 @@
 
 #include "third_party/blink/renderer/modules/graph/navigator_graph.h"
 
-#include "third_party/blink/renderer/modules/graph/personal_graph.h"
+#include "third_party/blink/renderer/modules/graph/personal_graph_manager.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 
 namespace blink {

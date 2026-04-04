@@ -17,25 +17,6 @@
 
 namespace blink {
 
-class PersonalGraphManager final : public ScriptWrappable {
-  DEFINE_WRAPPERTYPEINFO();
-
- public:
-  explicit PersonalGraphManager(ExecutionContext*);
-
-  ScriptPromise<IDLAny> create(ScriptState*, const String& name);
-  ScriptPromise<IDLAny> list(ScriptState*);
-  ScriptPromise<IDLAny> listShared(ScriptState*);
-  ScriptPromise<IDLAny> get(ScriptState*, const String& uuid);
-  ScriptPromise<IDLAny> remove(ScriptState*, const String& uuid);
-  ScriptPromise<IDLAny> join(ScriptState*, const String& uri);
-
-  void Trace(Visitor*) const override;
-
- private:
-  Member<ExecutionContext> execution_context_;
-};
-
 class PersonalGraph : public EventTarget {
   DEFINE_WRAPPERTYPEINFO();
 

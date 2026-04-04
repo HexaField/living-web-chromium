@@ -22,47 +22,6 @@ ScriptPromise<T> RejectNotImplemented(ScriptState* script_state) {
 
 }  // namespace
 
-// --- PersonalGraphManager ---
-
-PersonalGraphManager::PersonalGraphManager(ExecutionContext* context)
-    : execution_context_(context) {}
-
-ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
-                                                    const String& name) {
-  return RejectNotImplemented<IDLAny>(script_state);
-}
-
-ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
-  return RejectNotImplemented<IDLAny>(script_state);
-}
-
-ScriptPromise<IDLAny> PersonalGraphManager::listShared(
-    ScriptState* script_state) {
-  return RejectNotImplemented<IDLAny>(script_state);
-}
-
-ScriptPromise<IDLAny> PersonalGraphManager::get(ScriptState* script_state,
-                                                 const String& uuid) {
-  return RejectNotImplemented<IDLAny>(script_state);
-}
-
-ScriptPromise<IDLAny> PersonalGraphManager::remove(ScriptState* script_state,
-                                                    const String& uuid) {
-  return RejectNotImplemented<IDLAny>(script_state);
-}
-
-ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
-                                                  const String& uri) {
-  return RejectNotImplemented<IDLAny>(script_state);
-}
-
-void PersonalGraphManager::Trace(Visitor* visitor) const {
-  visitor->Trace(execution_context_);
-  ScriptWrappable::Trace(visitor);
-}
-
-// --- PersonalGraph ---
-
 PersonalGraph::PersonalGraph(ExecutionContext* context, const String& uuid)
     : uuid_(uuid), execution_context_(context) {}
 

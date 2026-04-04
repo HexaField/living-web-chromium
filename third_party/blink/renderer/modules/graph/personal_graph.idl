@@ -4,6 +4,8 @@
 
 // PersonalGraph — a named, persistent collection of signed triples.
 
+enum GraphSyncState { "private", "syncing", "synced", "error" };
+
 [Exposed=(Window,Worker), SecureContext]
 interface PersonalGraph : EventTarget {
   readonly attribute USVString uuid;
@@ -11,31 +13,25 @@ interface PersonalGraph : EventTarget {
   readonly attribute GraphSyncState state;
 
   // Triple operations
-  [NewObject] Promise<SignedTriple> addTriple(SemanticTriple triple);
-  [NewObject] Promise<sequence<SignedTriple>> addTriples(
-      sequence<SemanticTriple> triples);
-  [NewObject] Promise<boolean> removeTriple(SignedTriple triple);
-  [NewObject] Promise<sequence<SignedTriple>> queryTriples(TripleQuery query);
-  [NewObject] Promise<SparqlResult> querySparql(USVString sparql);
-  [NewObject] Promise<sequence<SignedTriple>> snapshot();
+  [NewObject] Promise<any> addTriple(any triple);
+  [NewObject] Promise<any> addTriples(any triples);
+  [NewObject] Promise<any> removeTriple(any triple);
+  [NewObject] Promise<any> queryTriples(any query);
+  [NewObject] Promise<any> querySparql(USVString sparql);
+  [NewObject] Promise<any> snapshot();
 
   // Cross-origin sharing
-  [NewObject] Promise<undefined> grantAccess(
-      USVString origin, GraphAccessLevel level);
-  [NewObject] Promise<undefined> revokeAccess(USVString origin);
+  [NewObject] Promise<any> grantAccess(USVString origin, DOMString level);
+  [NewObject] Promise<any> revokeAccess(USVString origin);
 
-  // Shape operations (Dynamic Graph Shape Validation spec)
-  Promise<undefined> addShape(USVString name, USVString shaclJson);
-  [NewObject] Promise<sequence<USVString>> getShapeInstances(
-      USVString shapeName);
-  [NewObject] Promise<USVString> createShapeInstance(
-      USVString shapeName, object data);
-  [NewObject] Promise<object> getShapeInstanceData(
-      USVString shapeName, USVString instanceUri);
+  // Shape operations
+  [NewObject] Promise<any> addShape(USVString name, USVString shaclJson);
+  [NewObject] Promise<any> getShapeInstances(USVString shapeName);
+  [NewObject] Promise<any> createShapeInstance(USVString shapeName, any data);
+  [NewObject] Promise<any> getShapeInstanceData(USVString shapeName, USVString instanceUri);
 
-  // Sharing — converts to SharedGraph (P2P Sync spec)
-  [NewObject] Promise<SharedGraph> share(
-      optional SharedGraphOptions options = {});
+  // Sharing — converts to SharedGraph
+  [NewObject] Promise<any> share(optional any options);
 
   // Events
   attribute EventHandler ontripleadded;

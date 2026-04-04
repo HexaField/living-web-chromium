@@ -7,10 +7,13 @@ import("//third_party/blink/renderer/modules/modules.gni")
 blink_modules_sources("graph") {
   sources = [
     "content_proof.h",
+    "graph_diff.h",
     "navigator_graph.cc",
     "navigator_graph.h",
     "personal_graph.cc",
     "personal_graph.h",
+    "personal_graph_manager.cc",
+    "personal_graph_manager.h",
     "semantic_triple.h",
     "shared_graph.cc",
     "shared_graph.h",
