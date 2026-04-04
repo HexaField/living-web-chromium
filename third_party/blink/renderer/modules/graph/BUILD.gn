@@ -16,9 +16,9 @@ blink_modules_sources("graph") {
 
   deps = [
     "//mojo/public/cpp/bindings",
-    "//mojo/public/mojom/graph",
-    "//mojo/public/mojom/graph:graph_sync",
-    "//mojo/public/mojom/graph:graph_governance",
+    "//mojo/public/mojom/graph:graph_blink",
+    "//mojo/public/mojom/graph:graph_sync_blink",
+    "//mojo/public/mojom/graph:graph_governance_blink",
     "//third_party/blink/renderer/core",
     "//third_party/blink/renderer/platform",
   ]
