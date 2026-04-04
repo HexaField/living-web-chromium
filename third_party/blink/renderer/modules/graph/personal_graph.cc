@@ -24,7 +24,7 @@ SignedTriple* ConvertSignedTriple(
   auto* data = MakeGarbageCollected<SemanticTriple>(
       mojo_triple->data->source,
       mojo_triple->data->target,
-      mojo_triple->data->predicate.value_or(String()));
+      mojo_triple->data->predicate.has_value() ? *mojo_triple->data->predicate : String());
   auto* proof = MakeGarbageCollected<ContentProof>(
       mojo_triple->proof->key, mojo_triple->proof->signature);
   return MakeGarbageCollected<SignedTriple>(
@@ -44,7 +44,7 @@ PersonalGraphManager::PersonalGraphManager(
 
 PersonalGraphManager::~PersonalGraphManager() = default;
 
-ScriptPromise<PersonalGraph> PersonalGraphManager::create(
+ScriptPromise<IDLAny> PersonalGraphManager::create(
     ScriptState* script_state,
     const String& name) {
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<PersonalGraph>>(
@@ -56,7 +56,7 @@ ScriptPromise<PersonalGraph> PersonalGraphManager::create(
   return promise;
 }
 
-ScriptPromise<IDLSequence<PersonalGraph>> PersonalGraphManager::list(
+ScriptPromise<IDLAny> PersonalGraphManager::list(
     ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<PersonalGraph>>>(
@@ -67,7 +67,7 @@ ScriptPromise<IDLSequence<PersonalGraph>> PersonalGraphManager::list(
   return promise;
 }
 
-ScriptPromise<PersonalGraph> PersonalGraphManager::get(
+ScriptPromise<IDLAny> PersonalGraphManager::get(
     ScriptState* script_state,
     const String& uuid) {
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<PersonalGraph>>(
@@ -89,7 +89,7 @@ ScriptPromise<IDLBoolean> PersonalGraphManager::remove(
   return promise;
 }
 
-ScriptPromise<SharedGraph> PersonalGraphManager::join(
+ScriptPromise<IDLAny> PersonalGraphManager::join(
     ScriptState* script_state,
     const String& uri) {
   auto* resolver =
@@ -114,7 +114,7 @@ PersonalGraph::PersonalGraph(
     const String& uuid,
     const String& name,
     mojo::Remote<graph::mojom::blink::PersonalGraphHost> host)
-    : EventTarget(context),
+    : uuid_(uuid),
       uuid_(uuid),
       name_(name),
       execution_context_(context),
@@ -135,7 +135,7 @@ String PersonalGraph::state() const {
   }
 }
 
-ScriptPromise<SignedTriple> PersonalGraph::addTriple(
+ScriptPromise<IDLAny> PersonalGraph::addTriple(
     ScriptState* script_state,
     SemanticTriple* triple) {
   auto* resolver =
@@ -146,7 +146,7 @@ ScriptPromise<SignedTriple> PersonalGraph::addTriple(
   return promise;
 }
 
-ScriptPromise<IDLSequence<SignedTriple>> PersonalGraph::addTriples(
+ScriptPromise<IDLAny> PersonalGraph::addTriples(
     ScriptState* script_state,
     const HeapVector<Member<SemanticTriple>>& triples) {
   auto* resolver =
@@ -169,7 +169,7 @@ ScriptPromise<IDLBoolean> PersonalGraph::removeTriple(
   return promise;
 }
 
-ScriptPromise<IDLSequence<SignedTriple>> PersonalGraph::queryTriples(
+ScriptPromise<IDLAny> PersonalGraph::queryTriples(
     ScriptState* script_state,
     const ScriptValue& query) {
   auto* resolver =
@@ -192,7 +192,7 @@ ScriptPromise<IDLAny> PersonalGraph::querySparql(
   return promise;
 }
 
-ScriptPromise<IDLSequence<SignedTriple>> PersonalGraph::snapshot(
+ScriptPromise<IDLAny> PersonalGraph::snapshot(
     ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<SignedTriple>>>(
@@ -274,7 +274,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstanceData(
   return promise;
 }
 
-ScriptPromise<SharedGraph> PersonalGraph::share(
+ScriptPromise<IDLAny> PersonalGraph::share(
     ScriptState* script_state,
     const ScriptValue& options) {
   auto* resolver =

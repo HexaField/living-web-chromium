@@ -36,11 +36,11 @@ class PersonalGraphManager final : public ScriptWrappable {
   ~PersonalGraphManager() override;
 
   // Web IDL methods
-  ScriptPromise<PersonalGraph> create(ScriptState*, const String& name);
-  ScriptPromise<IDLSequence<PersonalGraph>> list(ScriptState*);
-  ScriptPromise<PersonalGraph> get(ScriptState*, const String& uuid);
+  ScriptPromise<IDLAny> create(ScriptState*, const String& name);
+  ScriptPromise<IDLAny> list(ScriptState*);
+  ScriptPromise<IDLAny> get(ScriptState*, const String& uuid);
   ScriptPromise<IDLBoolean> remove(ScriptState*, const String& uuid);
-  ScriptPromise<SharedGraph> join(ScriptState*, const String& uri);
+  ScriptPromise<IDLAny> join(ScriptState*, const String& uri);
 
   void Trace(Visitor*) const override;
 
@@ -69,14 +69,14 @@ class PersonalGraph : public EventTarget {
   String state() const;
 
   // Triple operations
-  ScriptPromise<SignedTriple> addTriple(ScriptState*, SemanticTriple*);
-  ScriptPromise<IDLSequence<SignedTriple>> addTriples(
+  ScriptPromise<IDLAny> addTriple(ScriptState*, SemanticTriple*);
+  ScriptPromise<IDLAny> addTriples(
       ScriptState*, const HeapVector<Member<SemanticTriple>>&);
   ScriptPromise<IDLBoolean> removeTriple(ScriptState*, SignedTriple*);
-  ScriptPromise<IDLSequence<SignedTriple>> queryTriples(
+  ScriptPromise<IDLAny> queryTriples(
       ScriptState*, const ScriptValue& query);
   ScriptPromise<IDLAny> querySparql(ScriptState*, const String& sparql);
-  ScriptPromise<IDLSequence<SignedTriple>> snapshot(ScriptState*);
+  ScriptPromise<IDLAny> snapshot(ScriptState*);
 
   // Cross-origin sharing
   ScriptPromise<IDLUndefined> grantAccess(ScriptState*,
@@ -98,7 +98,7 @@ class PersonalGraph : public EventTarget {
                                                     const String& instance_uri);
 
   // Sharing
-  ScriptPromise<SharedGraph> share(ScriptState*, const ScriptValue& options);
+  ScriptPromise<IDLAny> share(ScriptState*, const ScriptValue& options);
 
   // EventTarget
   const AtomicString& InterfaceName() const override;

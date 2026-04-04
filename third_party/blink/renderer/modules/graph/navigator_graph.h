@@ -25,7 +25,7 @@ class NavigatorGraph final : public GarbageCollected<NavigatorGraph>,
   static PersonalGraphManager* graph(Navigator&);
 
   explicit NavigatorGraph(Navigator&);
-  ~NavigatorGraph() override;
+  ~NavigatorGraph();
 
   PersonalGraphManager* graph();
 
