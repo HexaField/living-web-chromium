@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
 
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
@@ -253,7 +254,7 @@ ScriptPromise<IDLAny> PersonalGraph::querySparql(ScriptState* script_state,
              graph::mojom::blink::SparqlResultPtr result) {
             if (!result) {
               resolver->Resolve(
-                  ScriptValue::CreateNull(resolver->GetScriptState()));
+                  ScriptValue::CreateNull(resolver->GetScriptState()->GetIsolate()));
               return;
             }
             ResolveWithString(resolver, result->bindings_json);
@@ -410,7 +411,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstanceData(
              const String& data_json) {
             if (data_json.IsNull()) {
               resolver->Resolve(
-                  ScriptValue::CreateNull(resolver->GetScriptState()));
+                  ScriptValue::CreateNull(resolver->GetScriptState()->GetIsolate()));
               return;
             }
             ResolveWithString(resolver, data_json);
@@ -451,7 +452,7 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
                                             ScriptValue) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  resolver->Resolve(ScriptValue::CreateNull(script_state));
+  resolver->Resolve(ScriptValue::CreateNull(script_state->GetIsolate()));
   return resolver->Promise();
 }
 
