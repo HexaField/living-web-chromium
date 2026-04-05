@@ -197,18 +197,97 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
                                                   const String& uri) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  resolver->Resolve(ScriptValue::CreateNull(script_state->GetIsolate()));
-  return resolver->Promise();
+  auto promise = resolver->Promise();
+
+  EnsureSyncServiceConnected();
+
+  sync_service_->JoinGraph(
+      uri,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLAny>* resolver,
+             PersonalGraphManager* manager,
+             const String& uri,
+             graph::mojom::blink::SharedGraphInfoPtr info) {
+            if (!info) {
+              resolver->Reject(MakeGarbageCollected<DOMException>(
+                  DOMExceptionCode::kOperationError,
+                  "Failed to join shared graph"));
+              return;
+            }
+
+            ExecutionContext* context = manager->GetExecutionContext();
+
+            // For a joined graph, we don't have a local graph UUID yet.
+            // Create an empty PersonalGraphHost (no triple ops until synced).
+            mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost>
+                host_remote;
+            // Don't bind — the joined graph's triple store lives remotely.
+            // Operations will go through sync.
+
+            // Bind SharedGraphHost for sync/governance.
+            mojo::PendingRemote<graph::mojom::blink::SharedGraphHost>
+                shared_remote;
+            auto shared_receiver =
+                shared_remote.InitWithNewPipeAndPassReceiver();
+            manager->GetSyncService()->BindSharedGraph(
+                uri, std::move(shared_receiver));
+
+            auto* shared_graph = MakeGarbageCollected<SharedGraph>(
+                context, String(), uri,
+                std::move(host_remote), std::move(shared_remote));
+
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            resolver->Resolve(ScriptValue(
+                ss->GetIsolate(),
+                ToV8Traits<SharedGraph>::ToV8(ss, shared_graph)));
+          },
+          WrapPersistent(resolver),
+          WrapPersistent(this),
+          uri));
+
+  return promise;
 }
 
 ScriptPromise<IDLAny> PersonalGraphManager::listShared(
     ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  ScriptState::Scope scope(script_state);
-  resolver->Resolve(ScriptValue(script_state->GetIsolate(),
-                                v8::Array::New(script_state->GetIsolate(), 0)));
-  return resolver->Promise();
+  auto promise = resolver->Promise();
+
+  EnsureSyncServiceConnected();
+
+  sync_service_->ListSharedGraphs(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         Vector<graph::mojom::blink::SharedGraphInfoPtr> infos) {
+        ScriptState* ss = resolver->GetScriptState();
+        ScriptState::Scope scope(ss);
+        v8::Isolate* isolate = ss->GetIsolate();
+        v8::Local<v8::Context> ctx = ss->GetContext();
+        v8::Local<v8::Array> arr =
+            v8::Array::New(isolate, static_cast<int>(infos.size()));
+        for (wtf_size_t i = 0; i < infos.size(); i++) {
+          v8::Local<v8::Object> obj = v8::Object::New(isolate);
+          obj->Set(ctx, V8String(isolate, "uri"),
+                   V8String(isolate, infos[i]->uri)).Check();
+          obj->Set(ctx, V8String(isolate, "name"),
+                   V8String(isolate, infos[i]->name)).Check();
+          obj->Set(ctx, V8String(isolate, "peerCount"),
+                   v8::Number::New(isolate, infos[i]->peer_count)).Check();
+          arr->Set(ctx, i, obj).Check();
+        }
+        resolver->Resolve(ScriptValue(isolate, arr));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+void PersonalGraphManager::EnsureSyncServiceConnected() {
+  if (sync_service_.is_bound())
+    return;
+  execution_context_->GetBrowserInterfaceBroker().GetInterface(
+      sync_service_.BindNewPipeAndPassReceiver(GetTaskRunner(execution_context_)));
 }
 
 void PersonalGraphManager::EnsureDIDServiceConnected() {
@@ -332,6 +411,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
 void PersonalGraphManager::Trace(Visitor* visitor) const {
   visitor->Trace(execution_context_);
   visitor->Trace(service_);
+  visitor->Trace(sync_service_);
   visitor->Trace(did_service_);
   ScriptWrappable::Trace(visitor);
 }
