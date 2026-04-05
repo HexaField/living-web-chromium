@@ -26,6 +26,7 @@ class TripleEvent final : public Event {
   ScriptValue triple() const { return triple_; }
 
   void Trace(Visitor* visitor) const override {
+    visitor->Trace(triple_);
     Event::Trace(visitor);
   }
 
