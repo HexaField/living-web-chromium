@@ -14,7 +14,7 @@ interface PersonalGraphManager {
   [CallWith=ScriptState, NewObject] Promise<any> listShared();
 
   // DID Identity
-  [CallWith=ScriptState, NewObject] Promise<DIDCredential> createIdentity(optional DOMString displayName = "");
+  [CallWith=ScriptState, NewObject] Promise<any> createIdentity(optional DOMString displayName = "");
   [CallWith=ScriptState, NewObject] Promise<any> listIdentities();
-  [CallWith=ScriptState, NewObject] Promise<DIDCredential?> activeIdentity();
+  [CallWith=ScriptState, NewObject] Promise<any> activeIdentity();
 };
