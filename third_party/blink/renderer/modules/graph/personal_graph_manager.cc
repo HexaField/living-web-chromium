@@ -72,12 +72,8 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
 
   EnsureServiceConnected();
 
-  std::optional<String> opt_name;
-  if (!name.IsNull() && !name.empty())
-    opt_name = name;
-
   service_->CreateGraph(
-      opt_name,
+      name,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              ExecutionContext* context,
