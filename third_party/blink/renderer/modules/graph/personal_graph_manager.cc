@@ -219,6 +219,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
             }
 
             ExecutionContext* context = manager->GetExecutionContext();
+            (void)context;  // May be used in future for binding.
 
             // For a joined graph, we don't have a local graph UUID yet.
             // Create an empty PersonalGraphHost (no triple ops until synced).
