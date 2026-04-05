@@ -27,7 +27,8 @@ SharedGraph::SharedGraph(
   if (shared_host) {
     shared_host_.Bind(
         std::move(shared_host),
-        context->GetTaskRunner(TaskType::kMiscPlatformAPI));
+        static_cast<scoped_refptr<base::SequencedTaskRunner>>(
+            context->GetTaskRunner(TaskType::kMiscPlatformAPI)));
   }
 }
 
@@ -49,7 +50,7 @@ ScriptPromise<IDLAny> SharedGraph::peers(ScriptState* script_state) {
     return promise;
   }
 
-  shared_host_->GetPeers(WTF::BindOnce(
+  shared_host_->GetPeers(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          const Vector<String>& peer_dids) {
         ScriptState* ss = resolver->GetScriptState();
@@ -80,7 +81,7 @@ ScriptPromise<IDLAny> SharedGraph::onlinePeers(ScriptState* script_state) {
     return promise;
   }
 
-  shared_host_->GetOnlinePeers(WTF::BindOnce(
+  shared_host_->GetOnlinePeers(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::OnlinePeerPtr> peers) {
         ScriptState* ss = resolver->GetScriptState();
@@ -127,11 +128,11 @@ ScriptPromise<IDLUndefined> SharedGraph::sendSignal(
     resolver->Resolve();
     return promise;
   }
-  String payload_json(json);
+  String payload_json = ToCoreString(isolate, json);
 
   shared_host_->SendSignal(
       remote_did, payload_json,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLUndefined>* resolver, bool success) {
             resolver->Resolve();
           },
@@ -158,11 +159,11 @@ ScriptPromise<IDLUndefined> SharedGraph::broadcast(ScriptState* script_state,
     resolver->Resolve();
     return promise;
   }
-  String payload_json(json);
+  String payload_json = ToCoreString(isolate, json);
 
   shared_host_->Broadcast(
       payload_json,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLUndefined>* resolver, bool success) {
             resolver->Resolve();
           },
@@ -199,7 +200,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
   auto GetStr = [&](const char* key) -> String {
     v8::Local<v8::Value> val;
     if (obj->Get(ctx, V8String(isolate, key)).ToLocal(&val) && val->IsString()) {
-      return String(v8::Local<v8::String>::Cast(val));
+      return ToCoreString(isolate, v8::Local<v8::String>::Cast(val));
     }
     return String();
   };
