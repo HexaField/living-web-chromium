@@ -348,7 +348,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listIdentities(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          ExecutionContext* context,
          PersonalGraphManager* manager,
-         WTF::Vector<graph::mojom::blink::DIDCredentialInfoPtr> infos) {
+         Vector<graph::mojom::blink::DIDCredentialInfoPtr> infos) {
         ScriptState* ss = resolver->GetScriptState();
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
