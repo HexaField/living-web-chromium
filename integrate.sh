@@ -393,13 +393,14 @@ with open('$BINDERS_CC', 'r') as f:
 # Add include
 include_line = '#include \"content/browser/graph/graph_manager.h\"  // Living Web'
 include_line2 = '#include \"content/browser/did/signing_service.h\"  // Living Web DID'
+include_line3 = '#include \"content/browser/graph_sync/sync_service.h\"  // Living Web Sync'
 if include_line not in content:
     # Add after the last #include
     includes = list(re.finditer(r'^#include .+$', content, re.MULTILINE))
     if includes:
         last = includes[-1]
         pos = last.end()
-        content = content[:pos] + '\n' + include_line + '\n' + include_line2 + content[pos:]
+        content = content[:pos] + '\n' + include_line + '\n' + include_line2 + '\n' + include_line3 + content[pos:]
     
 # Add binder registration
 # Look for the pattern where frame binders are registered

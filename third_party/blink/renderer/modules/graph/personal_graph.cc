@@ -221,18 +221,15 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
       BindOnce(
           [](PersonalGraph* self,
              ScriptPromiseResolver<IDLAny>* resolver,
-             ScriptValue triple_sv,
              bool success) {
             ResolveWithBool(resolver, success);
             if (success) {
-              self->DispatchEvent(
-                  *TripleEvent::Create(event_type_names::kTripleremoved,
-                                       triple_sv));
+              self->DispatchEvent(*Event::Create(
+                  event_type_names::kTripleremoved));
             }
           },
           WrapPersistent(this),
-          WrapPersistent(resolver),
-          triple_val));
+          WrapPersistent(resolver)));
 
   return promise;
 }
@@ -498,7 +495,7 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
 
   sync_service->ShareGraph(
       uuid_, std::move(options),
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              PersonalGraphManager* manager,
              const String& graph_uuid,
