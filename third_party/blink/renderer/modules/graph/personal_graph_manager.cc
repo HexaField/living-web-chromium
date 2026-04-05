@@ -177,8 +177,9 @@ ScriptPromise<IDLAny> PersonalGraphManager::listShared(
     ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  HeapVector<Member<PersonalGraph>> empty;
-  resolver->Resolve(empty);
+  ScriptState::Scope scope(script_state);
+  v8::Local<v8::Array> empty = v8::Array::New(script_state->GetIsolate(), 0);
+  resolver->Resolve(ScriptValue(script_state->GetIsolate(), empty));
   return resolver->Promise();
 }
 

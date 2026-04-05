@@ -22,20 +22,28 @@ V8SyncState SharedGraph::syncState() const {
   return V8SyncState(V8SyncState::Enum::kIdle);
 }
 
+namespace {
+
+void ResolveWithEmptyArray(ScriptPromiseResolver<IDLAny>* resolver) {
+  ScriptState* script_state = resolver->GetScriptState();
+  ScriptState::Scope scope(script_state);
+  v8::Local<v8::Array> empty = v8::Array::New(script_state->GetIsolate(), 0);
+  resolver->Resolve(ScriptValue(script_state->GetIsolate(), empty));
+}
+
+}  // namespace
+
 ScriptPromise<IDLAny> SharedGraph::peers(ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  // Return empty array — sync not yet wired
-  HeapVector<Member<ScriptWrappable>> empty;
-  resolver->Resolve(empty);
+  ResolveWithEmptyArray(resolver);
   return resolver->Promise();
 }
 
 ScriptPromise<IDLAny> SharedGraph::onlinePeers(ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  HeapVector<Member<ScriptWrappable>> empty;
-  resolver->Resolve(empty);
+  ResolveWithEmptyArray(resolver);
   return resolver->Promise();
 }
 
@@ -60,7 +68,6 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
                                                  ScriptValue) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  // Default: allowed
   resolver->Resolve(true);
   return resolver->Promise();
 }
@@ -69,16 +76,14 @@ ScriptPromise<IDLAny> SharedGraph::constraintsFor(ScriptState* script_state,
                                                     const String&) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  HeapVector<Member<ScriptWrappable>> empty;
-  resolver->Resolve(empty);
+  ResolveWithEmptyArray(resolver);
   return resolver->Promise();
 }
 
 ScriptPromise<IDLAny> SharedGraph::myCapabilities(ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  HeapVector<Member<ScriptWrappable>> empty;
-  resolver->Resolve(empty);
+  ResolveWithEmptyArray(resolver);
   return resolver->Promise();
 }
 
