@@ -7,6 +7,8 @@ import("//third_party/blink/renderer/modules/modules.gni")
 blink_modules_sources("graph") {
   sources = [
     "content_proof.h",
+    "did_credential.cc",
+    "did_credential.h",
     "graph_diff.cc",
     "graph_diff.h",
     "navigator_graph.cc",
