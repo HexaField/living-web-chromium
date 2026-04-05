@@ -14,21 +14,17 @@ interface SharedGraph : PersonalGraph {
   readonly attribute SyncState syncState;
 
   // Peer operations (Spec 03 §5.2)
-  [NewObject] Promise<any> peers();
-  [NewObject] Promise<any> onlinePeers();
+  [CallWith=ScriptState, NewObject] Promise<any> peers();
+  [CallWith=ScriptState, NewObject] Promise<any> onlinePeers();
 
   // Signalling (Spec 03 §9)
-  [NewObject] Promise<undefined> sendSignal(USVString remoteDid, any payload);
-  [NewObject] Promise<undefined> broadcast(any payload);
+  [CallWith=ScriptState, NewObject] Promise<undefined> sendSignal(USVString remoteDid, any payload);
+  [CallWith=ScriptState, NewObject] Promise<undefined> broadcast(any payload);
 
   // Governance queries (Spec 05 §9)
-  // Note: canAddTriple takes `any` instead of SemanticTriple — see SPEC_COMPLIANCE.md
-  [NewObject] Promise<any> canAddTriple(any triple);
-  [NewObject] Promise<any> constraintsFor(optional USVString? entityAddress = null);
-  [NewObject] Promise<any> myCapabilities();
+  [CallWith=ScriptState, NewObject] Promise<any> canAddTriple(any triple);
+  [CallWith=ScriptState, NewObject] Promise<any> constraintsFor(optional USVString? entityAddress = null);
+  [CallWith=ScriptState, NewObject] Promise<any> myCapabilities();
 
-  // Events (Spec 03 §5.2)
-  // Note: onpeerjoined / onpeerleft / onsyncstatechange / onsignal event handlers
-  // are specified but omitted from the IDL — see personal_graph.idl comment and
-  // SPEC_COMPLIANCE.md for rationale.
+  // Events — see personal_graph.idl comment and SPEC_COMPLIANCE.md
 };

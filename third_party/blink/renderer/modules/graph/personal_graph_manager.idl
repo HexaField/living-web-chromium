@@ -6,10 +6,10 @@
 
 [Exposed=Window, SecureContext]
 interface PersonalGraphManager {
-  [NewObject] Promise<any> create(optional DOMString name);
-  [NewObject] Promise<any> list();
-  [NewObject] Promise<any> get(USVString uuid);
-  [NewObject] Promise<any> remove(USVString uuid);
-  [NewObject] Promise<any> join(USVString sharedGraphURI);
-  [NewObject] Promise<any> listShared();
+  [CallWith=ScriptState, NewObject] Promise<any> create(optional DOMString name);
+  [CallWith=ScriptState, NewObject] Promise<any> list();
+  [CallWith=ScriptState, NewObject] Promise<any> get(USVString uuid);
+  [CallWith=ScriptState, NewObject] Promise<any> remove(USVString uuid);
+  [CallWith=ScriptState, NewObject] Promise<any> join(USVString sharedGraphURI);
+  [CallWith=ScriptState, NewObject] Promise<any> listShared();
 };
