@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
+#include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
 
 namespace blink {
 
@@ -32,6 +33,19 @@ class PersonalGraphManager final : public ScriptWrappable {
   ScriptPromise<IDLAny> join(ScriptState*, const String& uri);
   ScriptPromise<IDLAny> listShared(ScriptState*);
 
+  // Called by PersonalGraph::share() to access sync service.
+  HeapMojoRemote<graph::mojom::blink::GraphSyncService>& GetSyncService() {
+    EnsureSyncServiceConnected();
+    return sync_service_;
+  }
+
+  HeapMojoRemote<graph::mojom::blink::PersonalGraphService>& GetGraphService() {
+    EnsureServiceConnected();
+    return service_;
+  }
+
+  ExecutionContext* GetExecutionContext() { return execution_context_.Get(); }
+
   // DID Identity
   ScriptPromise<IDLAny> createIdentity(ScriptState*, const String& display_name = String());
   ScriptPromise<IDLAny> listIdentities(ScriptState*);
@@ -47,10 +61,12 @@ class PersonalGraphManager final : public ScriptWrappable {
 
  private:
   void EnsureServiceConnected();
+  void EnsureSyncServiceConnected();
   void EnsureDIDServiceConnected();
 
   Member<ExecutionContext> execution_context_;
   HeapMojoRemote<graph::mojom::blink::PersonalGraphService> service_;
+  HeapMojoRemote<graph::mojom::blink::GraphSyncService> sync_service_;
   HeapMojoRemote<graph::mojom::blink::DIDCredentialService> did_service_;
 };
 

@@ -236,8 +236,11 @@ idl_entries = '''  \"//third_party/blink/renderer/modules/graph/content_proof.id
   \"//third_party/blink/renderer/modules/graph/sync_state_event.idl\",
   \"//third_party/blink/renderer/modules/graph/triple_event.idl\",'''
 
-if 'graph/navigator_graph.idl' not in content:
+if 'graph/did_credential.idl' not in content:
     import re
+    # First remove any existing graph IDL entries to re-add the complete set
+    import re as re2
+    content = re2.sub(r'  \"//third_party/blink/renderer/modules/graph/[^\"]+\.idl\",\n', '', content)
     # Find last entry before closing ] in static_idl_files_in_modules
     pattern = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)\s*\]'
     match = re.search(pattern, content)
@@ -269,7 +272,7 @@ fi
 
 # Register generated V8 binding files in generated_in_modules.gni
 GENERATED_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/generated_in_modules.gni"
-if [ -f "$GENERATED_LIST" ] && ! grep -q "v8_personal_graph" "$GENERATED_LIST"; then
+if [ -f "$GENERATED_LIST" ] && ! grep -q "v8_did_credential" "$GENERATED_LIST"; then
   python3 -c "
 with open('$GENERATED_LIST', 'r') as f:
     content = f.read()
@@ -297,6 +300,10 @@ iface_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_navigator_graph.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_navigator_graph.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.cc\",
@@ -305,8 +312,14 @@ iface_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signal_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signal_event.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.h\",'''
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state_event.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_triple_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_triple_event.h\",'''
 
 # Find last entry in generated_interface_sources_in_modules
 pattern2 = r'(generated_interface_sources_in_modules\s*=\s*\[.*?)(^\])'

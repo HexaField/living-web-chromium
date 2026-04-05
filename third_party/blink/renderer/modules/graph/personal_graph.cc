@@ -9,7 +9,9 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
-#include "third_party/blink/renderer/modules/graph/content_proof.h"
+#include "third_party/blink/renderer/modules/graph/shared_graph.h"
+#include "third_party/blink/renderer/modules/graph/personal_graph_manager.h"
+#include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
 #include "third_party/blink/renderer/modules/graph/semantic_triple.h"
 #include "third_party/blink/renderer/modules/graph/signed_triple.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -116,9 +118,10 @@ PersonalGraph::PersonalGraph(
     ExecutionContext* context,
     const String& uuid,
     const String& name,
-    mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host)
+    mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host,
+    PersonalGraphManager* manager)
     : uuid_(uuid), name_(name), execution_context_(context),
-      host_(context) {
+      manager_(manager), host_(context) {
   if (host.is_valid()) {
     host_.Bind(std::move(host), GetTaskRunner(context));
   }

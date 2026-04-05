@@ -29,7 +29,8 @@ class PersonalGraph : public EventTarget {
   // Created by PersonalGraphManager which also binds the host.
   PersonalGraph(ExecutionContext*, const String& uuid,
                 const String& name,
-                mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host);
+                mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host,
+                PersonalGraphManager* manager = nullptr);
 
   // Attributes
   const String& uuid() const { return uuid_; }
@@ -71,6 +72,7 @@ class PersonalGraph : public EventTarget {
   String uuid_;
   String name_;
   Member<ExecutionContext> execution_context_;
+  Member<PersonalGraphManager> manager_;
   HeapMojoRemote<graph::mojom::blink::PersonalGraphHost> host_;
 };
 
