@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_GRAPH_DIFF_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_GRAPH_DIFF_H_
 
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -18,6 +19,9 @@ class GraphDiff final : public ScriptWrappable {
   GraphDiff() = default;
 
   const String& revision() const { return revision_; }
+  ScriptValue additions() const { return ScriptValue(); }
+  ScriptValue removals() const { return ScriptValue(); }
+  ScriptValue dependencies() const { return ScriptValue(); }
   const String& author() const { return author_; }
   uint64_t timestamp() const { return timestamp_; }
 
