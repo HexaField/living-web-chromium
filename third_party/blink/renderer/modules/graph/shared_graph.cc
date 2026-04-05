@@ -27,8 +27,8 @@ SharedGraph::SharedGraph(ExecutionContext* context,
                          const String& uri)
     : PersonalGraph(context, uuid), uri_(uri) {}
 
-String SharedGraph::syncState() const {
-  return "idle";
+V8SyncState SharedGraph::syncState() const {
+  return V8SyncState(V8SyncState::Enum::kIdle);
 }
 
 ScriptPromise<IDLAny> SharedGraph::peers(ScriptState* script_state) {
@@ -39,20 +39,19 @@ ScriptPromise<IDLAny> SharedGraph::onlinePeers(ScriptState* script_state) {
   return RejectNotImplemented<IDLAny>(script_state);
 }
 
-ScriptPromise<IDLAny> SharedGraph::sendSignal(ScriptState* script_state,
-                                               const String&,
-                                               ScriptValue) {
-  return RejectNotImplemented<IDLAny>(script_state);
+ScriptPromise<IDLUndefined> SharedGraph::sendSignal(ScriptState* script_state,
+                                                     const String&,
+                                                     ScriptValue) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
 }
 
-ScriptPromise<IDLAny> SharedGraph::broadcast(ScriptState* script_state,
-                                              ScriptValue) {
-  return RejectNotImplemented<IDLAny>(script_state);
+ScriptPromise<IDLUndefined> SharedGraph::broadcast(ScriptState* script_state,
+                                                    ScriptValue) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
 }
 
 ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
-                                                 const String&,
-                                                 const String&) {
+                                                 ScriptValue) {
   return RejectNotImplemented<IDLAny>(script_state);
 }
 

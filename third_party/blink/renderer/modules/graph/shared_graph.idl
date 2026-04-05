@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 // SharedGraph — a PersonalGraph extended with P2P sync capabilities.
+// Spec 03: https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_p2p-graph-sync.md
+// Spec 05: https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_graph-governance.md
 
 enum SyncState { "idle", "syncing", "synced", "error" };
 
@@ -11,15 +13,22 @@ interface SharedGraph : PersonalGraph {
   readonly attribute USVString uri;
   readonly attribute SyncState syncState;
 
+  // Peer operations (Spec 03 §5.2)
   [NewObject] Promise<any> peers();
   [NewObject] Promise<any> onlinePeers();
 
-  [NewObject] Promise<any> sendSignal(USVString remoteDid, any payload);
-  [NewObject] Promise<any> broadcast(any payload);
+  // Signalling (Spec 03 §9)
+  [NewObject] Promise<undefined> sendSignal(USVString remoteDid, any payload);
+  [NewObject] Promise<undefined> broadcast(any payload);
 
-  // Governance queries
-  [NewObject] Promise<any> canAddTriple(USVString predicate, optional USVString? scopeEntity = null);
-  [NewObject] Promise<any> constraintsFor(optional USVString? scopeEntity = null);
+  // Governance queries (Spec 05 §9)
+  // Note: canAddTriple takes `any` instead of SemanticTriple — see SPEC_COMPLIANCE.md
+  [NewObject] Promise<any> canAddTriple(any triple);
+  [NewObject] Promise<any> constraintsFor(optional USVString? entityAddress = null);
   [NewObject] Promise<any> myCapabilities();
 
+  // Events (Spec 03 §5.2)
+  // Note: onpeerjoined / onpeerleft / onsyncstatechange / onsignal event handlers
+  // are specified but omitted from the IDL — see personal_graph.idl comment and
+  // SPEC_COMPLIANCE.md for rationale.
 };

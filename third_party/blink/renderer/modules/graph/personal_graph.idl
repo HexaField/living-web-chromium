@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 // PersonalGraph — a named, persistent collection of signed triples.
+// Spec: https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_personal-linked-data-graphs.md
 
 enum GraphSyncState { "private", "syncing", "synced", "error" };
 
@@ -12,7 +13,8 @@ interface PersonalGraph : EventTarget {
   readonly attribute DOMString? name;
   readonly attribute GraphSyncState state;
 
-  // Triple operations
+  // Triple operations (Spec 01 §4.2)
+  // Note: Parameter and return types simplified to `any` — see SPEC_COMPLIANCE.md
   [NewObject] Promise<any> addTriple(any triple);
   [NewObject] Promise<any> addTriples(any triples);
   [NewObject] Promise<any> removeTriple(any triple);
@@ -20,18 +22,27 @@ interface PersonalGraph : EventTarget {
   [NewObject] Promise<any> querySparql(USVString sparql);
   [NewObject] Promise<any> snapshot();
 
-  // Cross-origin sharing
-  [NewObject] Promise<any> grantAccess(USVString origin, DOMString level);
-  [NewObject] Promise<any> revokeAccess(USVString origin);
+  // Cross-origin sharing (Spec 01 §6.3)
+  [NewObject] Promise<undefined> grantAccess(USVString origin, DOMString level);
+  [NewObject] Promise<undefined> revokeAccess(USVString origin);
 
-  // Shape operations
-  [NewObject] Promise<any> addShape(USVString name, USVString shaclJson);
-  [NewObject] Promise<any> getShapeInstances(USVString shapeName);
-  [NewObject] Promise<any> createShapeInstance(USVString shapeName, any data);
-  [NewObject] Promise<any> getShapeInstanceData(USVString shapeName, USVString instanceUri);
+  // Shape operations (Spec 01 §5 + Spec 04 §5)
+  [NewObject] Promise<undefined> addShape(DOMString name, DOMString shapeJson);
+  [NewObject] Promise<any> getShapes();
+  [NewObject] Promise<any> getShapeInstances(DOMString shapeName);
+  [NewObject] Promise<USVString> createShapeInstance(DOMString shapeName, USVString address, optional any initialValues);
+  [NewObject] Promise<any> getShapeInstanceData(DOMString shapeName, USVString address);
+  [NewObject] Promise<undefined> setShapeProperty(DOMString shapeName, USVString address, DOMString property, any value);
+  [NewObject] Promise<undefined> addToShapeCollection(DOMString shapeName, USVString address, DOMString collection, any value);
+  [NewObject] Promise<undefined> removeFromShapeCollection(DOMString shapeName, USVString address, DOMString collection, any value);
 
-  // Sharing — converts to SharedGraph
+  // Sharing — converts to SharedGraph (Spec 03 §5.1)
   [NewObject] Promise<any> share(optional any options);
 
-  // Events
+  // Events (Spec 01 §4.2)
+  // Note: ontripleadded / ontripleremoved event handlers are specified but omitted
+  // from the IDL because custom event type names require registration in Chromium's
+  // event_type_names.json5 which lives outside this overlay. The interface extends
+  // EventTarget so addEventListener('tripleadded', ...) will work once event types
+  // are registered in the full Chromium integration. See SPEC_COMPLIANCE.md.
 };

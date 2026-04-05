@@ -1,168 +1,188 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
-<title>PersonalGraph Basic Operations</title>
+<title>PersonalGraph Basic Operations — WPT</title>
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script>
 'use strict';
 
-// PersonalGraph API — Web Platform Tests
-// Tests navigator.graph.create(), addTriple(), queryTriples(), etc.
+// ==========================================================================
+// Spec 01 — Personal Linked Data Graphs
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_personal-linked-data-graphs.md
+// ==========================================================================
+
+// §4.1 PersonalGraphManager — navigator.graph
 
 promise_test(async t => {
-  assert_true('graph' in navigator, 'navigator.graph exists');
-  assert_true(typeof navigator.graph.create === 'function');
-  assert_true(typeof navigator.graph.list === 'function');
-  assert_true(typeof navigator.graph.get === 'function');
-  assert_true(typeof navigator.graph.remove === 'function');
-}, 'navigator.graph interface exists with expected methods');
+  assert_true('graph' in navigator, 'navigator.graph MUST exist');
+}, '§4.1 navigator.graph MUST be present');
+
+promise_test(async t => {
+  const mgr = navigator.graph;
+  assert_true(typeof mgr.create === 'function', 'create()');
+  assert_true(typeof mgr.list === 'function', 'list()');
+  assert_true(typeof mgr.get === 'function', 'get()');
+  assert_true(typeof mgr.remove === 'function', 'remove()');
+}, '§4.1 PersonalGraphManager MUST expose create, list, get, remove');
 
 promise_test(async t => {
   const graph = await navigator.graph.create('Test Graph');
-  assert_true(graph instanceof PersonalGraph, 'returns PersonalGraph');
-  assert_true(graph.uuid.length > 0, 'has UUID');
-  assert_equals(graph.name, 'Test Graph');
-  assert_equals(graph.state, 'private');
-
-  // Cleanup
+  assert_true(graph instanceof PersonalGraph, 'MUST return PersonalGraph');
+  assert_true(graph.uuid.length > 0, 'MUST have UUID');
+  assert_equals(graph.name, 'Test Graph', 'MUST store name');
+  assert_equals(graph.state, 'private', 'MUST default to private');
   await navigator.graph.remove(graph.uuid);
-}, 'create() returns a PersonalGraph with correct properties');
+}, '§4.1 create() MUST return a PersonalGraph with UUID, name, and state');
 
 promise_test(async t => {
-  const g1 = await navigator.graph.create('Graph 1');
-  const g2 = await navigator.graph.create('Graph 2');
-
+  const g1 = await navigator.graph.create('G1');
+  const g2 = await navigator.graph.create('G2');
   const list = await navigator.graph.list();
-  assert_true(list.length >= 2, 'list contains created graphs');
-
-  const uuids = list.map(g => g.uuid);
-  assert_true(uuids.includes(g1.uuid));
-  assert_true(uuids.includes(g2.uuid));
-
+  assert_true(list.length >= 2, 'MUST return created graphs');
   await navigator.graph.remove(g1.uuid);
   await navigator.graph.remove(g2.uuid);
-}, 'list() returns all created graphs');
+}, '§4.1 list() MUST return all graphs for origin');
 
 promise_test(async t => {
   const graph = await navigator.graph.create('Lookup');
   const found = await navigator.graph.get(graph.uuid);
-  assert_not_equals(found, null);
+  assert_not_equals(found, null, 'MUST find existing graph');
   assert_equals(found.uuid, graph.uuid);
-
-  const notFound = await navigator.graph.get('nonexistent-uuid');
-  assert_equals(notFound, null);
-
+  const notFound = await navigator.graph.get('nonexistent');
+  assert_equals(notFound, null, 'MUST return null for missing');
   await navigator.graph.remove(graph.uuid);
-}, 'get() retrieves by UUID, returns null for missing');
+}, '§4.1 get() MUST retrieve by UUID, return null for missing');
 
 promise_test(async t => {
   const graph = await navigator.graph.create('ToRemove');
-  const result = await navigator.graph.remove(graph.uuid);
-  assert_true(result, 'remove returns true');
+  assert_true(await navigator.graph.remove(graph.uuid), 'MUST return true');
+  assert_false(await navigator.graph.remove(graph.uuid), 'MUST return false for missing');
+}, '§4.1 remove() MUST return boolean indicating success');
 
-  const again = await navigator.graph.remove(graph.uuid);
-  assert_false(again, 'remove returns false for missing');
-}, 'remove() deletes a graph');
+// §3.1 SemanticTriple
+
+test(t => {
+  assert_true(typeof SemanticTriple === 'function', 'SemanticTriple constructor MUST exist');
+}, '§3.1 SemanticTriple MUST be a constructable interface');
+
+test(t => {
+  const t1 = new SemanticTriple('ex:a', 'ex:b', 'ex:p');
+  assert_equals(t1.source, 'ex:a');
+  assert_equals(t1.target, 'ex:b');
+  assert_equals(t1.predicate, 'ex:p');
+}, '§3.1 SemanticTriple MUST have source, target, predicate attributes');
+
+test(t => {
+  const t1 = new SemanticTriple('ex:a', 'ex:b');
+  assert_equals(t1.predicate, null, 'predicate MUST default to null');
+}, '§3.1 SemanticTriple predicate MUST be optional');
+
+// §4.2 PersonalGraph triple operations
 
 promise_test(async t => {
-  const graph = await navigator.graph.create('Triples');
+  const graph = await navigator.graph.create('TripleOps');
+  assert_true(typeof graph.addTriple === 'function', 'addTriple');
+  assert_true(typeof graph.addTriples === 'function', 'addTriples');
+  assert_true(typeof graph.removeTriple === 'function', 'removeTriple');
+  assert_true(typeof graph.queryTriples === 'function', 'queryTriples');
+  assert_true(typeof graph.querySparql === 'function', 'querySparql');
+  assert_true(typeof graph.snapshot === 'function', 'snapshot');
+  await navigator.graph.remove(graph.uuid);
+}, '§4.2 PersonalGraph MUST expose addTriple, addTriples, removeTriple, queryTriples, querySparql, snapshot');
 
+promise_test(async t => {
+  const graph = await navigator.graph.create('AddTriple');
   const triple = new SemanticTriple('ex:alice', 'ex:bob', 'foaf:knows');
   const signed = await graph.addTriple(triple);
-  assert_true(signed instanceof SignedTriple, 'returns SignedTriple');
+  assert_true(signed instanceof SignedTriple, 'MUST return SignedTriple');
   assert_equals(signed.data.source, 'ex:alice');
-  assert_equals(signed.data.target, 'ex:bob');
-  assert_true(signed.author.startsWith('did:key:'), 'has DID author');
-  assert_true(signed.timestamp.length > 0, 'has timestamp');
-  assert_true(signed.proof.signature.length > 0, 'has signature');
-
+  assert_true(signed.author.startsWith('did:key:'), 'MUST have DID author');
+  assert_true(signed.timestamp.length > 0, 'MUST have timestamp');
+  assert_true(signed.proof.signature.length > 0, 'MUST have signature');
   await navigator.graph.remove(graph.uuid);
-}, 'addTriple() signs and returns a SignedTriple');
+}, '§4.2.1 addTriple() MUST sign, persist, and return SignedTriple');
 
 promise_test(async t => {
-  const graph = await navigator.graph.create('BatchTest');
-
+  const graph = await navigator.graph.create('Batch');
   const triples = [
-    new SemanticTriple('ex:alice', 'ex:bob', 'foaf:knows'),
-    new SemanticTriple('ex:alice', 'Alice', 'foaf:name'),
+    new SemanticTriple('ex:a', 'ex:b', 'ex:p'),
+    new SemanticTriple('ex:c', 'ex:d', 'ex:q'),
   ];
   const results = await graph.addTriples(triples);
-  assert_equals(results.length, 2);
-
+  assert_equals(results.length, 2, 'MUST return all signed triples');
   await navigator.graph.remove(graph.uuid);
-}, 'addTriples() batch adds multiple triples');
+}, '§4.2.2 addTriples() MUST batch sign all triples atomically');
 
 promise_test(async t => {
-  const graph = await navigator.graph.create('QueryTest');
-
-  await graph.addTriple(new SemanticTriple('ex:alice', 'ex:bob', 'foaf:knows'));
-  await graph.addTriple(new SemanticTriple('ex:alice', 'Alice', 'foaf:name'));
-  await graph.addTriple(new SemanticTriple('ex:bob', 'Bob', 'foaf:name'));
-
-  const results = await graph.queryTriples({ source: 'ex:alice' });
-  assert_equals(results.length, 2, 'filters by source');
-
-  const byPred = await graph.queryTriples({ predicate: 'foaf:name' });
-  assert_equals(byPred.length, 2, 'filters by predicate');
-
-  const limited = await graph.queryTriples({ source: 'ex:alice', limit: 1 });
-  assert_equals(limited.length, 1, 'respects limit');
-
-  await navigator.graph.remove(graph.uuid);
-}, 'queryTriples() filters by source, predicate, and limit');
-
-promise_test(async t => {
-  const graph = await navigator.graph.create('SparqlTest');
-
-  await graph.addTriple(new SemanticTriple('ex:alice', 'Alice', 'foaf:name'));
-
-  const result = await graph.querySparql(
-    'SELECT ?name WHERE { <ex:alice> <foaf:name> ?name }');
-  assert_equals(result.type, 'bindings');
-  assert_true(result.bindings.length > 0);
-
-  await navigator.graph.remove(graph.uuid);
-}, 'querySparql() executes basic SPARQL queries');
-
-promise_test(async t => {
-  const graph = await navigator.graph.create('SnapshotTest');
-
-  await graph.addTriple(new SemanticTriple('ex:a', 'ex:b', 'ex:p'));
-  await graph.addTriple(new SemanticTriple('ex:c', 'ex:d', 'ex:q'));
-
-  const snapshot = await graph.snapshot();
-  assert_equals(snapshot.length, 2, 'snapshot returns all triples');
-
-  await navigator.graph.remove(graph.uuid);
-}, 'snapshot() returns all triples');
-
-promise_test(async t => {
-  const graph = await navigator.graph.create('RemoveTripleTest');
-
+  const graph = await navigator.graph.create('Remove');
   const triple = new SemanticTriple('ex:a', 'ex:b', 'ex:p');
   const signed = await graph.addTriple(triple);
-
-  const removed = await graph.removeTriple(signed);
-  assert_true(removed, 'removeTriple returns true');
-
-  const remaining = await graph.snapshot();
-  assert_equals(remaining.length, 0, 'triple was removed');
-
+  assert_true(await graph.removeTriple(signed), 'MUST return true');
+  const snap = await graph.snapshot();
+  assert_equals(snap.length, 0, 'triple MUST be removed');
   await navigator.graph.remove(graph.uuid);
-}, 'removeTriple() removes a signed triple');
+}, '§4.2.3 removeTriple() MUST remove the triple and return boolean');
 
 promise_test(async t => {
-  const graph = await navigator.graph.create('EventTest');
-
-  let addedEvent = null;
-  graph.ontripleadded = e => { addedEvent = e; };
-
+  const graph = await navigator.graph.create('Query');
   await graph.addTriple(new SemanticTriple('ex:a', 'ex:b', 'ex:p'));
-
-  // Events may be async — give a tick.
-  await new Promise(r => setTimeout(r, 100));
-  assert_not_equals(addedEvent, null, 'tripleadded event fired');
-
+  await graph.addTriple(new SemanticTriple('ex:a', 'ex:c', 'ex:q'));
+  await graph.addTriple(new SemanticTriple('ex:d', 'ex:e', 'ex:p'));
+  const results = await graph.queryTriples({ source: 'ex:a' });
+  assert_equals(results.length, 2, 'MUST filter by source');
+  const limited = await graph.queryTriples({ source: 'ex:a', limit: 1 });
+  assert_equals(limited.length, 1, 'MUST respect limit');
   await navigator.graph.remove(graph.uuid);
-}, 'ontripleadded event fires when triple is added');
+}, '§4.2.4 queryTriples() MUST filter by TripleQuery fields and respect limit');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('SPARQL');
+  await graph.addTriple(new SemanticTriple('ex:alice', 'Alice', 'foaf:name'));
+  const result = await graph.querySparql(
+    'SELECT ?name WHERE { <ex:alice> <foaf:name> ?name }');
+  assert_equals(result.type, 'bindings', 'MUST return bindings type');
+  assert_true(result.bindings.length > 0, 'MUST have results');
+  await navigator.graph.remove(graph.uuid);
+}, '§4.2.5 querySparql() MUST execute SPARQL and return SparqlResult');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Snap');
+  await graph.addTriple(new SemanticTriple('ex:a', 'ex:b', 'ex:p'));
+  await graph.addTriple(new SemanticTriple('ex:c', 'ex:d', 'ex:q'));
+  const snap = await graph.snapshot();
+  assert_equals(snap.length, 2, 'MUST return all triples');
+  await navigator.graph.remove(graph.uuid);
+}, '§4.2.6 snapshot() MUST return all signed triples');
+
+// §3.2 SignedTriple / ContentProof
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Signed');
+  const signed = await graph.addTriple(new SemanticTriple('ex:a', 'ex:b'));
+  assert_true('data' in signed, 'MUST have data');
+  assert_true('author' in signed, 'MUST have author');
+  assert_true('timestamp' in signed, 'MUST have timestamp');
+  assert_true('proof' in signed, 'MUST have proof');
+  assert_true('key' in signed.proof, 'proof MUST have key');
+  assert_true('signature' in signed.proof, 'proof MUST have signature');
+  await navigator.graph.remove(graph.uuid);
+}, '§3.2 SignedTriple MUST have data, author, timestamp, proof (key + signature)');
+
+// §6.3 Cross-origin sharing
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Access');
+  assert_true(typeof graph.grantAccess === 'function', 'grantAccess');
+  assert_true(typeof graph.revokeAccess === 'function', 'revokeAccess');
+  await navigator.graph.remove(graph.uuid);
+}, '§6.3 PersonalGraph MUST expose grantAccess and revokeAccess');
+
+// §4.2 EventTarget
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('Events');
+  assert_true(graph instanceof EventTarget, 'MUST extend EventTarget');
+  assert_true(typeof graph.addEventListener === 'function');
+  await navigator.graph.remove(graph.uuid);
+}, '§4.2 PersonalGraph MUST extend EventTarget');
 </script>

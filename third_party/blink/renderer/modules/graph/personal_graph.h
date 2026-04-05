@@ -29,7 +29,7 @@ class PersonalGraph : public EventTarget {
   const String& name() const { return name_; }
   V8GraphSyncState state() const;
 
-  // Triple operations
+  // Triple operations (Spec 01 §4.2)
   ScriptPromise<IDLAny> addTriple(ScriptState*, ScriptValue);
   ScriptPromise<IDLAny> addTriples(ScriptState*, ScriptValue);
   ScriptPromise<IDLAny> removeTriple(ScriptState*, ScriptValue);
@@ -37,21 +37,24 @@ class PersonalGraph : public EventTarget {
   ScriptPromise<IDLAny> querySparql(ScriptState*, const String&);
   ScriptPromise<IDLAny> snapshot(ScriptState*);
 
-  // Access control
-  ScriptPromise<IDLAny> grantAccess(ScriptState*, const String&, const String&);
-  ScriptPromise<IDLAny> revokeAccess(ScriptState*, const String&);
+  // Access control (Spec 01 §6.3)
+  ScriptPromise<IDLUndefined> grantAccess(ScriptState*, const String&, const String&);
+  ScriptPromise<IDLUndefined> revokeAccess(ScriptState*, const String&);
 
-  // Shape operations
-  ScriptPromise<IDLAny> addShape(ScriptState*, const String&, const String&);
+  // Shape operations (Spec 01 §5 + Spec 04 §5)
+  ScriptPromise<IDLUndefined> addShape(ScriptState*, const String&, const String&);
+  ScriptPromise<IDLAny> getShapes(ScriptState*);
   ScriptPromise<IDLAny> getShapeInstances(ScriptState*, const String&);
-  ScriptPromise<IDLAny> createShapeInstance(ScriptState*, const String&, ScriptValue);
+  ScriptPromise<IDLUSVString> createShapeInstance(ScriptState*, const String&, const String&, ScriptValue);
   ScriptPromise<IDLAny> getShapeInstanceData(ScriptState*, const String&, const String&);
+  ScriptPromise<IDLUndefined> setShapeProperty(ScriptState*, const String&, const String&, const String&, ScriptValue);
+  ScriptPromise<IDLUndefined> addToShapeCollection(ScriptState*, const String&, const String&, const String&, ScriptValue);
+  ScriptPromise<IDLUndefined> removeFromShapeCollection(ScriptState*, const String&, const String&, const String&, ScriptValue);
 
-  // Sharing
+  // Sharing (Spec 03 §5.1)
   ScriptPromise<IDLAny> share(ScriptState*, ScriptValue);
 
   // EventTarget overrides
-
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
 

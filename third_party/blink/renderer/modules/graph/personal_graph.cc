@@ -29,6 +29,8 @@ V8GraphSyncState PersonalGraph::state() const {
   return V8GraphSyncState(V8GraphSyncState::Enum::kPrivate);
 }
 
+// Triple operations
+
 ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
                                                 ScriptValue) {
   return RejectNotImplemented<IDLAny>(script_state);
@@ -58,20 +60,26 @@ ScriptPromise<IDLAny> PersonalGraph::snapshot(ScriptState* script_state) {
   return RejectNotImplemented<IDLAny>(script_state);
 }
 
-ScriptPromise<IDLAny> PersonalGraph::grantAccess(ScriptState* script_state,
-                                                   const String&,
-                                                   const String&) {
-  return RejectNotImplemented<IDLAny>(script_state);
+// Access control
+
+ScriptPromise<IDLUndefined> PersonalGraph::grantAccess(
+    ScriptState* script_state, const String&, const String&) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
 }
 
-ScriptPromise<IDLAny> PersonalGraph::revokeAccess(ScriptState* script_state,
-                                                    const String&) {
-  return RejectNotImplemented<IDLAny>(script_state);
+ScriptPromise<IDLUndefined> PersonalGraph::revokeAccess(
+    ScriptState* script_state, const String&) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
 }
 
-ScriptPromise<IDLAny> PersonalGraph::addShape(ScriptState* script_state,
-                                               const String&,
-                                               const String&) {
+// Shape operations
+
+ScriptPromise<IDLUndefined> PersonalGraph::addShape(
+    ScriptState* script_state, const String&, const String&) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
+}
+
+ScriptPromise<IDLAny> PersonalGraph::getShapes(ScriptState* script_state) {
   return RejectNotImplemented<IDLAny>(script_state);
 }
 
@@ -80,15 +88,35 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
   return RejectNotImplemented<IDLAny>(script_state);
 }
 
-ScriptPromise<IDLAny> PersonalGraph::createShapeInstance(
-    ScriptState* script_state, const String&, ScriptValue) {
-  return RejectNotImplemented<IDLAny>(script_state);
+ScriptPromise<IDLUSVString> PersonalGraph::createShapeInstance(
+    ScriptState* script_state, const String&, const String&, ScriptValue) {
+  return RejectNotImplemented<IDLUSVString>(script_state);
 }
 
 ScriptPromise<IDLAny> PersonalGraph::getShapeInstanceData(
     ScriptState* script_state, const String&, const String&) {
   return RejectNotImplemented<IDLAny>(script_state);
 }
+
+ScriptPromise<IDLUndefined> PersonalGraph::setShapeProperty(
+    ScriptState* script_state, const String&, const String&, const String&,
+    ScriptValue) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
+}
+
+ScriptPromise<IDLUndefined> PersonalGraph::addToShapeCollection(
+    ScriptState* script_state, const String&, const String&, const String&,
+    ScriptValue) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
+}
+
+ScriptPromise<IDLUndefined> PersonalGraph::removeFromShapeCollection(
+    ScriptState* script_state, const String&, const String&, const String&,
+    ScriptValue) {
+  return RejectNotImplemented<IDLUndefined>(script_state);
+}
+
+// Sharing
 
 ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
                                             ScriptValue) {

@@ -21,16 +21,20 @@ class SharedGraph final : public PersonalGraph {
   SharedGraph(ExecutionContext*, const String& uuid, const String& uri);
 
   const String& uri() const { return uri_; }
-  V8SyncState syncState() const { return V8SyncState(V8SyncState::Enum::kIdle); }
+  V8SyncState syncState() const;
 
+  // Peer operations (Spec 03 §5.2)
   ScriptPromise<IDLAny> peers(ScriptState*);
   ScriptPromise<IDLAny> onlinePeers(ScriptState*);
-  ScriptPromise<IDLAny> sendSignal(ScriptState*, const String&, ScriptValue);
-  ScriptPromise<IDLAny> broadcast(ScriptState*, ScriptValue);
-  ScriptPromise<IDLAny> canAddTriple(ScriptState*, const String&, const String&);
+
+  // Signalling (Spec 03 §9)
+  ScriptPromise<IDLUndefined> sendSignal(ScriptState*, const String&, ScriptValue);
+  ScriptPromise<IDLUndefined> broadcast(ScriptState*, ScriptValue);
+
+  // Governance (Spec 05 §9)
+  ScriptPromise<IDLAny> canAddTriple(ScriptState*, ScriptValue);
   ScriptPromise<IDLAny> constraintsFor(ScriptState*, const String&);
   ScriptPromise<IDLAny> myCapabilities(ScriptState*);
-
 
   const AtomicString& InterfaceName() const override;
   void Trace(Visitor*) const override;

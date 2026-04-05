@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>PersonalGraph Shape Validation — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 04 — Dynamic Graph Shape Validation
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_dynamic-graph-shape-validation.md
+// ==========================================================================
+
+// §5.1 addShape
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('ShapeReg');
+  assert_true(typeof graph.addShape === 'function', 'addShape MUST exist');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.1 PersonalGraph MUST expose addShape()');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('AddShape');
+  const shape = JSON.stringify({
+    targetClass: 'ex:Task',
+    properties: [
+      { path: 'rdf:type', name: 'type_flag', datatype: 'URI', minCount: 1, maxCount: 1, writable: false },
+      { path: 'schema:name', name: 'title', datatype: 'xsd:string', minCount: 1, maxCount: 1 }
+    ],
+    constructor: [
+      { action: 'setSingleTarget', source: 'this', predicate: 'rdf:type', target: 'ex:Task' },
+      { action: 'setSingleTarget', source: 'this', predicate: 'schema:name', target: 'title' }
+    ]
+  });
+  await graph.addShape('Task', shape);
+  await navigator.graph.remove(graph.uuid);
+}, '§5.1 addShape() MUST register a shape definition');
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('DupShape');
+  const shape = JSON.stringify({ targetClass: 'ex:X', properties: [], constructor: [] });
+  await graph.addShape('X', shape);
+  await promise_rejects_dom(t, 'ConstraintError', graph.addShape('X', shape),
+    'MUST reject duplicate name');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.1 addShape() MUST reject duplicate shape names with ConstraintError');
+
+// §5.2 getShapes
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('GetShapes');
+  assert_true(typeof graph.getShapes === 'function', 'getShapes MUST exist');
+  const shape = JSON.stringify({ targetClass: 'ex:Note', properties: [], constructor: [] });
+  await graph.addShape('Note', shape);
+  const shapes = await graph.getShapes();
+  assert_true(shapes.length >= 1, 'MUST return registered shapes');
+  const found = shapes.find(s => s.name === 'Note');
+  assert_true(found !== undefined, 'MUST include the registered shape');
+  assert_equals(found.targetClass, 'ex:Note');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.2 getShapes() MUST return all registered shapes');
+
+// §5.3 createShapeInstance
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('CreateInst');
+  assert_true(typeof graph.createShapeInstance === 'function', 'createShapeInstance MUST exist');
+  const shape = JSON.stringify({
+    targetClass: 'ex:Task',
+    properties: [
+      { path: 'schema:name', name: 'title', datatype: 'xsd:string', minCount: 1, maxCount: 1 }
+    ],
+    constructor: [
+      { action: 'setSingleTarget', source: 'this', predicate: 'rdf:type', target: 'ex:Task' },
+      { action: 'setSingleTarget', source: 'this', predicate: 'schema:name', target: 'title' }
+    ]
+  });
+  await graph.addShape('Task', shape);
+  const uri = await graph.createShapeInstance('Task', 'task:001', { title: 'Write spec' });
+  assert_true(uri.length > 0, 'MUST return instance URI');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.3 createShapeInstance() MUST execute constructor and return instance URI');
+
+// §5.4 getShapeInstances
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('ListInst');
+  assert_true(typeof graph.getShapeInstances === 'function', 'getShapeInstances MUST exist');
+  const shape = JSON.stringify({
+    targetClass: 'ex:Item',
+    properties: [],
+    constructor: [
+      { action: 'setSingleTarget', source: 'this', predicate: 'rdf:type', target: 'ex:Item' }
+    ]
+  });
+  await graph.addShape('Item', shape);
+  await graph.createShapeInstance('Item', 'item:1', {});
+  await graph.createShapeInstance('Item', 'item:2', {});
+  const instances = await graph.getShapeInstances('Item');
+  assert_true(instances.length >= 2, 'MUST return instance addresses');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.4 getShapeInstances() MUST return all matching instance addresses');
+
+// §5.5 getShapeInstanceData
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('InstData');
+  assert_true(typeof graph.getShapeInstanceData === 'function', 'getShapeInstanceData MUST exist');
+  const shape = JSON.stringify({
+    targetClass: 'ex:Task',
+    properties: [
+      { path: 'schema:name', name: 'title', datatype: 'xsd:string', minCount: 1, maxCount: 1 }
+    ],
+    constructor: [
+      { action: 'setSingleTarget', source: 'this', predicate: 'rdf:type', target: 'ex:Task' },
+      { action: 'setSingleTarget', source: 'this', predicate: 'schema:name', target: 'title' }
+    ]
+  });
+  await graph.addShape('Task', shape);
+  await graph.createShapeInstance('Task', 'task:1', { title: 'Test' });
+  const data = await graph.getShapeInstanceData('Task', 'task:1');
+  assert_equals(data.title, 'Test', 'MUST return property values');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.5 getShapeInstanceData() MUST return property values as object');
+
+// §5.6 setShapeProperty
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('SetProp');
+  assert_true(typeof graph.setShapeProperty === 'function', 'setShapeProperty MUST exist');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.6 PersonalGraph MUST expose setShapeProperty()');
+
+// §5.7 addToShapeCollection
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('AddColl');
+  assert_true(typeof graph.addToShapeCollection === 'function', 'addToShapeCollection MUST exist');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.7 PersonalGraph MUST expose addToShapeCollection()');
+
+// §5.8 removeFromShapeCollection
+
+promise_test(async t => {
+  const graph = await navigator.graph.create('RemColl');
+  assert_true(typeof graph.removeFromShapeCollection === 'function', 'removeFromShapeCollection MUST exist');
+  await navigator.graph.remove(graph.uuid);
+}, '§5.8 PersonalGraph MUST expose removeFromShapeCollection()');
+</script>
