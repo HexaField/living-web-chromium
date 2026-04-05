@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
 
+#include "base/task/sequenced_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/modules/graph/content_proof.h"
 #include "third_party/blink/renderer/modules/graph/semantic_triple.h"
@@ -19,6 +21,11 @@
 namespace blink {
 
 namespace {
+
+scoped_refptr<base::SequencedTaskRunner> GetTaskRunner(
+    ExecutionContext* context) {
+  return context->GetTaskRunner(TaskType::kMiscPlatformAPI);
+}
 
 String GetStringProp(ScriptState* script_state,
                      const ScriptValue& obj,
@@ -41,11 +48,10 @@ String GetStringProp(ScriptState* script_state,
 
 SignedTriple* ToBlinkSignedTriple(
     const graph::mojom::blink::SignedTriplePtr& m) {
-  // In blink mojo bindings, string? is just String — null means absent
-  String predicate = m->data->predicate;
+  String predicate = m->data->predicate.IsNull() ? g_empty_string
+                                                   : m->data->predicate;
   auto* data = MakeGarbageCollected<SemanticTriple>(
-      m->data->source, m->data->target,
-      predicate.IsNull() ? g_empty_string : predicate);
+      m->data->source, m->data->target, predicate);
   auto* proof = MakeGarbageCollected<ContentProof>(
       m->proof->key, m->proof->signature);
   return MakeGarbageCollected<SignedTriple>(
@@ -61,6 +67,45 @@ graph::mojom::blink::SemanticTriplePtr MakeMojoTriple(
   return t;
 }
 
+void ResolveWithEmptyArray(ScriptPromiseResolver<IDLAny>* resolver) {
+  ScriptState* ss = resolver->GetScriptState();
+  ScriptState::Scope scope(ss);
+  resolver->Resolve(ScriptValue(ss->GetIsolate(),
+                                v8::Array::New(ss->GetIsolate(), 0)));
+}
+
+void ResolveWithBool(ScriptPromiseResolver<IDLAny>* resolver, bool val) {
+  ScriptState* ss = resolver->GetScriptState();
+  resolver->Resolve(ScriptValue(ss->GetIsolate(),
+                                v8::Boolean::New(ss->GetIsolate(), val)));
+}
+
+void ResolveWithString(ScriptPromiseResolver<IDLAny>* resolver,
+                       const String& str) {
+  ScriptState* ss = resolver->GetScriptState();
+  ScriptState::Scope scope(ss);
+  resolver->Resolve(ScriptValue(
+      ss->GetIsolate(),
+      v8::String::NewFromUtf8(ss->GetIsolate(), str.Utf8().c_str())
+          .ToLocalChecked()));
+}
+
+void ResolveWithSignedTripleArray(
+    ScriptPromiseResolver<IDLAny>* resolver,
+    const Vector<graph::mojom::blink::SignedTriplePtr>& triples) {
+  ScriptState* ss = resolver->GetScriptState();
+  ScriptState::Scope scope(ss);
+  v8::Isolate* isolate = ss->GetIsolate();
+  v8::Local<v8::Context> ctx = ss->GetContext();
+  v8::Local<v8::Array> arr = v8::Array::New(isolate,
+                                             static_cast<int>(triples.size()));
+  for (wtf_size_t i = 0; i < triples.size(); i++) {
+    SignedTriple* st = ToBlinkSignedTriple(triples[i]);
+    arr->Set(ctx, i, ToV8Traits<SignedTriple>::ToV8(ss, st)).Check();
+  }
+  resolver->Resolve(ScriptValue(isolate, arr));
+}
+
 }  // namespace
 
 PersonalGraph::PersonalGraph(
@@ -71,7 +116,7 @@ PersonalGraph::PersonalGraph(
     : uuid_(uuid), name_(name), execution_context_(context),
       host_(context) {
   if (host.is_valid()) {
-    host_.Bind(std::move(host));
+    host_.Bind(std::move(host), GetTaskRunner(context));
   }
 }
 
@@ -96,7 +141,12 @@ ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
                   "Failed to add triple"));
               return;
             }
-            resolver->Resolve(ToBlinkSignedTriple(result));
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            SignedTriple* st = ToBlinkSignedTriple(result);
+            resolver->Resolve(ScriptValue(
+                ss->GetIsolate(),
+                ToV8Traits<SignedTriple>::ToV8(ss, st)));
           },
           WrapPersistent(resolver)));
 
@@ -128,12 +178,13 @@ ScriptPromise<IDLAny> PersonalGraph::addTriples(ScriptState* script_state,
       std::move(mojo_triples),
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             Vector<graph::mojom::blink::SignedTriplePtr> results) {
-            HeapVector<Member<SignedTriple>> blink_results;
-            for (const auto& r : results) {
-              blink_results.push_back(ToBlinkSignedTriple(r));
+             std::optional<Vector<graph::mojom::blink::SignedTriplePtr>>
+                 results) {
+            if (!results) {
+              ResolveWithEmptyArray(resolver);
+              return;
             }
-            resolver->Resolve(blink_results);
+            ResolveWithSignedTripleArray(resolver, *results);
           },
           WrapPersistent(resolver)));
 
@@ -158,9 +209,7 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
       std::move(mojo_st),
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
-            v8::Isolate* isolate = resolver->GetScriptState()->GetIsolate();
-            resolver->Resolve(
-                ScriptValue(isolate, v8::Boolean::New(isolate, success)));
+            ResolveWithBool(resolver, success);
           },
           WrapPersistent(resolver)));
 
@@ -183,11 +232,7 @@ ScriptPromise<IDLAny> PersonalGraph::queryTriples(ScriptState* script_state,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              Vector<graph::mojom::blink::SignedTriplePtr> results) {
-            HeapVector<Member<SignedTriple>> blink_results;
-            for (const auto& r : results) {
-              blink_results.push_back(ToBlinkSignedTriple(r));
-            }
-            resolver->Resolve(blink_results);
+            ResolveWithSignedTripleArray(resolver, results);
           },
           WrapPersistent(resolver)));
 
@@ -210,7 +255,7 @@ ScriptPromise<IDLAny> PersonalGraph::querySparql(ScriptState* script_state,
                   ScriptValue::CreateNull(resolver->GetScriptState()));
               return;
             }
-            resolver->Resolve(result->bindings_json);
+            ResolveWithString(resolver, result->bindings_json);
           },
           WrapPersistent(resolver)));
 
@@ -225,11 +270,7 @@ ScriptPromise<IDLAny> PersonalGraph::snapshot(ScriptState* script_state) {
   host_->Snapshot(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::SignedTriplePtr> triples) {
-        HeapVector<Member<SignedTriple>> blink_triples;
-        for (const auto& t : triples) {
-          blink_triples.push_back(ToBlinkSignedTriple(t));
-        }
-        resolver->Resolve(blink_triples);
+        ResolveWithSignedTripleArray(resolver, triples);
       },
       WrapPersistent(resolver)));
 
@@ -294,9 +335,7 @@ ScriptPromise<IDLUndefined> PersonalGraph::addShape(
 ScriptPromise<IDLAny> PersonalGraph::getShapes(ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  ScriptState::Scope scope(script_state);
-  v8::Local<v8::Array> empty = v8::Array::New(script_state->GetIsolate(), 0);
-  resolver->Resolve(ScriptValue(script_state->GetIsolate(), empty));
+  ResolveWithEmptyArray(resolver);
   return resolver->Promise();
 }
 
@@ -311,7 +350,20 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              const Vector<String>& instances) {
-            resolver->Resolve(instances);
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> ctx = ss->GetContext();
+            v8::Local<v8::Array> arr =
+                v8::Array::New(isolate, static_cast<int>(instances.size()));
+            for (wtf_size_t i = 0; i < instances.size(); i++) {
+              arr->Set(ctx, i,
+                       v8::String::NewFromUtf8(isolate,
+                                               instances[i].Utf8().c_str())
+                           .ToLocalChecked())
+                  .Check();
+            }
+            resolver->Resolve(ScriptValue(isolate, arr));
           },
           WrapPersistent(resolver)));
 
@@ -329,14 +381,14 @@ ScriptPromise<IDLUSVString> PersonalGraph::createShapeInstance(
       shape_name, data_json,
       BindOnce(
           [](ScriptPromiseResolver<IDLUSVString>* resolver,
-             const std::optional<String>& uri) {
-            if (!uri) {
+             const String& uri) {
+            if (uri.IsNull() || uri.empty()) {
               resolver->Reject(MakeGarbageCollected<DOMException>(
                   DOMExceptionCode::kOperationError,
                   "Failed to create shape instance"));
               return;
             }
-            resolver->Resolve(*uri);
+            resolver->Resolve(uri);
           },
           WrapPersistent(resolver)));
 
@@ -354,13 +406,13 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstanceData(
       shape_name, instance_uri,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             const std::optional<String>& data_json) {
-            if (!data_json) {
+             const String& data_json) {
+            if (data_json.IsNull()) {
               resolver->Resolve(
                   ScriptValue::CreateNull(resolver->GetScriptState()));
               return;
             }
-            resolver->Resolve(*data_json);
+            ResolveWithString(resolver, data_json);
           },
           WrapPersistent(resolver)));
 
