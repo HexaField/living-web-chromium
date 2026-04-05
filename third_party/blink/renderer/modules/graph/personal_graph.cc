@@ -524,6 +524,7 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
             }
 
             ExecutionContext* context = manager->GetExecutionContext();
+            (void)context;  // May be used in future.
             String uri = info->uri;
 
             // Bind a PersonalGraphHost for triple operations on the
