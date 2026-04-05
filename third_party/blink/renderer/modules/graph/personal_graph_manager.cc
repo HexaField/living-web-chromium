@@ -322,7 +322,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::createIdentity(
             auto* cred = MakeGarbageCollected<DIDCredential>(
                 context, info->id, info->did, info->algorithm,
                 info->display_name, info->created_at, info->is_locked,
-                manager->GetDIDService());
+                manager);
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
             resolver->Resolve(ScriptValue(
@@ -359,7 +359,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listIdentities(
           auto* cred = MakeGarbageCollected<DIDCredential>(
               context, infos[i]->id, infos[i]->did, infos[i]->algorithm,
               infos[i]->display_name, infos[i]->created_at,
-              infos[i]->is_locked, manager->GetDIDService());
+              infos[i]->is_locked, manager);
           arr->Set(v8_ctx, i,
                    ToV8Traits<DIDCredential>::ToV8(ss, cred))
               .Check();
@@ -394,7 +394,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
         auto* cred = MakeGarbageCollected<DIDCredential>(
             context, info->id, info->did, info->algorithm,
             info->display_name, info->created_at, info->is_locked,
-            manager->GetDIDService());
+            manager);
         ScriptState* ss = resolver->GetScriptState();
         ScriptState::Scope scope(ss);
         resolver->Resolve(ScriptValue(

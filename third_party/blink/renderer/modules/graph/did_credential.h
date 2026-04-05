@@ -10,13 +10,13 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
-#include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
 
 namespace blink {
 
 class ExecutionContext;
+class PersonalGraphManager;
 
 class DIDCredential final : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
@@ -29,7 +29,7 @@ class DIDCredential final : public ScriptWrappable {
                 const String& display_name,
                 const String& created_at,
                 bool is_locked,
-                HeapMojoRemote<graph::mojom::blink::DIDCredentialService>&);
+                PersonalGraphManager* manager);
 
   // IDL attributes
   const String& id() const { return id_; }
@@ -49,6 +49,8 @@ class DIDCredential final : public ScriptWrappable {
   void Trace(Visitor*) const override;
 
  private:
+  HeapMojoRemote<graph::mojom::blink::DIDCredentialService>& GetService();
+
   String id_;
   String did_;
   String algorithm_;
@@ -56,9 +58,7 @@ class DIDCredential final : public ScriptWrappable {
   String created_at_;
   bool is_locked_;
 
-  // Borrows the service remote from PersonalGraphManager (which owns it).
-  // The DIDCredential must not outlive the manager.
-  HeapMojoRemote<graph::mojom::blink::DIDCredentialService>& service_;
+  Member<PersonalGraphManager> manager_;
   Member<ExecutionContext> execution_context_;
 };
 

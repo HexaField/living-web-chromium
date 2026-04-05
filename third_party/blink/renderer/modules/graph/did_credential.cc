@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/graph/personal_graph_manager.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -23,15 +24,20 @@ DIDCredential::DIDCredential(
     const String& display_name,
     const String& created_at,
     bool is_locked,
-    HeapMojoRemote<graph::mojom::blink::DIDCredentialService>& service)
+    PersonalGraphManager* manager)
     : id_(id),
       did_(did),
       algorithm_(algorithm),
       display_name_(display_name),
       created_at_(created_at),
       is_locked_(is_locked),
-      service_(service),
+      manager_(manager),
       execution_context_(context) {}
+
+HeapMojoRemote<graph::mojom::blink::DIDCredentialService>&
+DIDCredential::GetService() {
+  return manager_->GetDIDService();
+}
 
 ScriptPromise<IDLAny> DIDCredential::sign(ScriptState* script_state,
                                            const String& data_json) {
@@ -39,13 +45,13 @@ ScriptPromise<IDLAny> DIDCredential::sign(ScriptState* script_state,
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!service_.is_bound()) {
+  if (!GetService().is_bound()) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, "DID service not connected"));
     return promise;
   }
 
-  service_->Sign(
+  GetService()->Sign(
       id_, data_json,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
@@ -86,7 +92,7 @@ ScriptPromise<IDLBoolean> DIDCredential::verify(
       MakeGarbageCollected<ScriptPromiseResolver<IDLBoolean>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!service_.is_bound()) {
+  if (!GetService().is_bound()) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, "DID service not connected"));
     return promise;
@@ -140,7 +146,7 @@ ScriptPromise<IDLBoolean> DIDCredential::verify(
   }
   content->proof = std::move(proof);
 
-  service_->Verify(
+  GetService()->Verify(
       std::move(content),
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLBoolean>* resolver, bool valid) {
@@ -156,13 +162,13 @@ ScriptPromise<IDLAny> DIDCredential::resolve(ScriptState* script_state) {
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!service_.is_bound()) {
+  if (!GetService().is_bound()) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, "DID service not connected"));
     return promise;
   }
 
-  service_->ResolveDID(
+  GetService()->ResolveDID(
       did_,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
@@ -195,13 +201,13 @@ ScriptPromise<IDLBoolean> DIDCredential::lock(ScriptState* script_state) {
       MakeGarbageCollected<ScriptPromiseResolver<IDLBoolean>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!service_.is_bound()) {
+  if (!GetService().is_bound()) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, "DID service not connected"));
     return promise;
   }
 
-  service_->Lock(
+  GetService()->Lock(
       id_,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLBoolean>* resolver,
@@ -220,13 +226,13 @@ ScriptPromise<IDLBoolean> DIDCredential::unlock(ScriptState* script_state) {
       MakeGarbageCollected<ScriptPromiseResolver<IDLBoolean>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!service_.is_bound()) {
+  if (!GetService().is_bound()) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, "DID service not connected"));
     return promise;
   }
 
-  service_->Unlock(
+  GetService()->Unlock(
       id_,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLBoolean>* resolver,
@@ -241,6 +247,7 @@ ScriptPromise<IDLBoolean> DIDCredential::unlock(ScriptState* script_state) {
 }
 
 void DIDCredential::Trace(Visitor* visitor) const {
+  visitor->Trace(manager_);
   visitor->Trace(execution_context_);
   ScriptWrappable::Trace(visitor);
 }
