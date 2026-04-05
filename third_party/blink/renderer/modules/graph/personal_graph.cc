@@ -161,7 +161,9 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
       std::move(mojo_st),
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
-            resolver->Resolve(success);
+            v8::Isolate* isolate = resolver->GetScriptState()->GetIsolate();
+            resolver->Resolve(
+                ScriptValue(isolate, v8::Boolean::New(isolate, success)));
           },
           WrapPersistent(resolver)));
 

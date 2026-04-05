@@ -68,7 +68,9 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
                                                  ScriptValue) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  resolver->Resolve(true);
+  resolver->Resolve(
+      ScriptValue(script_state->GetIsolate(),
+                  v8::True(script_state->GetIsolate())));
   return resolver->Promise();
 }
 

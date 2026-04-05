@@ -158,7 +158,9 @@ ScriptPromise<IDLAny> PersonalGraphManager::remove(ScriptState* script_state,
       uuid,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
-            resolver->Resolve(success);
+            v8::Isolate* isolate = resolver->GetScriptState()->GetIsolate();
+            resolver->Resolve(
+                ScriptValue(isolate, v8::Boolean::New(isolate, success)));
           },
           WrapPersistent(resolver)));
 
