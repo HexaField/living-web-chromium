@@ -24,7 +24,8 @@ namespace {
 
 scoped_refptr<base::SequencedTaskRunner> GetTaskRunner(
     ExecutionContext* context) {
-  return context->GetTaskRunner(TaskType::kMiscPlatformAPI);
+  return static_cast<scoped_refptr<base::SequencedTaskRunner>>(
+      context->GetTaskRunner(TaskType::kMiscPlatformAPI));
 }
 
 String GetStringProp(ScriptState* script_state,

@@ -21,7 +21,9 @@ namespace {
 
 scoped_refptr<base::SequencedTaskRunner> GetTaskRunner(
     ExecutionContext* context) {
-  return context->GetTaskRunner(TaskType::kMiscPlatformAPI);
+  // SingleThreadTaskRunner IS-A SequencedTaskRunner; explicit cast needed.
+  return static_cast<scoped_refptr<base::SequencedTaskRunner>>(
+      context->GetTaskRunner(TaskType::kMiscPlatformAPI));
 }
 
 }  // namespace
@@ -69,7 +71,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
 
   EnsureServiceConnected();
 
-  std::optional<WTF::String> opt_name;
+  std::optional<String> opt_name;
   if (!name.IsNull() && !name.empty())
     opt_name = name;
 
