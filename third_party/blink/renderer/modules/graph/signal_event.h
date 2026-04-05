@@ -33,6 +33,7 @@ class SignalEvent final : public Event {
   ScriptValue payload() const { return payload_; }
 
   void Trace(Visitor* visitor) const override {
+    visitor->Trace(payload_);
     Event::Trace(visitor);
   }
 
