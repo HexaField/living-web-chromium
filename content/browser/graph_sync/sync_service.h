@@ -62,6 +62,7 @@ class SyncService : public graph::mojom::GraphSyncService {
 
  private:
   std::unordered_map<std::string, std::unique_ptr<SyncSession>> sessions_;
+  std::vector<std::unique_ptr<class SharedGraphHostImpl>> shared_graph_hosts_;
   mojo::ReceiverSet<graph::mojom::GraphSyncService> receivers_;
 };
 

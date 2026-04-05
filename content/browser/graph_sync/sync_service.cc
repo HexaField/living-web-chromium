@@ -6,6 +6,8 @@
 
 #include "base/logging.h"
 #include "base/uuid.h"
+#include "content/browser/graph/graph_manager.h"
+#include "content/browser/graph_sync/shared_graph_host.h"
 #include "crypto/sha2.h"
 
 namespace content {
@@ -52,12 +54,20 @@ void SyncService::ShareGraph(const std::string& graph_uuid,
 
 void SyncService::JoinGraph(const std::string& shared_graph_uri,
                              JoinGraphCallback callback) {
-  // In a real implementation, this would:
-  // 1. Connect to the signalling server
-  // 2. Discover peers
-  // 3. Establish WebRTC DataChannel connections
-  // 4. Sync the current graph state
+  // Check if we already have this session (local share).
+  auto it = sessions_.find(shared_graph_uri);
+  if (it != sessions_.end()) {
+    auto info = graph::mojom::SharedGraphInfo::New();
+    info->uri = shared_graph_uri;
+    info->name = it->second->name;
+    info->sync_state = it->second->state;
+    info->peer_count =
+        static_cast<uint32_t>(it->second->peer_dids.size());
+    std::move(callback).Run(std::move(info));
+    return;
+  }
 
+  // Create a new session for the joined graph.
   auto session = std::make_unique<SyncSession>();
   session->uri = shared_graph_uri;
   session->state = graph::mojom::SyncState::kSyncing;
@@ -90,8 +100,32 @@ void SyncService::ListSharedGraphs(ListSharedGraphsCallback callback) {
 void SyncService::BindSharedGraph(
     const std::string& uri,
     mojo::PendingReceiver<graph::mojom::SharedGraphHost> receiver) {
-  // TODO: Create SharedGraphHostImpl and bind.
-  LOG(INFO) << "BindSharedGraph: " << uri << " (host binding pending)";
+  auto it = sessions_.find(uri);
+  if (it == sessions_.end()) {
+    LOG(WARNING) << "BindSharedGraph: no session for " << uri;
+    return;
+  }
+
+  SyncSession* session = it->second.get();
+
+  // Look up the underlying GraphStore if this was a shared local graph.
+  GraphStore* store = nullptr;
+  if (!session->graph_uuid.empty()) {
+    store = GraphManager::GetInstance().GetStore(session->graph_uuid);
+  }
+
+  // Create governance engine for this shared graph.
+  auto* governance = new GovernanceEngine();
+
+  // TODO: get agent DID from DID credential service. For now, use a
+  // placeholder derived from the session.
+  std::string agent_did = "did:key:local-agent";
+
+  auto host = std::make_unique<SharedGraphHostImpl>(
+      session, store, governance, agent_did, std::move(receiver));
+  shared_graph_hosts_.push_back(std::move(host));
+
+  LOG(INFO) << "BindSharedGraph: bound host for " << uri;
 }
 
 SyncSession* SyncService::GetSession(const std::string& uri) {

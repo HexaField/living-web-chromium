@@ -8,6 +8,7 @@
 #include <string>
 #include <optional>
 
+#include "base/memory/raw_ptr.h"
 #include "content/browser/did/did_key_provider.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
@@ -47,7 +48,7 @@ class SigningService : public graph::mojom::DIDCredentialService {
                   ResolveDIDCallback callback) override;
 
  private:
-  DIDKeyProvider* key_provider_;  // Not owned.
+  raw_ptr<DIDKeyProvider> key_provider_;  // Not owned.
   mojo::ReceiverSet<graph::mojom::DIDCredentialService> receivers_;
 };
 

@@ -18,6 +18,8 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
+#include "third_party/blink/renderer/modules/graph/triple_event.h"
 
 namespace blink {
 
@@ -135,7 +137,8 @@ ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
   host_->AddTriple(
       MakeMojoTriple(script_state, triple_val),
       BindOnce(
-          [](ScriptPromiseResolver<IDLAny>* resolver,
+          [](PersonalGraph* self,
+             ScriptPromiseResolver<IDLAny>* resolver,
              graph::mojom::blink::SignedTriplePtr result) {
             if (!result) {
               resolver->Reject(MakeGarbageCollected<DOMException>(
@@ -146,10 +149,13 @@ ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
             SignedTriple* st = ToBlinkSignedTriple(result);
-            resolver->Resolve(ScriptValue(
-                ss->GetIsolate(),
-                ToV8Traits<SignedTriple>::ToV8(ss, st)));
+            ScriptValue sv(ss->GetIsolate(),
+                           ToV8Traits<SignedTriple>::ToV8(ss, st));
+            resolver->Resolve(sv);
+            self->DispatchEvent(
+                *TripleEvent::Create(event_type_names::kTripleadded, sv));
           },
+          WrapPersistent(this),
           WrapPersistent(resolver)));
 
   return promise;
@@ -210,10 +216,20 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
   host_->RemoveTriple(
       std::move(mojo_st),
       BindOnce(
-          [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
+          [](PersonalGraph* self,
+             ScriptPromiseResolver<IDLAny>* resolver,
+             ScriptValue triple_sv,
+             bool success) {
             ResolveWithBool(resolver, success);
+            if (success) {
+              self->DispatchEvent(
+                  *TripleEvent::Create(event_type_names::kTripleremoved,
+                                       triple_sv));
+            }
           },
-          WrapPersistent(resolver)));
+          WrapPersistent(this),
+          WrapPersistent(resolver),
+          triple_val));
 
   return promise;
 }

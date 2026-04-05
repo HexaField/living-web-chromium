@@ -87,7 +87,51 @@ cp -v "$LIVING_WEB/third_party/blink/renderer/modules/graph/BUILD.gn" \
 echo ""
 
 # ------------------------------------------------------------------
-# Step 2: Patch content/browser/BUILD.gn to include Living Web deps
+# Step 1b: Patch event_type_names.json5 with Living Web event types
+# ------------------------------------------------------------------
+echo "[1b/6] Patching event_type_names.json5..."
+
+EVENT_NAMES="$CHROMIUM_SRC/third_party/blink/renderer/core/events/event_type_names.json5"
+if [ -f "$EVENT_NAMES" ] && ! grep -q '"tripleadded"' "$EVENT_NAMES"; then
+  python3 -c "
+import re
+
+with open('$EVENT_NAMES', 'r') as f:
+    content = f.read()
+
+# These need to be inserted alphabetically into the data array
+new_events = ['peerjoined', 'peerleft', 'signal', 'syncstatechange', 'tripleadded', 'tripleremoved']
+
+# Parse out existing entries
+entries = re.findall(r'\"([^\"]+)\"', content.split('data: [')[1].split(']')[0])
+
+# Add new events
+for evt in new_events:
+    if evt not in entries:
+        entries.append(evt)
+
+entries.sort()
+
+# Rebuild the data array
+data_str = ',\n'.join(f'    \"{e}\"' for e in entries)
+content = re.sub(
+    r'(data:\s*\[)\s*\n.*?\n(\s*\])',
+    r'\1\n' + data_str + ',\n  ]',
+    content,
+    flags=re.DOTALL
+)
+
+with open('$EVENT_NAMES', 'w') as f:
+    f.write(content)
+print('  Patched event_type_names.json5 with Living Web events')
+"
+else
+  echo "  Already patched or file not found"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------
 # ------------------------------------------------------------------
 echo "[2/6] Patching content/browser/BUILD.gn..."
 
@@ -182,11 +226,15 @@ idl_entries = '''  \"//third_party/blink/renderer/modules/graph/content_proof.id
   \"//third_party/blink/renderer/modules/graph/did_credential.idl\",
   \"//third_party/blink/renderer/modules/graph/graph_diff.idl\",
   \"//third_party/blink/renderer/modules/graph/navigator_graph.idl\",
+  \"//third_party/blink/renderer/modules/graph/peer_event.idl\",
   \"//third_party/blink/renderer/modules/graph/personal_graph.idl\",
   \"//third_party/blink/renderer/modules/graph/personal_graph_manager.idl\",
   \"//third_party/blink/renderer/modules/graph/semantic_triple.idl\",
   \"//third_party/blink/renderer/modules/graph/shared_graph.idl\",
-  \"//third_party/blink/renderer/modules/graph/signed_triple.idl\",'''
+  \"//third_party/blink/renderer/modules/graph/signal_event.idl\",
+  \"//third_party/blink/renderer/modules/graph/signed_triple.idl\",
+  \"//third_party/blink/renderer/modules/graph/sync_state_event.idl\",
+  \"//third_party/blink/renderer/modules/graph/triple_event.idl\",'''
 
 if 'graph/navigator_graph.idl' not in content:
     import re

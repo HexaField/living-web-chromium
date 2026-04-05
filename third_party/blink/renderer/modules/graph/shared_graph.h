@@ -11,6 +11,8 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
+#include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
+#include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
 
 namespace blink {
 
@@ -19,7 +21,8 @@ class SharedGraph final : public PersonalGraph {
 
  public:
   SharedGraph(ExecutionContext*, const String& uuid, const String& uri,
-              mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host);
+              mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host,
+              mojo::PendingRemote<graph::mojom::blink::SharedGraphHost> shared_host);
 
   const String& uri() const { return uri_; }
   V8SyncState syncState() const;
@@ -42,6 +45,7 @@ class SharedGraph final : public PersonalGraph {
 
  private:
   String uri_;
+  HeapMojoRemote<graph::mojom::blink::SharedGraphHost> shared_host_;
 };
 
 }  // namespace blink
