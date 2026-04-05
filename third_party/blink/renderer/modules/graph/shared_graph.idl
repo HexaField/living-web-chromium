@@ -22,8 +22,4 @@ interface SharedGraph : PersonalGraph {
   [NewObject] Promise<any> constraintsFor(optional USVString? scopeEntity = null);
   [NewObject] Promise<any> myCapabilities();
 
-  attribute EventHandler onpeerjoined;
-  attribute EventHandler onpeerleft;
-  attribute EventHandler onsyncstatechange;
-  attribute EventHandler onsignal;
 };

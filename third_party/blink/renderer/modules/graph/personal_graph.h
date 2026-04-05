@@ -51,8 +51,6 @@ class PersonalGraph : public EventTarget {
   ScriptPromise<IDLAny> share(ScriptState*, ScriptValue);
 
   // EventTarget overrides
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleadded, kTripleadded)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleremoved, kTripleremoved)
 
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;

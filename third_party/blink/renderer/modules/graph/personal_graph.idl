@@ -34,6 +34,4 @@ interface PersonalGraph : EventTarget {
   [NewObject] Promise<any> share(optional any options);
 
   // Events
-  attribute EventHandler ontripleadded;
-  attribute EventHandler ontripleremoved;
 };

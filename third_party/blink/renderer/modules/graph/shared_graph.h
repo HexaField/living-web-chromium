@@ -31,10 +31,6 @@ class SharedGraph final : public PersonalGraph {
   ScriptPromise<IDLAny> constraintsFor(ScriptState*, const String&);
   ScriptPromise<IDLAny> myCapabilities(ScriptState*);
 
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerjoined, kPeerjoined)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerleft, kPeerleft)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(syncstatechange, kSyncstatechange)
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
 
   const AtomicString& InterfaceName() const override;
   void Trace(Visitor*) const override;
