@@ -10,23 +10,13 @@
 
 namespace content {
 
-namespace {
-
-GraphManager& GetGlobalGraphManager() {
-  static base::NoDestructor<GraphManager> instance;
-  return *instance;
-}
-
-}  // namespace
-
 GraphManager::GraphManager() = default;
 GraphManager::~GraphManager() = default;
 
 // static
-void GraphManager::BindForFrame(
-    content::RenderFrameHost* host,
-    mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
-  GetGlobalGraphManager().BindReceiver(std::move(receiver));
+GraphManager& GraphManager::GetInstance() {
+  static base::NoDestructor<GraphManager> instance;
+  return *instance;
 }
 
 void GraphManager::BindReceiver(

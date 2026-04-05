@@ -340,7 +340,11 @@ if include_line not in content:
 binder_code = '''
   // Living Web: PersonalGraphService
   map.Add<graph::mojom::PersonalGraphService>(
-      base::BindRepeating(&content::GraphManager::BindForFrame));'''
+      base::BindRepeating(
+          [](content::RenderFrameHostImpl* host,
+             mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
+            content::GraphManager::GetInstance().BindReceiver(std::move(receiver));
+          }));'''
 
 if 'PersonalGraphService' not in content:
     # Find a good insertion point — after another map.Add call

@@ -12,7 +12,6 @@
 
 #include "content/browser/graph/graph_host.h"
 #include "content/browser/graph/graph_store.h"
-#include "content/public/browser/render_frame_host.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
 
@@ -33,11 +32,8 @@ class GraphManager : public graph::mojom::PersonalGraphService {
   void BindReceiver(
       mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver);
 
-  // Static binder for BrowserInterfaceBroker registration.
-  // Called from browser_interface_binders.cc for each frame.
-  static void BindForFrame(
-      content::RenderFrameHost* host,
-      mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver);
+  // Get the global GraphManager singleton.
+  static GraphManager& GetInstance();
 
   // mojom::PersonalGraphService:
   void CreateGraph(const std::optional<std::string>& name,
