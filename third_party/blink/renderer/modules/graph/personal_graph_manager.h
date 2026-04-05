@@ -11,7 +11,9 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "mojo/public/mojom/graph/graph.mojom-blink.h"
 
 namespace blink {
 
@@ -31,7 +33,10 @@ class PersonalGraphManager final : public ScriptWrappable {
   void Trace(Visitor*) const override;
 
  private:
+  void EnsureServiceConnected();
+
   Member<ExecutionContext> execution_context_;
+  HeapMojoRemote<graph::mojom::blink::PersonalGraphService> service_;
 };
 
 }  // namespace blink

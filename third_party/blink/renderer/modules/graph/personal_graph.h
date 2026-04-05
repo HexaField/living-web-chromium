@@ -14,15 +14,22 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "mojo/public/mojom/graph/graph.mojom-blink.h"
 
 namespace blink {
+
+class PersonalGraphManager;
 
 class PersonalGraph : public EventTarget {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  PersonalGraph(ExecutionContext*, const String& uuid);
+  // Created by PersonalGraphManager which also binds the host.
+  PersonalGraph(ExecutionContext*, const String& uuid,
+                const String& name,
+                mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host);
 
   // Attributes
   const String& uuid() const { return uuid_; }
@@ -64,6 +71,7 @@ class PersonalGraph : public EventTarget {
   String uuid_;
   String name_;
   Member<ExecutionContext> execution_context_;
+  HeapMojoRemote<graph::mojom::blink::PersonalGraphHost> host_;
 };
 
 }  // namespace blink

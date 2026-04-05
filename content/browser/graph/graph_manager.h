@@ -8,16 +8,19 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
+#include "content/browser/graph/graph_host.h"
 #include "content/browser/graph/graph_store.h"
+#include "content/public/browser/render_frame_host.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
 
 namespace content {
 
 // GraphManager — per-StoragePartition manager of personal graphs.
-// Analogous to IndexedDBContextImpl. Owns all GraphStore instances
-// for an origin and implements the PersonalGraphService Mojo interface.
+// Owns all GraphStore instances for an origin and implements the
+// PersonalGraphService Mojo interface.
 class GraphManager : public graph::mojom::PersonalGraphService {
  public:
   GraphManager();
@@ -28,6 +31,12 @@ class GraphManager : public graph::mojom::PersonalGraphService {
 
   // Bind a new Mojo receiver.
   void BindReceiver(
+      mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver);
+
+  // Static binder for BrowserInterfaceBroker registration.
+  // Called from browser_interface_binders.cc for each frame.
+  static void BindForFrame(
+      content::RenderFrameHost* host,
       mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver);
 
   // mojom::PersonalGraphService:
@@ -50,6 +59,8 @@ class GraphManager : public graph::mojom::PersonalGraphService {
   graph::mojom::GraphInfoPtr MakeGraphInfo(const GraphStore& store);
 
   std::unordered_map<std::string, std::unique_ptr<GraphStore>> stores_;
+  // GraphHosts are owned here; keyed by a unique ID per binding.
+  std::vector<std::unique_ptr<GraphHost>> hosts_;
   mojo::ReceiverSet<graph::mojom::PersonalGraphService> receivers_;
 };
 

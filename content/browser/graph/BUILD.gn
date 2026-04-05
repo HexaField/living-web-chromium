@@ -4,6 +4,8 @@
 
 source_set("graph") {
   sources = [
+    "graph_host.cc",
+    "graph_host.h",
     "graph_manager.cc",
     "graph_manager.h",
     "graph_store.cc",
@@ -16,6 +18,7 @@ source_set("graph") {
 
   deps = [
     "//base",
+    "//content/public/browser",
     "//mojo/public/cpp/bindings",
     "//mojo/public/mojom/graph",
   ]

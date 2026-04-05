@@ -18,7 +18,8 @@ class SharedGraph final : public PersonalGraph {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  SharedGraph(ExecutionContext*, const String& uuid, const String& uri);
+  SharedGraph(ExecutionContext*, const String& uuid, const String& uri,
+              mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host);
 
   const String& uri() const { return uri_; }
   V8SyncState syncState() const;

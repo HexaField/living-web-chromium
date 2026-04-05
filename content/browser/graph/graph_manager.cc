@@ -4,13 +4,30 @@
 
 #include "content/browser/graph/graph_manager.h"
 
+#include "base/no_destructor.h"
 #include "base/uuid.h"
 #include "base/logging.h"
 
 namespace content {
 
+namespace {
+
+GraphManager& GetGlobalGraphManager() {
+  static base::NoDestructor<GraphManager> instance;
+  return *instance;
+}
+
+}  // namespace
+
 GraphManager::GraphManager() = default;
 GraphManager::~GraphManager() = default;
+
+// static
+void GraphManager::BindForFrame(
+    content::RenderFrameHost* host,
+    mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
+  GetGlobalGraphManager().BindReceiver(std::move(receiver));
+}
 
 void GraphManager::BindReceiver(
     mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
@@ -73,17 +90,15 @@ void GraphManager::RemoveGraph(const std::string& uuid,
 void GraphManager::BindGraph(
     const std::string& uuid,
     mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver) {
-  // In full implementation, this would create a GraphHost that
-  // implements PersonalGraphHost and delegates to the GraphStore.
-  // The GraphHost would own the receiver and forward calls.
   auto it = stores_.find(uuid);
   if (it == stores_.end()) {
     LOG(WARNING) << "BindGraph: graph not found: " << uuid;
     return;
   }
-  // TODO: Create GraphHost and bind receiver.
-  // For now, the receiver will be unbound (Mojo will close the pipe).
-  LOG(INFO) << "BindGraph: " << uuid << " (host binding pending)";
+  auto host = std::make_unique<GraphHost>(it->second.get(),
+                                           std::move(receiver));
+  hosts_.push_back(std::move(host));
+  LOG(INFO) << "BindGraph: bound host for " << uuid;
 }
 
 GraphStore* GraphManager::GetStore(const std::string& uuid) {
