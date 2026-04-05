@@ -420,6 +420,15 @@ binder_code = '''
           [](content::RenderFrameHostImpl* host,
              mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
             content::GraphManager::GetInstance().BindDIDReceiver(std::move(receiver));
+          }));
+
+  // Living Web: GraphSyncService
+  map.Add<graph::mojom::GraphSyncService>(
+      base::BindRepeating(
+          [](content::RenderFrameHostImpl* host,
+             mojo::PendingReceiver<graph::mojom::GraphSyncService> receiver) {
+            static content::SyncService sync_service;
+            sync_service.BindReceiver(std::move(receiver));
           }));'''
 
 if 'PersonalGraphService' not in content:
