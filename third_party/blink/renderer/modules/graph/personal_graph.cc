@@ -468,11 +468,83 @@ ScriptPromise<IDLUndefined> PersonalGraph::removeFromShapeCollection(
 }
 
 ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
-                                            ScriptValue) {
+                                            ScriptValue options_val) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  resolver->Resolve(ScriptValue::CreateNull(script_state->GetIsolate()));
-  return resolver->Promise();
+  auto promise = resolver->Promise();
+
+  if (!manager_) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "Cannot share: no manager reference"));
+    return promise;
+  }
+
+  auto& sync_service = manager_->GetSyncService();
+  auto& graph_service = manager_->GetGraphService();
+
+  auto options = graph::mojom::blink::SharedGraphOptions::New();
+  options->sync_protocol = "webrtc-crdt";
+
+  // Extract name/description from options if provided.
+  if (!options_val.IsEmpty() && !options_val.IsUndefined()) {
+    String name = GetStringProp(script_state, options_val, "name");
+    if (!name.IsNull())
+      options->name = name;
+    String desc = GetStringProp(script_state, options_val, "description");
+    if (!desc.IsNull())
+      options->description = desc;
+  }
+
+  sync_service->ShareGraph(
+      uuid_, std::move(options),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLAny>* resolver,
+             PersonalGraphManager* manager,
+             const String& graph_uuid,
+             graph::mojom::blink::SharedGraphInfoPtr info) {
+            if (!info) {
+              resolver->Reject(MakeGarbageCollected<DOMException>(
+                  DOMExceptionCode::kOperationError,
+                  "Failed to share graph"));
+              return;
+            }
+
+            ExecutionContext* context = manager->GetExecutionContext();
+            String uri = info->uri;
+
+            // Bind a PersonalGraphHost for triple operations on the
+            // underlying graph.
+            mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost>
+                host_remote;
+            auto host_receiver =
+                host_remote.InitWithNewPipeAndPassReceiver();
+            manager->GetGraphService()->BindGraph(
+                graph_uuid, std::move(host_receiver));
+
+            // Bind a SharedGraphHost for sync/governance operations.
+            mojo::PendingRemote<graph::mojom::blink::SharedGraphHost>
+                shared_remote;
+            auto shared_receiver =
+                shared_remote.InitWithNewPipeAndPassReceiver();
+            manager->GetSyncService()->BindSharedGraph(
+                uri, std::move(shared_receiver));
+
+            auto* shared_graph = MakeGarbageCollected<SharedGraph>(
+                context, graph_uuid, uri,
+                std::move(host_remote), std::move(shared_remote));
+
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            resolver->Resolve(ScriptValue(
+                ss->GetIsolate(),
+                ToV8Traits<SharedGraph>::ToV8(ss, shared_graph)));
+          },
+          WrapPersistent(resolver),
+          WrapPersistent(manager_.Get()),
+          uuid_));
+
+  return promise;
 }
 
 const AtomicString& PersonalGraph::InterfaceName() const {
@@ -486,6 +558,7 @@ ExecutionContext* PersonalGraph::GetExecutionContext() const {
 
 void PersonalGraph::Trace(Visitor* visitor) const {
   visitor->Trace(execution_context_);
+  visitor->Trace(manager_);
   visitor->Trace(host_);
   EventTarget::Trace(visitor);
 }

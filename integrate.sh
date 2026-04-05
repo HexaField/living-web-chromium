@@ -217,7 +217,7 @@ fi
 
 # Register IDL files in idl_in_modules.gni (the central list of all module IDL files)
 IDL_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/idl_in_modules.gni"
-if [ -f "$IDL_LIST" ] && ! grep -q "graph/" "$IDL_LIST"; then
+if [ -f "$IDL_LIST" ]; then
   python3 -c "
 with open('$IDL_LIST', 'r') as f:
     content = f.read()
@@ -272,7 +272,7 @@ fi
 
 # Register generated V8 binding files in generated_in_modules.gni
 GENERATED_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/generated_in_modules.gni"
-if [ -f "$GENERATED_LIST" ] && ! grep -q "v8_did_credential" "$GENERATED_LIST"; then
+if [ -f "$GENERATED_LIST" ]; then
   python3 -c "
 with open('$GENERATED_LIST', 'r') as f:
     content = f.read()
@@ -281,6 +281,12 @@ import re
 
 # Add enumeration entries (GraphSyncState, SyncState)
 RGD = chr(36) + 'root_gen_dir'
+
+# Remove old graph entries first to be idempotent
+content = re.sub(r'  \"[^\"]*v8_graph_sync_state[^\"]*\",\n', '', content)
+content = re.sub(r'  \"[^\"]*v8_sync_state[^\"]*\",\n', '', content)
+content = re.sub(r'  \"[^\"]*v8_(content_proof|did_credential|graph_diff|navigator_graph|peer_event|personal_graph|personal_graph_manager|semantic_triple|shared_graph|signal_event|signed_triple|sync_state_event|triple_event)[^\"]*\",\n', '', content)
+
 enum_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.cc\",

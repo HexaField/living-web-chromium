@@ -10,7 +10,9 @@
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/graph/shared_graph.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
+#include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
 #include "third_party/blink/renderer/modules/graph/did_credential.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -33,6 +35,7 @@ scoped_refptr<base::SequencedTaskRunner> GetTaskRunner(
 PersonalGraphManager::PersonalGraphManager(ExecutionContext* context)
     : execution_context_(context),
       service_(context),
+      sync_service_(context),
       did_service_(context) {}
 
 void PersonalGraphManager::EnsureServiceConnected() {
@@ -50,13 +53,14 @@ void BindAndResolve(
     ScriptPromiseResolver<IDLAny>* resolver,
     ExecutionContext* context,
     HeapMojoRemote<graph::mojom::blink::PersonalGraphService>& service,
+    PersonalGraphManager* manager,
     const String& uuid,
     const String& name) {
   mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host_remote;
   auto host_receiver = host_remote.InitWithNewPipeAndPassReceiver();
   service->BindGraph(uuid, std::move(host_receiver));
   auto* graph = MakeGarbageCollected<PersonalGraph>(
-      context, uuid, name, std::move(host_remote));
+      context, uuid, name, std::move(host_remote), manager);
   ScriptState* ss = resolver->GetScriptState();
   ScriptState::Scope scope(ss);
   resolver->Resolve(ScriptValue(
@@ -87,7 +91,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
                   "Failed to create graph"));
               return;
             }
-            BindAndResolve(resolver, context, manager->service_,
+            BindAndResolve(resolver, context, manager->service_, manager,
                            info->uuid, info->name);
           },
           WrapPersistent(resolver),
@@ -123,7 +127,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
                                         std::move(host_receiver));
           auto* graph = MakeGarbageCollected<PersonalGraph>(
               context, infos[i]->uuid, infos[i]->name,
-              std::move(host_remote));
+              std::move(host_remote), manager);
           arr->Set(v8_ctx, i,
                    ToV8Traits<PersonalGraph>::ToV8(ss, graph))
               .Check();
@@ -157,7 +161,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::get(ScriptState* script_state,
                   ScriptValue::CreateNull(resolver->GetScriptState()->GetIsolate()));
               return;
             }
-            BindAndResolve(resolver, context, manager->service_,
+            BindAndResolve(resolver, context, manager->service_, manager,
                            info->uuid, info->name);
           },
           WrapPersistent(resolver),
