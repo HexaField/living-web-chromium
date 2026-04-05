@@ -172,8 +172,8 @@ ScriptPromise<IDLAny> DIDCredential::resolve(ScriptState* script_state) {
       did_,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             const std::optional<WTF::String>& doc_json) {
-            if (!doc_json) {
+             const String& doc_json) {
+            if (doc_json.empty()) {
               resolver->Resolve(ScriptValue::CreateNull(
                   resolver->GetScriptState()->GetIsolate()));
               return;
@@ -182,7 +182,7 @@ ScriptPromise<IDLAny> DIDCredential::resolve(ScriptState* script_state) {
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::String> json_str =
-                V8String(isolate, *doc_json);
+                V8String(isolate, doc_json);
             v8::Local<v8::Value> parsed;
             if (v8::JSON::Parse(ss->GetContext(), json_str)
                     .ToLocal(&parsed)) {
