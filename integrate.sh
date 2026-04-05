@@ -389,59 +389,51 @@ BINDERS_CC="$CHROMIUM_SRC/content/browser/browser_interface_binders.cc"
 if [ -f "$BINDERS_CC" ] && ! grep -q "PersonalGraphService" "$BINDERS_CC"; then
   python3 -c "
 import re
+
 with open('$BINDERS_CC', 'r') as f:
     content = f.read()
 
-# Add include
-include_line = '#include \"content/browser/graph/graph_manager.h\"  // Living Web'
-include_line2 = '#include \"content/browser/did/signing_service.h\"  // Living Web DID'
-include_line3 = '#include \"content/browser/graph_sync/sync_service.h\"  // Living Web Sync'
-if include_line not in content:
-    # Add after the last #include
-    includes = list(re.finditer(r'^#include .+$', content, re.MULTILINE))
-    if includes:
-        last = includes[-1]
-        pos = last.end()
-        content = content[:pos] + '\n' + include_line + '\n' + include_line2 + '\n' + include_line3 + content[pos:]
-    
-# Add binder registration
-# Look for the pattern where frame binders are registered
-# Usually: map.Add<mojom::SomeInterface>(...)
+# --- Add includes ---
+# Place Living Web includes just before 'namespace blink {' (which is always
+# outside any #if guards), so they are unconditionally compiled on all platforms.
+include_block = '''// Living Web: Personal Graph
+#include \"content/browser/graph/graph_manager.h\"
+#include \"mojo/public/mojom/graph/graph.mojom.h\"
+'''
+
+if '#include \"content/browser/graph/graph_manager.h\"' not in content:
+    anchor = 'namespace blink {'
+    idx = content.find(anchor)
+    if idx != -1:
+        content = content[:idx] + include_block + '\n' + content[idx:]
+    else:
+        # Fallback: add after last top-level #endif before first namespace
+        m = list(re.finditer(r'^#endif', content, re.MULTILINE))
+        if m:
+            pos = m[-1].end()
+            content = content[:pos] + '\n\n' + include_block + content[pos:]
+
+# --- Add binder registrations ---
+# Insert just before the '// This should be last to allow overrides' comment
+# inside PopulateBinderMapWithContext(RenderFrameHost*).
 binder_code = '''
   // Living Web: PersonalGraphService
-  map.Add<graph::mojom::PersonalGraphService>(
+  map->Add<graph::mojom::PersonalGraphService>(
       base::BindRepeating(
-          [](content::RenderFrameHostImpl* host,
+          [](RenderFrameHost* host,
              mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
             content::GraphManager::GetInstance().BindReceiver(std::move(receiver));
           }));
-
-  // Living Web: DIDCredentialService
-  map.Add<graph::mojom::DIDCredentialService>(
-      base::BindRepeating(
-          [](content::RenderFrameHostImpl* host,
-             mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
-            content::GraphManager::GetInstance().BindDIDReceiver(std::move(receiver));
-          }));
-
-  // Living Web: GraphSyncService
-  map.Add<graph::mojom::GraphSyncService>(
-      base::BindRepeating(
-          [](content::RenderFrameHostImpl* host,
-             mojo::PendingReceiver<graph::mojom::GraphSyncService> receiver) {
-            static content::SyncService sync_service;
-            sync_service.BindReceiver(std::move(receiver));
-          }));'''
+'''
 
 if 'PersonalGraphService' not in content:
-    # Find a good insertion point — after another map.Add call
-    pattern = r'(map\.Add<[^>]+>\([^)]+\);)'
-    matches = list(re.finditer(pattern, content))
-    if matches:
-        last = matches[-1]
-        pos = last.end()
-        content = content[:pos] + '\n' + binder_code + content[pos:]
-    
+    anchor = '  // This should be last to allow overrides of any interface.'
+    idx = content.find(anchor)
+    if idx != -1:
+        content = content[:idx] + binder_code + '\n' + content[idx:]
+    else:
+        print('WARNING: Could not find insertion anchor for binder registration')
+
 with open('$BINDERS_CC', 'w') as f:
     f.write(content)
 print('  Registered PersonalGraphService binder')
