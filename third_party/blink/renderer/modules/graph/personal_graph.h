@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -65,6 +66,10 @@ class PersonalGraph : public EventTarget {
   // EventTarget overrides
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
+
+  // Event handlers (Spec 01 §4.2)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleadded, kTripleadded)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleremoved, kTripleremoved)
 
   void Trace(Visitor*) const override;
 

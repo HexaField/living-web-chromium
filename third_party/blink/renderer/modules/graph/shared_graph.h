@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
+#include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
@@ -41,6 +42,13 @@ class SharedGraph final : public PersonalGraph {
   ScriptPromise<IDLAny> myCapabilities(ScriptState*);
 
   const AtomicString& InterfaceName() const override;
+
+  // Event handlers (Spec 03)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerjoined, kPeerjoined)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerleft, kPeerleft)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(syncstatechange, kSyncstatechange)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
+
   void Trace(Visitor*) const override;
 
  private:
