@@ -16,9 +16,6 @@
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
-using WTF::BindOnce;
-using WTF::WrapPersistent;
-
 namespace blink {
 
 namespace {

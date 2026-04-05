@@ -13,9 +13,6 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 
-using WTF::BindOnce;
-using WTF::WrapPersistent;
-
 namespace blink {
 
 PersonalGraphManager::PersonalGraphManager(ExecutionContext* context)
@@ -26,8 +23,7 @@ void PersonalGraphManager::EnsureServiceConnected() {
   if (service_.is_bound())
     return;
   execution_context_->GetBrowserInterfaceBroker().GetInterface(
-      service_.BindNewPipeAndPassReceiver(
-          execution_context_->GetTaskRunner(TaskType::kMiscPlatformAPI)));
+      service_.BindNewPipeAndPassReceiver());
 }
 
 // Helper: bind a PersonalGraphHost for a graph UUID, create the
@@ -64,7 +60,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
 
   service_->CreateGraph(
       opt_name,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              ExecutionContext* context,
              PersonalGraphManager* manager,
@@ -92,7 +88,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
 
   EnsureServiceConnected();
 
-  service_->ListGraphs(WTF::BindOnce(
+  service_->ListGraphs(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          ExecutionContext* context,
          PersonalGraphManager* manager,
@@ -126,7 +122,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::get(ScriptState* script_state,
 
   service_->GetGraph(
       uuid,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              ExecutionContext* context,
              PersonalGraphManager* manager,
@@ -156,7 +152,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::remove(ScriptState* script_state,
 
   service_->RemoveGraph(
       uuid,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
             v8::Isolate* isolate = resolver->GetScriptState()->GetIsolate();
             resolver->Resolve(
