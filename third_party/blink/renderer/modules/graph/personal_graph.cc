@@ -478,7 +478,6 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
   }
 
   auto& sync_service = manager_->GetSyncService();
-  auto& graph_service = manager_->GetGraphService();
 
   auto options = graph::mojom::blink::SharedGraphOptions::New();
   options->sync_protocol = "webrtc-crdt";
