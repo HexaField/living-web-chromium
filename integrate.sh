@@ -284,13 +284,11 @@ RGD = chr(36) + 'root_gen_dir'
 
 # Remove old graph entries first to be idempotent
 content = re.sub(r'  \"[^\"]*v8_graph_sync_state[^\"]*\",\n', '', content)
-content = re.sub(r'  \"[^\"]*v8_sync_state[^\"]*\",\n', '', content)
+content = re.sub(r'  \"[^\"]*v8_sync_state(?!_event)[^\"]*\",\n', '', content)
 content = re.sub(r'  \"[^\"]*v8_(content_proof|did_credential|graph_diff|navigator_graph|peer_event|personal_graph|personal_graph_manager|semantic_triple|shared_graph|signal_event|signed_triple|sync_state_event|triple_event)[^\"]*\",\n', '', content)
 
 enum_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h\",'''
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h\",'''
 
 # Find last entry in generated_enumeration_sources_in_modules
 pattern = r'(generated_enumeration_sources_in_modules\s*=\s*\[.*?)(^\])'
@@ -306,8 +304,6 @@ iface_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_navigator_graph.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_navigator_graph.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.cc\",

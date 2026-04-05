@@ -59,16 +59,16 @@ This document tracks the alignment between the [Living Web specifications](https
 
 | API | Spec Section | IDL | C++ | WPT | Status | Notes |
 |-----|-------------|-----|-----|-----|--------|-------|
-| `graph.join(uri)` | §5.1 / §8.2 | ✅ | ✅ | ✅ | Stub | |
-| `graph.listShared()` | §5.1 | ✅ | ✅ | ✅ | Stub | |
-| `PersonalGraph.share()` | §5.1 / §8.1 | ✅ | ✅ | ✅ | Stub | Options param as `any` |
+| `graph.join(uri)` | §5.1 / §8.2 | ✅ | ✅ | ✅ | Wired | |
+| `graph.listShared()` | §5.1 | ✅ | ✅ | ✅ | Wired | |
+| `PersonalGraph.share()` | §5.1 / §8.1 | ✅ | ✅ | ✅ | Wired | Options param as `any` |
 | `SharedGraph` interface | §5.2 | ✅ | ✅ | ✅ | Stub | Extends PersonalGraph |
 | `SharedGraph.uri` | §5.2 | ✅ | ✅ | ✅ | Stub | |
-| `SharedGraph.syncState` | §5.2 | ✅ | ✅ | ✅ | Stub | Returns `"idle"` |
-| `peers()` | §5.2 | ✅ | ✅ | ✅ | Stub | Returns `any` instead of `sequence<USVString>` |
-| `onlinePeers()` | §5.2 | ✅ | ✅ | ✅ | Stub | Returns `any` instead of `sequence<OnlinePeer>` |
-| `sendSignal(did, payload)` | §9.1 | ✅ | ✅ | ✅ | Stub | |
-| `broadcast(payload)` | §9.2 | ✅ | ✅ | ✅ | Stub | |
+| `SharedGraph.syncState` | §5.2 | ✅ | ✅ | ✅ | Wired | Returns `"idle"` |
+| `peers()` | §5.2 | ✅ | ✅ | ✅ | Wired | Returns `any` instead of `sequence<USVString>` |
+| `onlinePeers()` | §5.2 | ✅ | ✅ | ✅ | Wired | Returns `any` instead of `sequence<OnlinePeer>` |
+| `sendSignal(did, payload)` | §9.1 | ✅ | ✅ | ✅ | Wired | |
+| `broadcast(payload)` | §9.2 | ✅ | ✅ | ✅ | Wired | |
 | `SyncState` enum | §5.5 | ✅ | ✅ | ✅ | Stub | |
 | `GraphDiff` interface | §5.4 | ✅ | ✅ | — | Stub | Typed attributes + `any` for arrays |
 | `GraphSyncProtocol` interface | §5.3 | ❌ | ❌ | — | Deferred | Internal protocol contract |
@@ -101,9 +101,9 @@ This document tracks the alignment between the [Living Web specifications](https
 
 | API | Spec Section | IDL | C++ | WPT | Status | Notes |
 |-----|-------------|-----|-----|-----|--------|-------|
-| `canAddTriple(triple)` | §9.1 | ⚠️ | ✅ | ✅ | Stub | Param: `any` instead of `SemanticTriple` |
-| `constraintsFor(entityAddress?)` | §9.2 | ✅ | ✅ | ✅ | Stub | Returns `any` instead of `sequence<GraphConstraint>` |
-| `myCapabilities()` | §9.3 | ✅ | ✅ | ✅ | Stub | Returns `any` instead of `sequence<CapabilityInfo>` |
+| `canAddTriple(triple)` | §9.1 | ⚠️ | ✅ | ✅ | Wired | Param: `any` instead of `SemanticTriple` |
+| `constraintsFor(entityAddress?)` | §9.2 | ✅ | ✅ | ✅ | Wired | Returns `any` instead of `sequence<GraphConstraint>` |
+| `myCapabilities()` | §9.3 | ✅ | ✅ | ✅ | Wired | Returns `any` instead of `sequence<CapabilityInfo>` |
 | `ValidationResult` dictionary | §9.1 | ❌ | — | — | Deferred | Returns `any` |
 | `GraphConstraint` dictionary | §9.2 | ❌ | — | — | Deferred | Returns `any` |
 | `CapabilityInfo` dictionary | §9.3 | ❌ | — | — | Deferred | Returns `any` |
