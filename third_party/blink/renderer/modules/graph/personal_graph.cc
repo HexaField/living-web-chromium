@@ -52,16 +52,26 @@ String GetStringProp(ScriptState* script_state,
   return ToCoreString(isolate, result.As<v8::String>());
 }
 
-SignedTriple* ToBlinkSignedTriple(
+v8::Local<v8::Object> SignedTripleToV8Object(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> ctx,
     const graph::mojom::blink::SignedTriplePtr& m) {
-  String predicate = m->data->predicate.IsNull() ? g_empty_string
-                                                   : m->data->predicate;
-  auto* data = MakeGarbageCollected<SemanticTriple>(
-      m->data->source, m->data->target, predicate);
-  auto* proof = MakeGarbageCollected<ContentProof>(
-      m->proof->key, m->proof->signature);
-  return MakeGarbageCollected<SignedTriple>(
-      data, m->author, m->timestamp, proof);
+  v8::Local<v8::Object> data_obj = v8::Object::New(isolate);
+  data_obj->Set(ctx, V8String(isolate, "source"), V8String(isolate, m->data->source)).Check();
+  data_obj->Set(ctx, V8String(isolate, "target"), V8String(isolate, m->data->target)).Check();
+  String predicate = m->data->predicate.IsNull() ? g_empty_string : m->data->predicate;
+  data_obj->Set(ctx, V8String(isolate, "predicate"), V8String(isolate, predicate)).Check();
+
+  v8::Local<v8::Object> proof_obj = v8::Object::New(isolate);
+  proof_obj->Set(ctx, V8String(isolate, "key"), V8String(isolate, m->proof->key)).Check();
+  proof_obj->Set(ctx, V8String(isolate, "signature"), V8String(isolate, m->proof->signature)).Check();
+
+  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+  obj->Set(ctx, V8String(isolate, "data"), data_obj).Check();
+  obj->Set(ctx, V8String(isolate, "author"), V8String(isolate, m->author)).Check();
+  obj->Set(ctx, V8String(isolate, "timestamp"), V8String(isolate, m->timestamp)).Check();
+  obj->Set(ctx, V8String(isolate, "proof"), proof_obj).Check();
+  return obj;
 }
 
 graph::mojom::blink::SemanticTriplePtr MakeMojoTriple(
@@ -75,6 +85,7 @@ graph::mojom::blink::SemanticTriplePtr MakeMojoTriple(
 
 void ResolveWithEmptyArray(ScriptPromiseResolver<IDLAny>* resolver) {
   ScriptState* ss = resolver->GetScriptState();
+  if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
   resolver->Resolve(ScriptValue(ss->GetIsolate(),
                                 v8::Array::New(ss->GetIsolate(), 0)));
@@ -82,6 +93,8 @@ void ResolveWithEmptyArray(ScriptPromiseResolver<IDLAny>* resolver) {
 
 void ResolveWithBool(ScriptPromiseResolver<IDLAny>* resolver, bool val) {
   ScriptState* ss = resolver->GetScriptState();
+  if (!ss->ContextIsValid()) return;
+  ScriptState::Scope scope(ss);
   resolver->Resolve(ScriptValue(ss->GetIsolate(),
                                 v8::Boolean::New(ss->GetIsolate(), val)));
 }
@@ -89,6 +102,7 @@ void ResolveWithBool(ScriptPromiseResolver<IDLAny>* resolver, bool val) {
 void ResolveWithString(ScriptPromiseResolver<IDLAny>* resolver,
                        const String& str) {
   ScriptState* ss = resolver->GetScriptState();
+  if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
   resolver->Resolve(ScriptValue(
       ss->GetIsolate(),
@@ -100,14 +114,14 @@ void ResolveWithSignedTripleArray(
     ScriptPromiseResolver<IDLAny>* resolver,
     const Vector<graph::mojom::blink::SignedTriplePtr>& triples) {
   ScriptState* ss = resolver->GetScriptState();
+  if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
   v8::Isolate* isolate = ss->GetIsolate();
   v8::Local<v8::Context> ctx = ss->GetContext();
   v8::Local<v8::Array> arr = v8::Array::New(isolate,
                                              static_cast<int>(triples.size()));
   for (wtf_size_t i = 0; i < triples.size(); i++) {
-    SignedTriple* st = ToBlinkSignedTriple(triples[i]);
-    arr->Set(ctx, i, ToV8Traits<SignedTriple>::ToV8(ss, st)).Check();
+    arr->Set(ctx, i, SignedTripleToV8Object(isolate, ctx, triples[i])).Check();
   }
   resolver->Resolve(ScriptValue(isolate, arr));
 }
@@ -150,10 +164,12 @@ ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
               return;
             }
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
-            SignedTriple* st = ToBlinkSignedTriple(result);
-            ScriptValue sv(ss->GetIsolate(),
-                           ToV8Traits<SignedTriple>::ToV8(ss, st));
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> ctx = ss->GetContext();
+            v8::Local<v8::Object> obj = SignedTripleToV8Object(isolate, ctx, result);
+            ScriptValue sv(isolate, obj);
             resolver->Resolve(sv);
             self->DispatchEvent(
                 *TripleEvent::Create(event_type_names::kTripleadded, sv));
@@ -369,6 +385,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              const Vector<String>& instances) {
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> ctx = ss->GetContext();
@@ -526,15 +543,15 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
             manager->GetSyncService()->BindSharedGraph(
                 uri, std::move(shared_receiver));
 
-            auto* shared_graph = MakeGarbageCollected<SharedGraph>(
-                context, graph_uuid, uri,
-                std::move(host_remote), std::move(shared_remote));
-
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
-            resolver->Resolve(ScriptValue(
-                ss->GetIsolate(),
-                ToV8Traits<SharedGraph>::ToV8(ss, shared_graph)));
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> v8_ctx = ss->GetContext();
+            v8::Local<v8::Object> obj = v8::Object::New(isolate);
+            obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, graph_uuid)).Check();
+            obj->Set(v8_ctx, V8String(isolate, "uri"), V8String(isolate, uri)).Check();
+            resolver->Resolve(ScriptValue(isolate, obj));
           },
           WrapPersistent(resolver),
           WrapPersistent(manager_.Get()),

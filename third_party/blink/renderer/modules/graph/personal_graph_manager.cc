@@ -45,27 +45,36 @@ void PersonalGraphManager::EnsureServiceConnected() {
       service_.BindNewPipeAndPassReceiver(GetTaskRunner(execution_context_)));
 }
 
-// Helper: bind a PersonalGraphHost for a graph UUID, create the
-// PersonalGraph object, and resolve the promise.
+// Helper: resolve with a plain {uuid, name} JS object for a graph.
 namespace {
 
-void BindAndResolve(
+void ResolveWithGraphInfo(
     ScriptPromiseResolver<IDLAny>* resolver,
-    ExecutionContext* context,
-    HeapMojoRemote<graph::mojom::blink::PersonalGraphService>& service,
-    PersonalGraphManager* manager,
     const String& uuid,
     const String& name) {
-  mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host_remote;
-  auto host_receiver = host_remote.InitWithNewPipeAndPassReceiver();
-  service->BindGraph(uuid, std::move(host_receiver));
-  auto* graph = MakeGarbageCollected<PersonalGraph>(
-      context, uuid, name, std::move(host_remote), manager);
   ScriptState* ss = resolver->GetScriptState();
+  if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
-  resolver->Resolve(ScriptValue(
-      ss->GetIsolate(),
-      ToV8Traits<PersonalGraph>::ToV8(ss, graph)));
+  v8::Isolate* isolate = ss->GetIsolate();
+  v8::Local<v8::Context> v8_ctx = ss->GetContext();
+  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+  obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, uuid)).Check();
+  obj->Set(v8_ctx, V8String(isolate, "name"), V8String(isolate, name)).Check();
+  resolver->Resolve(ScriptValue(isolate, obj));
+}
+
+v8::Local<v8::Object> MakeDIDCredentialObject(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> ctx,
+    const graph::mojom::blink::DIDCredentialInfoPtr& info) {
+  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+  obj->Set(ctx, V8String(isolate, "id"), V8String(isolate, info->id)).Check();
+  obj->Set(ctx, V8String(isolate, "did"), V8String(isolate, info->did)).Check();
+  obj->Set(ctx, V8String(isolate, "algorithm"), V8String(isolate, info->algorithm)).Check();
+  obj->Set(ctx, V8String(isolate, "displayName"), V8String(isolate, info->display_name)).Check();
+  obj->Set(ctx, V8String(isolate, "createdAt"), V8String(isolate, info->created_at)).Check();
+  obj->Set(ctx, V8String(isolate, "isLocked"), v8::Boolean::New(isolate, info->is_locked)).Check();
+  return obj;
 }
 
 }  // namespace
@@ -91,8 +100,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
                   "Failed to create graph"));
               return;
             }
-            BindAndResolve(resolver, context, manager->service_, manager,
-                           info->uuid, info->name);
+            ResolveWithGraphInfo(resolver, info->uuid, info->name);
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),
@@ -114,23 +122,17 @@ ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
          PersonalGraphManager* manager,
          Vector<graph::mojom::blink::GraphInfoPtr> infos) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> v8_ctx = ss->GetContext();
         v8::Local<v8::Array> arr =
             v8::Array::New(isolate, static_cast<int>(infos.size()));
         for (wtf_size_t i = 0; i < infos.size(); i++) {
-          mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost>
-              host_remote;
-          auto host_receiver = host_remote.InitWithNewPipeAndPassReceiver();
-          manager->service_->BindGraph(infos[i]->uuid,
-                                        std::move(host_receiver));
-          auto* graph = MakeGarbageCollected<PersonalGraph>(
-              context, infos[i]->uuid, infos[i]->name,
-              std::move(host_remote), manager);
-          arr->Set(v8_ctx, i,
-                   ToV8Traits<PersonalGraph>::ToV8(ss, graph))
-              .Check();
+          v8::Local<v8::Object> obj = v8::Object::New(isolate);
+          obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, infos[i]->uuid)).Check();
+          obj->Set(v8_ctx, V8String(isolate, "name"), V8String(isolate, infos[i]->name)).Check();
+          arr->Set(v8_ctx, i, obj).Check();
         }
         resolver->Resolve(ScriptValue(isolate, arr));
       },
@@ -161,8 +163,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::get(ScriptState* script_state,
                   ScriptValue::CreateNull(resolver->GetScriptState()->GetIsolate()));
               return;
             }
-            BindAndResolve(resolver, context, manager->service_, manager,
-                           info->uuid, info->name);
+            ResolveWithGraphInfo(resolver, info->uuid, info->name);
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),
@@ -184,6 +185,8 @@ ScriptPromise<IDLAny> PersonalGraphManager::remove(ScriptState* script_state,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss->ContextIsValid()) return;
+            ScriptState::Scope scope(ss);
             resolver->Resolve(ScriptValue(
                 ss->GetIsolate(),
                 v8::Boolean::New(ss->GetIsolate(), success)));
@@ -232,15 +235,16 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
             manager->GetSyncService()->BindSharedGraph(
                 uri, std::move(shared_receiver));
 
-            auto* shared_graph = MakeGarbageCollected<SharedGraph>(
-                context, String(), uri,
-                std::move(host_remote), std::move(shared_remote));
-
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
-            resolver->Resolve(ScriptValue(
-                ss->GetIsolate(),
-                ToV8Traits<SharedGraph>::ToV8(ss, shared_graph)));
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> v8_ctx = ss->GetContext();
+            v8::Local<v8::Object> obj = v8::Object::New(isolate);
+            obj->Set(v8_ctx, V8String(isolate, "uri"), V8String(isolate, info->uri)).Check();
+            obj->Set(v8_ctx, V8String(isolate, "name"), V8String(isolate, info->name)).Check();
+            obj->Set(v8_ctx, V8String(isolate, "peerCount"), v8::Number::New(isolate, info->peer_count)).Check();
+            resolver->Resolve(ScriptValue(isolate, obj));
           },
           WrapPersistent(resolver),
           WrapPersistent(this),
@@ -261,6 +265,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listShared(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::SharedGraphInfoPtr> infos) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> ctx = ss->GetContext();
@@ -319,15 +324,12 @@ ScriptPromise<IDLAny> PersonalGraphManager::createIdentity(
                   "Failed to create identity"));
               return;
             }
-            auto* cred = MakeGarbageCollected<DIDCredential>(
-                context, info->id, info->did, info->algorithm,
-                info->display_name, info->created_at, info->is_locked,
-                manager);
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
-            resolver->Resolve(ScriptValue(
-                ss->GetIsolate(),
-                ToV8Traits<DIDCredential>::ToV8(ss, cred)));
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> v8_ctx = ss->GetContext();
+            resolver->Resolve(ScriptValue(isolate, MakeDIDCredentialObject(isolate, v8_ctx, info)));
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),
@@ -350,19 +352,14 @@ ScriptPromise<IDLAny> PersonalGraphManager::listIdentities(
          PersonalGraphManager* manager,
          Vector<graph::mojom::blink::DIDCredentialInfoPtr> infos) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> v8_ctx = ss->GetContext();
         v8::Local<v8::Array> arr =
             v8::Array::New(isolate, static_cast<int>(infos.size()));
         for (wtf_size_t i = 0; i < infos.size(); i++) {
-          auto* cred = MakeGarbageCollected<DIDCredential>(
-              context, infos[i]->id, infos[i]->did, infos[i]->algorithm,
-              infos[i]->display_name, infos[i]->created_at,
-              infos[i]->is_locked, manager);
-          arr->Set(v8_ctx, i,
-                   ToV8Traits<DIDCredential>::ToV8(ss, cred))
-              .Check();
+          arr->Set(v8_ctx, i, MakeDIDCredentialObject(isolate, v8_ctx, infos[i])).Check();
         }
         resolver->Resolve(ScriptValue(isolate, arr));
       },
@@ -391,15 +388,12 @@ ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
               resolver->GetScriptState()->GetIsolate()));
           return;
         }
-        auto* cred = MakeGarbageCollected<DIDCredential>(
-            context, info->id, info->did, info->algorithm,
-            info->display_name, info->created_at, info->is_locked,
-            manager);
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
-        resolver->Resolve(ScriptValue(
-            ss->GetIsolate(),
-            ToV8Traits<DIDCredential>::ToV8(ss, cred)));
+        v8::Isolate* isolate = ss->GetIsolate();
+        v8::Local<v8::Context> v8_ctx = ss->GetContext();
+        resolver->Resolve(ScriptValue(isolate, MakeDIDCredentialObject(isolate, v8_ctx, info)));
       },
       WrapPersistent(resolver),
       WrapPersistent(execution_context_.Get()),
