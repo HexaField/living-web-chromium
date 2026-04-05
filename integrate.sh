@@ -417,12 +417,20 @@ if '#include \"content/browser/graph/graph_manager.h\"' not in content:
 # Insert just before the '// This should be last to allow overrides' comment
 # inside PopulateBinderMapWithContext(RenderFrameHost*).
 binder_code = '''
-  // Living Web: PersonalGraphService
+  // Living Web: Personal Graph Service
   map->Add<graph::mojom::PersonalGraphService>(
       base::BindRepeating(
           [](RenderFrameHost* host,
              mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
             content::GraphManager::GetInstance().BindReceiver(std::move(receiver));
+          }));
+
+  // Living Web: DID Credential Service
+  map->Add<graph::mojom::DIDCredentialService>(
+      base::BindRepeating(
+          [](RenderFrameHost* host,
+             mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
+            content::GraphManager::GetInstance().BindDIDReceiver(std::move(receiver));
           }));
 '''
 
