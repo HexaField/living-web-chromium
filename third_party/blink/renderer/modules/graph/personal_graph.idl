@@ -39,7 +39,6 @@ interface PersonalGraph : EventTarget {
   [CallWith=ScriptState, NewObject] Promise<any> share(optional any options);
 
   // Events (Spec 01 §4.2)
-  // Note: ontripleadded / ontripleremoved event handlers are specified but omitted
-  // from the IDL because custom event type names require registration in Chromium's
-  // event_type_names.json5 which lives outside this overlay. See SPEC_COMPLIANCE.md.
+  attribute EventHandler ontripleadded;
+  attribute EventHandler ontripleremoved;
 };

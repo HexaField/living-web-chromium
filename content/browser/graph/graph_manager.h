@@ -12,6 +12,8 @@
 
 #include "content/browser/graph/graph_host.h"
 #include "content/browser/graph/graph_store.h"
+#include "content/browser/did/did_key_provider.h"
+#include "content/browser/did/signing_service.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
 
@@ -31,6 +33,10 @@ class GraphManager : public graph::mojom::PersonalGraphService {
   // Bind a new Mojo receiver.
   void BindReceiver(
       mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver);
+
+  // Bind a DID credential service receiver.
+  void BindDIDReceiver(
+      mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver);
 
   // Get the global GraphManager singleton.
   static GraphManager& GetInstance();
@@ -58,6 +64,10 @@ class GraphManager : public graph::mojom::PersonalGraphService {
   // GraphHosts are owned here; keyed by a unique ID per binding.
   std::vector<std::unique_ptr<GraphHost>> hosts_;
   mojo::ReceiverSet<graph::mojom::PersonalGraphService> receivers_;
+
+  // DID identity subsystem.
+  DIDKeyProvider did_key_provider_;
+  std::unique_ptr<SigningService> signing_service_;
 };
 
 }  // namespace content

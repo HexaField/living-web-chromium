@@ -179,6 +179,7 @@ with open('$IDL_LIST', 'r') as f:
     content = f.read()
 
 idl_entries = '''  \"//third_party/blink/renderer/modules/graph/content_proof.idl\",
+  \"//third_party/blink/renderer/modules/graph/did_credential.idl\",
   \"//third_party/blink/renderer/modules/graph/graph_diff.idl\",
   \"//third_party/blink/renderer/modules/graph/navigator_graph.idl\",
   \"//third_party/blink/renderer/modules/graph/personal_graph.idl\",
@@ -244,6 +245,8 @@ if match:
 # Add interface entries
 iface_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.cc\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.h\",
   \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.cc\",
@@ -326,13 +329,14 @@ with open('$BINDERS_CC', 'r') as f:
 
 # Add include
 include_line = '#include \"content/browser/graph/graph_manager.h\"  // Living Web'
+include_line2 = '#include \"content/browser/did/signing_service.h\"  // Living Web DID'
 if include_line not in content:
     # Add after the last #include
     includes = list(re.finditer(r'^#include .+$', content, re.MULTILINE))
     if includes:
         last = includes[-1]
         pos = last.end()
-        content = content[:pos] + '\n' + include_line + content[pos:]
+        content = content[:pos] + '\n' + include_line + '\n' + include_line2 + content[pos:]
     
 # Add binder registration
 # Look for the pattern where frame binders are registered
@@ -344,6 +348,14 @@ binder_code = '''
           [](content::RenderFrameHostImpl* host,
              mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
             content::GraphManager::GetInstance().BindReceiver(std::move(receiver));
+          }));
+
+  // Living Web: DIDCredentialService
+  map.Add<graph::mojom::DIDCredentialService>(
+      base::BindRepeating(
+          [](content::RenderFrameHostImpl* host,
+             mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
+            content::GraphManager::GetInstance().BindDIDReceiver(std::move(receiver));
           }));'''
 
 if 'PersonalGraphService' not in content:

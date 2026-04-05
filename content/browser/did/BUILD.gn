@@ -7,6 +7,7 @@ source_set("did") {
     "did_credential.h",
     "did_key_provider.cc",
     "did_key_provider.h",
+    "signing_service.cc",
     "signing_service.h",
   ]
 

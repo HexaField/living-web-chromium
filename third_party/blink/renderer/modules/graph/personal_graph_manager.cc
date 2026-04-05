@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
+#include "third_party/blink/renderer/modules/graph/did_credential.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -31,7 +32,8 @@ scoped_refptr<base::SequencedTaskRunner> GetTaskRunner(
 
 PersonalGraphManager::PersonalGraphManager(ExecutionContext* context)
     : execution_context_(context),
-      service_(context) {}
+      service_(context),
+      did_service_(context) {}
 
 void PersonalGraphManager::EnsureServiceConnected() {
   if (service_.is_bound())
@@ -205,9 +207,128 @@ ScriptPromise<IDLAny> PersonalGraphManager::listShared(
   return resolver->Promise();
 }
 
+void PersonalGraphManager::EnsureDIDServiceConnected() {
+  if (did_service_.is_bound())
+    return;
+  execution_context_->GetBrowserInterfaceBroker().GetInterface(
+      did_service_.BindNewPipeAndPassReceiver(GetTaskRunner(execution_context_)));
+}
+
+ScriptPromise<IDLAny> PersonalGraphManager::createIdentity(
+    ScriptState* script_state,
+    const String& display_name) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto promise = resolver->Promise();
+
+  EnsureDIDServiceConnected();
+
+  did_service_->CreateCredential(
+      display_name, "Ed25519",
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLAny>* resolver,
+             ExecutionContext* context,
+             PersonalGraphManager* manager,
+             graph::mojom::blink::DIDCredentialInfoPtr info) {
+            if (!info) {
+              resolver->Reject(MakeGarbageCollected<DOMException>(
+                  DOMExceptionCode::kOperationError,
+                  "Failed to create identity"));
+              return;
+            }
+            auto* cred = MakeGarbageCollected<DIDCredential>(
+                context, info->id, info->did, info->algorithm,
+                info->display_name, info->created_at, info->is_locked,
+                manager->GetDIDService());
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            resolver->Resolve(ScriptValue(
+                ss->GetIsolate(),
+                ToV8Traits<DIDCredential>::ToV8(ss, cred)));
+          },
+          WrapPersistent(resolver),
+          WrapPersistent(execution_context_.Get()),
+          WrapPersistent(this)));
+
+  return promise;
+}
+
+ScriptPromise<IDLAny> PersonalGraphManager::listIdentities(
+    ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto promise = resolver->Promise();
+
+  EnsureDIDServiceConnected();
+
+  did_service_->ListCredentials(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         ExecutionContext* context,
+         PersonalGraphManager* manager,
+         WTF::Vector<graph::mojom::blink::DIDCredentialInfoPtr> infos) {
+        ScriptState* ss = resolver->GetScriptState();
+        ScriptState::Scope scope(ss);
+        v8::Isolate* isolate = ss->GetIsolate();
+        v8::Local<v8::Context> v8_ctx = ss->GetContext();
+        v8::Local<v8::Array> arr =
+            v8::Array::New(isolate, static_cast<int>(infos.size()));
+        for (wtf_size_t i = 0; i < infos.size(); i++) {
+          auto* cred = MakeGarbageCollected<DIDCredential>(
+              context, infos[i]->id, infos[i]->did, infos[i]->algorithm,
+              infos[i]->display_name, infos[i]->created_at,
+              infos[i]->is_locked, manager->GetDIDService());
+          arr->Set(v8_ctx, i,
+                   ToV8Traits<DIDCredential>::ToV8(ss, cred))
+              .Check();
+        }
+        resolver->Resolve(ScriptValue(isolate, arr));
+      },
+      WrapPersistent(resolver),
+      WrapPersistent(execution_context_.Get()),
+      WrapPersistent(this)));
+
+  return promise;
+}
+
+ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
+    ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto promise = resolver->Promise();
+
+  EnsureDIDServiceConnected();
+
+  did_service_->GetActiveCredential(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         ExecutionContext* context,
+         PersonalGraphManager* manager,
+         graph::mojom::blink::DIDCredentialInfoPtr info) {
+        if (!info) {
+          resolver->Resolve(ScriptValue::CreateNull(
+              resolver->GetScriptState()->GetIsolate()));
+          return;
+        }
+        auto* cred = MakeGarbageCollected<DIDCredential>(
+            context, info->id, info->did, info->algorithm,
+            info->display_name, info->created_at, info->is_locked,
+            manager->GetDIDService());
+        ScriptState* ss = resolver->GetScriptState();
+        ScriptState::Scope scope(ss);
+        resolver->Resolve(ScriptValue(
+            ss->GetIsolate(),
+            ToV8Traits<DIDCredential>::ToV8(ss, cred)));
+      },
+      WrapPersistent(resolver),
+      WrapPersistent(execution_context_.Get()),
+      WrapPersistent(this)));
+
+  return promise;
+}
+
 void PersonalGraphManager::Trace(Visitor* visitor) const {
   visitor->Trace(execution_context_);
   visitor->Trace(service_);
+  visitor->Trace(did_service_);
   ScriptWrappable::Trace(visitor);
 }
 

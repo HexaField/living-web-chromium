@@ -17,6 +17,8 @@
 
 namespace blink {
 
+class DIDCredential;
+
 class PersonalGraphManager final : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -30,13 +32,26 @@ class PersonalGraphManager final : public ScriptWrappable {
   ScriptPromise<IDLAny> join(ScriptState*, const String& uri);
   ScriptPromise<IDLAny> listShared(ScriptState*);
 
+  // DID Identity
+  ScriptPromise<IDLAny> createIdentity(ScriptState*, const String& display_name = String());
+  ScriptPromise<IDLAny> listIdentities(ScriptState*);
+  ScriptPromise<IDLAny> activeIdentity(ScriptState*);
+
+  // Expose DID service remote for DIDCredential objects.
+  HeapMojoRemote<graph::mojom::blink::DIDCredentialService>& GetDIDService() {
+    EnsureDIDServiceConnected();
+    return did_service_;
+  }
+
   void Trace(Visitor*) const override;
 
  private:
   void EnsureServiceConnected();
+  void EnsureDIDServiceConnected();
 
   Member<ExecutionContext> execution_context_;
   HeapMojoRemote<graph::mojom::blink::PersonalGraphService> service_;
+  HeapMojoRemote<graph::mojom::blink::DIDCredentialService> did_service_;
 };
 
 }  // namespace blink

@@ -26,5 +26,9 @@ interface SharedGraph : PersonalGraph {
   [CallWith=ScriptState, NewObject] Promise<any> constraintsFor(optional USVString? entityAddress = null);
   [CallWith=ScriptState, NewObject] Promise<any> myCapabilities();
 
-  // Events — see personal_graph.idl comment and SPEC_COMPLIANCE.md
+  // Events (Spec 03)
+  attribute EventHandler onpeerjoined;
+  attribute EventHandler onpeerleft;
+  attribute EventHandler onsyncstatechange;
+  attribute EventHandler onsignal;
 };

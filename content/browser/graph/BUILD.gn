@@ -18,6 +18,7 @@ source_set("graph") {
 
   deps = [
     "//base",
+    "//content/browser/did",
     "//mojo/public/cpp/bindings",
     "//mojo/public/mojom/graph",
   ]

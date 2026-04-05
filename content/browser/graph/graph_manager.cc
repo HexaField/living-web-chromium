@@ -10,7 +10,8 @@
 
 namespace content {
 
-GraphManager::GraphManager() = default;
+GraphManager::GraphManager()
+    : signing_service_(std::make_unique<SigningService>(&did_key_provider_)) {}
 GraphManager::~GraphManager() = default;
 
 // static
@@ -22,6 +23,11 @@ GraphManager& GraphManager::GetInstance() {
 void GraphManager::BindReceiver(
     mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
   receivers_.Add(this, std::move(receiver));
+}
+
+void GraphManager::BindDIDReceiver(
+    mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
+  signing_service_->BindReceiver(std::move(receiver));
 }
 
 graph::mojom::GraphInfoPtr GraphManager::MakeGraphInfo(

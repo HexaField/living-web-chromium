@@ -11,6 +11,7 @@ blink_modules_sources("graph") {
     "graph_diff.h",
     "navigator_graph.cc",
     "navigator_graph.h",
+    "peer_event.h",
     "personal_graph.cc",
     "personal_graph.h",
     "personal_graph_manager.cc",
@@ -18,7 +19,10 @@ blink_modules_sources("graph") {
     "semantic_triple.h",
     "shared_graph.cc",
     "shared_graph.h",
+    "signal_event.h",
     "signed_triple.h",
+    "sync_state_event.h",
+    "triple_event.h",
   ]
 
   deps = [
