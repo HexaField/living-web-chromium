@@ -21,7 +21,7 @@ class PersonalGraphManager final : public ScriptWrappable {
  public:
   explicit PersonalGraphManager(ExecutionContext*);
 
-  ScriptPromise<IDLAny> create(ScriptState*, const String& name);
+  ScriptPromise<IDLAny> create(ScriptState*, const String& name = String());
   ScriptPromise<IDLAny> list(ScriptState*);
   ScriptPromise<IDLAny> get(ScriptState*, const String& uuid);
   ScriptPromise<IDLAny> remove(ScriptState*, const String& uuid);

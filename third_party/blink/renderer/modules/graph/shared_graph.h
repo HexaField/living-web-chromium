@@ -33,7 +33,7 @@ class SharedGraph final : public PersonalGraph {
 
   // Governance (Spec 05 §9)
   ScriptPromise<IDLAny> canAddTriple(ScriptState*, ScriptValue);
-  ScriptPromise<IDLAny> constraintsFor(ScriptState*, const String&);
+  ScriptPromise<IDLAny> constraintsFor(ScriptState*, const String& = String());
   ScriptPromise<IDLAny> myCapabilities(ScriptState*);
 
   const AtomicString& InterfaceName() const override;

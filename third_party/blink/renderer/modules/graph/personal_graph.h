@@ -45,14 +45,14 @@ class PersonalGraph : public EventTarget {
   ScriptPromise<IDLUndefined> addShape(ScriptState*, const String&, const String&);
   ScriptPromise<IDLAny> getShapes(ScriptState*);
   ScriptPromise<IDLAny> getShapeInstances(ScriptState*, const String&);
-  ScriptPromise<IDLUSVString> createShapeInstance(ScriptState*, const String&, const String&, ScriptValue);
+  ScriptPromise<IDLUSVString> createShapeInstance(ScriptState*, const String&, const String&, ScriptValue = ScriptValue());
   ScriptPromise<IDLAny> getShapeInstanceData(ScriptState*, const String&, const String&);
   ScriptPromise<IDLUndefined> setShapeProperty(ScriptState*, const String&, const String&, const String&, ScriptValue);
   ScriptPromise<IDLUndefined> addToShapeCollection(ScriptState*, const String&, const String&, const String&, ScriptValue);
   ScriptPromise<IDLUndefined> removeFromShapeCollection(ScriptState*, const String&, const String&, const String&, ScriptValue);
 
   // Sharing (Spec 03 §5.1)
-  ScriptPromise<IDLAny> share(ScriptState*, ScriptValue);
+  ScriptPromise<IDLAny> share(ScriptState*, ScriptValue = ScriptValue());
 
   // EventTarget overrides
   const AtomicString& InterfaceName() const override;
