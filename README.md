@@ -57,14 +57,14 @@ tests/                           — Unit tests and Web Platform Tests
 - [x] Browser-process graph store (in-memory)
 - [x] Browser-process DID key provider (Ed25519)
 - [x] Browser-process governance engine (all constraint types)
-- [x] Browser-process sync service (in-process transport)
+- [x] Browser-process sync service (in-process transport — spec is transport-agnostic per §6.5)
 - [x] Unit tests (76 passing — standalone library)
 - [x] Web Platform Tests
 - [x] BUILD.gn files for Chromium integration
 - [x] Integration script (`integrate.sh`) for automated Chromium patching
 - [x] Full Chromium build (Linux x86_64 — chrome binary produced)
-- [ ] Oxigraph integration (currently in-memory; Oxigraph for full SPARQL)
-- [ ] WebRTC transport for sync (in-process transport demonstrates full protocol)
+- [ ] Oxigraph integration (currently in-memory; Oxigraph for full SPARQL 1.2)
+- [ ] Additional transport implementations (WebRTC, WebSocket — spec permits any transport per §6.5)
 - [ ] Browser UI (permission prompts, DID picker)
 
 ## License
