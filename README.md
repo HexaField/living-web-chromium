@@ -52,18 +52,20 @@ tests/                           — Unit tests and Web Platform Tests
 ## Current Status
 
 - [x] Mojo interface definitions (complete API surface)
-- [x] Blink Web IDL definitions
+- [x] Blink Web IDL definitions (registered in idl_in_modules.gni)
 - [x] Blink C++ renderer-side implementations
 - [x] Browser-process graph store (in-memory)
 - [x] Browser-process DID key provider (Ed25519)
 - [x] Browser-process governance engine (all constraint types)
-- [x] Browser-process sync service (stubbed transport)
-- [x] Unit tests
+- [x] Browser-process sync service (in-process transport)
+- [x] Unit tests (76 passing — standalone library)
 - [x] Web Platform Tests
+- [x] BUILD.gn files for Chromium integration
+- [x] Integration script (`integrate.sh`) for automated Chromium patching
+- [x] Full Chromium build (Linux x86_64 — chrome binary produced)
 - [ ] Oxigraph integration (currently in-memory; Oxigraph for full SPARQL)
-- [ ] WebRTC transport for sync
+- [ ] WebRTC transport for sync (in-process transport demonstrates full protocol)
 - [ ] Browser UI (permission prompts, DID picker)
-- [ ] BUILD.gn files for Chromium integration
 
 ## License
 
