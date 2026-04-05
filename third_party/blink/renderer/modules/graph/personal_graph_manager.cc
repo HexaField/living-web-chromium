@@ -13,6 +13,9 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 
+using WTF::BindOnce;
+using WTF::WrapPersistent;
+
 namespace blink {
 
 PersonalGraphManager::PersonalGraphManager(ExecutionContext* context)
@@ -73,7 +76,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
               return;
             }
             BindAndResolve(resolver, context, manager->service_,
-                           info->uuid, info->name.value_or(String()));
+                           info->uuid, info->name);
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),
@@ -101,7 +104,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
           auto host_receiver = host_remote.InitWithNewPipeAndPassReceiver();
           manager->service_->BindGraph(info->uuid, std::move(host_receiver));
           graphs.push_back(MakeGarbageCollected<PersonalGraph>(
-              context, info->uuid, info->name.value_or(String()),
+              context, info->uuid, info->name,
               std::move(host_remote)));
         }
         resolver->Resolve(graphs);
@@ -134,7 +137,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::get(ScriptState* script_state,
               return;
             }
             BindAndResolve(resolver, context, manager->service_,
-                           info->uuid, info->name.value_or(String()));
+                           info->uuid, info->name);
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),

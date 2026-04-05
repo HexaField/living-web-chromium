@@ -16,22 +16,25 @@
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
+using WTF::BindOnce;
+using WTF::WrapPersistent;
+
 namespace blink {
 
 namespace {
 
-String GetStringProperty(ScriptState* script_state,
-                         const ScriptValue& obj,
-                         const char* prop) {
+String GetStringProp(ScriptState* script_state,
+                     const ScriptValue& obj,
+                     const char* prop) {
   v8::Isolate* isolate = script_state->GetIsolate();
-  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Context> ctx = script_state->GetContext();
   v8::Local<v8::Value> val = obj.V8Value();
   if (!val->IsObject())
     return String();
   v8::Local<v8::Object> v8_obj = val.As<v8::Object>();
   v8::Local<v8::Value> result;
-  if (!v8_obj->Get(context, v8::String::NewFromUtf8(isolate, prop)
-                                .ToLocalChecked())
+  if (!v8_obj->Get(ctx, v8::String::NewFromUtf8(isolate, prop)
+                            .ToLocalChecked())
            .ToLocal(&result) ||
       !result->IsString()) {
     return String();
@@ -40,16 +43,25 @@ String GetStringProperty(ScriptState* script_state,
 }
 
 SignedTriple* ToBlinkSignedTriple(
-    const graph::mojom::blink::SignedTriplePtr& mojo) {
-  String predicate;
-  if (mojo->data->predicate.has_value())
-    predicate = mojo->data->predicate.value();
+    const graph::mojom::blink::SignedTriplePtr& m) {
+  // In blink mojo bindings, string? is just String — null means absent
+  String predicate = m->data->predicate;
   auto* data = MakeGarbageCollected<SemanticTriple>(
-      mojo->data->source, mojo->data->target, predicate);
+      m->data->source, m->data->target,
+      predicate.IsNull() ? g_empty_string : predicate);
   auto* proof = MakeGarbageCollected<ContentProof>(
-      mojo->proof->key, mojo->proof->signature);
+      m->proof->key, m->proof->signature);
   return MakeGarbageCollected<SignedTriple>(
-      data, mojo->author, mojo->timestamp, proof);
+      data, m->author, m->timestamp, proof);
+}
+
+graph::mojom::blink::SemanticTriplePtr MakeMojoTriple(
+    ScriptState* script_state, const ScriptValue& triple_val) {
+  auto t = graph::mojom::blink::SemanticTriple::New();
+  t->source = GetStringProp(script_state, triple_val, "source");
+  t->target = GetStringProp(script_state, triple_val, "target");
+  t->predicate = GetStringProp(script_state, triple_val, "predicate");
+  return t;
 }
 
 }  // namespace
@@ -62,8 +74,7 @@ PersonalGraph::PersonalGraph(
     : uuid_(uuid), name_(name), execution_context_(context),
       host_(context) {
   if (host.is_valid()) {
-    host_.Bind(std::move(host),
-               context->GetTaskRunner(TaskType::kMiscPlatformAPI));
+    host_.Bind(std::move(host));
   }
 }
 
@@ -71,24 +82,15 @@ V8GraphSyncState PersonalGraph::state() const {
   return V8GraphSyncState(V8GraphSyncState::Enum::kPrivate);
 }
 
-// Triple operations
-
 ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
                                                 ScriptValue triple_val) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  auto mojo_triple = graph::mojom::blink::SemanticTriple::New();
-  mojo_triple->source = GetStringProperty(script_state, triple_val, "source");
-  mojo_triple->target = GetStringProperty(script_state, triple_val, "target");
-  String pred = GetStringProperty(script_state, triple_val, "predicate");
-  if (!pred.IsNull() && !pred.empty())
-    mojo_triple->predicate = pred;
-
   host_->AddTriple(
-      std::move(mojo_triple),
-      WTF::BindOnce(
+      MakeMojoTriple(script_state, triple_val),
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              graph::mojom::blink::SignedTriplePtr result) {
             if (!result) {
@@ -110,8 +112,7 @@ ScriptPromise<IDLAny> PersonalGraph::addTriples(ScriptState* script_state,
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  v8::Isolate* isolate = script_state->GetIsolate();
-  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Context> ctx = script_state->GetContext();
   v8::Local<v8::Value> val = triples_val.V8Value();
 
   Vector<graph::mojom::blink::SemanticTriplePtr> mojo_triples;
@@ -119,22 +120,16 @@ ScriptPromise<IDLAny> PersonalGraph::addTriples(ScriptState* script_state,
     v8::Local<v8::Array> arr = val.As<v8::Array>();
     for (uint32_t i = 0; i < arr->Length(); i++) {
       v8::Local<v8::Value> elem;
-      if (!arr->Get(context, i).ToLocal(&elem))
+      if (!arr->Get(ctx, i).ToLocal(&elem))
         continue;
-      ScriptValue sv(isolate, elem);
-      auto t = graph::mojom::blink::SemanticTriple::New();
-      t->source = GetStringProperty(script_state, sv, "source");
-      t->target = GetStringProperty(script_state, sv, "target");
-      String pred = GetStringProperty(script_state, sv, "predicate");
-      if (!pred.IsNull() && !pred.empty())
-        t->predicate = pred;
-      mojo_triples.push_back(std::move(t));
+      ScriptValue sv(script_state->GetIsolate(), elem);
+      mojo_triples.push_back(MakeMojoTriple(script_state, sv));
     }
   }
 
   host_->AddTriples(
       std::move(mojo_triples),
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              Vector<graph::mojom::blink::SignedTriplePtr> results) {
             HeapVector<Member<SignedTriple>> blink_results;
@@ -155,21 +150,16 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
   auto promise = resolver->Promise();
 
   auto mojo_st = graph::mojom::blink::SignedTriple::New();
-  mojo_st->data = graph::mojom::blink::SemanticTriple::New();
-  mojo_st->data->source = GetStringProperty(script_state, triple_val, "source");
-  mojo_st->data->target = GetStringProperty(script_state, triple_val, "target");
-  String pred = GetStringProperty(script_state, triple_val, "predicate");
-  if (!pred.IsNull() && !pred.empty())
-    mojo_st->data->predicate = pred;
-  mojo_st->author = GetStringProperty(script_state, triple_val, "author");
-  mojo_st->timestamp = GetStringProperty(script_state, triple_val, "timestamp");
+  mojo_st->data = MakeMojoTriple(script_state, triple_val);
+  mojo_st->author = GetStringProp(script_state, triple_val, "author");
+  mojo_st->timestamp = GetStringProp(script_state, triple_val, "timestamp");
   mojo_st->proof = graph::mojom::blink::ContentProof::New();
-  mojo_st->proof->key = String();
-  mojo_st->proof->signature = String();
+  mojo_st->proof->key = String("");
+  mojo_st->proof->signature = String("");
 
   host_->RemoveTriple(
       std::move(mojo_st),
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
             resolver->Resolve(success);
           },
@@ -185,19 +175,13 @@ ScriptPromise<IDLAny> PersonalGraph::queryTriples(ScriptState* script_state,
   auto promise = resolver->Promise();
 
   auto mojo_query = graph::mojom::blink::TripleQuery::New();
-  String source = GetStringProperty(script_state, query_val, "source");
-  if (!source.IsNull() && !source.empty())
-    mojo_query->source = source;
-  String target = GetStringProperty(script_state, query_val, "target");
-  if (!target.IsNull() && !target.empty())
-    mojo_query->target = target;
-  String pred = GetStringProperty(script_state, query_val, "predicate");
-  if (!pred.IsNull() && !pred.empty())
-    mojo_query->predicate = pred;
+  mojo_query->source = GetStringProp(script_state, query_val, "source");
+  mojo_query->target = GetStringProp(script_state, query_val, "target");
+  mojo_query->predicate = GetStringProp(script_state, query_val, "predicate");
 
   host_->QueryTriples(
       std::move(mojo_query),
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              Vector<graph::mojom::blink::SignedTriplePtr> results) {
             HeapVector<Member<SignedTriple>> blink_results;
@@ -219,7 +203,7 @@ ScriptPromise<IDLAny> PersonalGraph::querySparql(ScriptState* script_state,
 
   host_->QuerySparql(
       sparql,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              graph::mojom::blink::SparqlResultPtr result) {
             if (!result) {
@@ -239,7 +223,7 @@ ScriptPromise<IDLAny> PersonalGraph::snapshot(ScriptState* script_state) {
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  host_->Snapshot(WTF::BindOnce(
+  host_->Snapshot(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::SignedTriplePtr> triples) {
         HeapVector<Member<SignedTriple>> blink_triples;
@@ -253,8 +237,6 @@ ScriptPromise<IDLAny> PersonalGraph::snapshot(ScriptState* script_state) {
   return promise;
 }
 
-// Access control
-
 ScriptPromise<IDLUndefined> PersonalGraph::grantAccess(
     ScriptState* script_state, const String& origin, const String& level) {
   auto* resolver =
@@ -267,7 +249,7 @@ ScriptPromise<IDLUndefined> PersonalGraph::grantAccess(
 
   host_->GrantAccess(
       origin, access_level,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLUndefined>* resolver, bool) {
             resolver->Resolve();
           },
@@ -284,7 +266,7 @@ ScriptPromise<IDLUndefined> PersonalGraph::revokeAccess(
 
   host_->RevokeAccess(
       origin,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLUndefined>* resolver, bool) {
             resolver->Resolve();
           },
@@ -292,8 +274,6 @@ ScriptPromise<IDLUndefined> PersonalGraph::revokeAccess(
 
   return promise;
 }
-
-// Shape operations
 
 ScriptPromise<IDLUndefined> PersonalGraph::addShape(
     ScriptState* script_state, const String& name, const String& shacl_json) {
@@ -303,7 +283,7 @@ ScriptPromise<IDLUndefined> PersonalGraph::addShape(
 
   host_->AddShape(
       name, shacl_json,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLUndefined>* resolver, bool) {
             resolver->Resolve();
           },
@@ -328,7 +308,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
 
   host_->GetShapeInstances(
       shape_name,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              const Vector<String>& instances) {
             resolver->Resolve(instances);
@@ -347,7 +327,7 @@ ScriptPromise<IDLUSVString> PersonalGraph::createShapeInstance(
 
   host_->CreateShapeInstance(
       shape_name, data_json,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLUSVString>* resolver,
              const std::optional<String>& uri) {
             if (!uri) {
@@ -372,7 +352,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstanceData(
 
   host_->GetShapeInstanceData(
       shape_name, instance_uri,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              const std::optional<String>& data_json) {
             if (!data_json) {
@@ -413,8 +393,6 @@ ScriptPromise<IDLUndefined> PersonalGraph::removeFromShapeCollection(
   resolver->Resolve();
   return resolver->Promise();
 }
-
-// Sharing
 
 ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
                                             ScriptValue) {
