@@ -53,7 +53,7 @@ ScriptPromise<IDLAny> DIDCredential::sign(ScriptState* script_state,
 
   GetService()->Sign(
       id_, data_json,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              graph::mojom::blink::SignedContentPtr result) {
             if (!result) {
@@ -148,7 +148,7 @@ ScriptPromise<IDLBoolean> DIDCredential::verify(
 
   GetService()->Verify(
       std::move(content),
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLBoolean>* resolver, bool valid) {
             resolver->Resolve(valid);
           },
@@ -170,7 +170,7 @@ ScriptPromise<IDLAny> DIDCredential::resolve(ScriptState* script_state) {
 
   GetService()->ResolveDID(
       did_,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              const std::optional<WTF::String>& doc_json) {
             if (!doc_json) {
@@ -209,7 +209,7 @@ ScriptPromise<IDLBoolean> DIDCredential::lock(ScriptState* script_state) {
 
   GetService()->Lock(
       id_,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLBoolean>* resolver,
              DIDCredential* cred, bool success) {
             if (success) cred->is_locked_ = true;
@@ -234,7 +234,7 @@ ScriptPromise<IDLBoolean> DIDCredential::unlock(ScriptState* script_state) {
 
   GetService()->Unlock(
       id_,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLBoolean>* resolver,
              DIDCredential* cred, bool success) {
             if (success) cred->is_locked_ = false;

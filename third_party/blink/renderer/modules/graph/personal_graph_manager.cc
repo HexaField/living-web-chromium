@@ -203,7 +203,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
 
   sync_service_->JoinGraph(
       uri,
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              PersonalGraphManager* manager,
              const String& uri,
@@ -257,7 +257,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listShared(
 
   EnsureSyncServiceConnected();
 
-  sync_service_->ListSharedGraphs(WTF::BindOnce(
+  sync_service_->ListSharedGraphs(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::SharedGraphInfoPtr> infos) {
         ScriptState* ss = resolver->GetScriptState();
@@ -308,7 +308,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::createIdentity(
 
   did_service_->CreateCredential(
       display_name, "Ed25519",
-      WTF::BindOnce(
+      BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              ExecutionContext* context,
              PersonalGraphManager* manager,
@@ -344,7 +344,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listIdentities(
 
   EnsureDIDServiceConnected();
 
-  did_service_->ListCredentials(WTF::BindOnce(
+  did_service_->ListCredentials(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          ExecutionContext* context,
          PersonalGraphManager* manager,
@@ -381,7 +381,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
 
   EnsureDIDServiceConnected();
 
-  did_service_->GetActiveCredential(WTF::BindOnce(
+  did_service_->GetActiveCredential(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
          ExecutionContext* context,
          PersonalGraphManager* manager,
