@@ -10,9 +10,11 @@
 #include "third_party/blink/renderer/modules/graph/semantic_triple.h"
 #include "third_party/blink/renderer/modules/graph/signed_triple.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -34,15 +36,16 @@ String GetStringProperty(ScriptState* script_state,
       !result->IsString()) {
     return String();
   }
-  v8::String::Utf8Value utf8(isolate, result);
-  return String::FromUTF8(*utf8);
+  return ToCoreString(isolate, result.As<v8::String>());
 }
 
 SignedTriple* ToBlinkSignedTriple(
     const graph::mojom::blink::SignedTriplePtr& mojo) {
+  String predicate;
+  if (mojo->data->predicate.has_value())
+    predicate = mojo->data->predicate.value();
   auto* data = MakeGarbageCollected<SemanticTriple>(
-      mojo->data->source, mojo->data->target,
-      mojo->data->predicate.value_or(String()));
+      mojo->data->source, mojo->data->target, predicate);
   auto* proof = MakeGarbageCollected<ContentProof>(
       mojo->proof->key, mojo->proof->signature);
   return MakeGarbageCollected<SignedTriple>(
@@ -58,8 +61,10 @@ PersonalGraph::PersonalGraph(
     mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host)
     : uuid_(uuid), name_(name), execution_context_(context),
       host_(context) {
-  host_.Bind(std::move(host),
-             context->GetTaskRunner(TaskType::kMiscPlatformAPI));
+  if (host.is_valid()) {
+    host_.Bind(std::move(host),
+               context->GetTaskRunner(TaskType::kMiscPlatformAPI));
+  }
 }
 
 V8GraphSyncState PersonalGraph::state() const {
@@ -109,7 +114,7 @@ ScriptPromise<IDLAny> PersonalGraph::addTriples(ScriptState* script_state,
   v8::Local<v8::Context> context = script_state->GetContext();
   v8::Local<v8::Value> val = triples_val.V8Value();
 
-  WTF::Vector<graph::mojom::blink::SemanticTriplePtr> mojo_triples;
+  Vector<graph::mojom::blink::SemanticTriplePtr> mojo_triples;
   if (val->IsArray()) {
     v8::Local<v8::Array> arr = val.As<v8::Array>();
     for (uint32_t i = 0; i < arr->Length(); i++) {
@@ -131,7 +136,7 @@ ScriptPromise<IDLAny> PersonalGraph::addTriples(ScriptState* script_state,
       std::move(mojo_triples),
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             WTF::Vector<graph::mojom::blink::SignedTriplePtr> results) {
+             Vector<graph::mojom::blink::SignedTriplePtr> results) {
             HeapVector<Member<SignedTriple>> blink_results;
             for (const auto& r : results) {
               blink_results.push_back(ToBlinkSignedTriple(r));
@@ -159,8 +164,8 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
   mojo_st->author = GetStringProperty(script_state, triple_val, "author");
   mojo_st->timestamp = GetStringProperty(script_state, triple_val, "timestamp");
   mojo_st->proof = graph::mojom::blink::ContentProof::New();
-  mojo_st->proof->key = "";
-  mojo_st->proof->signature = "";
+  mojo_st->proof->key = String();
+  mojo_st->proof->signature = String();
 
   host_->RemoveTriple(
       std::move(mojo_st),
@@ -194,7 +199,7 @@ ScriptPromise<IDLAny> PersonalGraph::queryTriples(ScriptState* script_state,
       std::move(mojo_query),
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             WTF::Vector<graph::mojom::blink::SignedTriplePtr> results) {
+             Vector<graph::mojom::blink::SignedTriplePtr> results) {
             HeapVector<Member<SignedTriple>> blink_results;
             for (const auto& r : results) {
               blink_results.push_back(ToBlinkSignedTriple(r));
@@ -236,7 +241,7 @@ ScriptPromise<IDLAny> PersonalGraph::snapshot(ScriptState* script_state) {
 
   host_->Snapshot(WTF::BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
-         WTF::Vector<graph::mojom::blink::SignedTriplePtr> triples) {
+         Vector<graph::mojom::blink::SignedTriplePtr> triples) {
         HeapVector<Member<SignedTriple>> blink_triples;
         for (const auto& t : triples) {
           blink_triples.push_back(ToBlinkSignedTriple(t));
@@ -325,7 +330,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
       shape_name,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             const WTF::Vector<String>& instances) {
+             const Vector<String>& instances) {
             resolver->Resolve(instances);
           },
           WrapPersistent(resolver)));
