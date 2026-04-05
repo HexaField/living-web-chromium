@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+#include "v8/include/v8-microtask-queue.h"
 
 namespace blink {
 
@@ -56,6 +57,9 @@ void ResolveWithGraphInfo(
   if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
   v8::Isolate* isolate = ss->GetIsolate();
+  v8::MicrotasksScope microtasks(isolate,
+      isolate->GetCurrentContext()->GetMicrotaskQueue(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Context> v8_ctx = ss->GetContext();
   v8::Local<v8::Object> obj = v8::Object::New(isolate);
   obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, uuid)).Check();
@@ -124,6 +128,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
         ScriptState* ss = resolver->GetScriptState();
         if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> v8_ctx = ss->GetContext();
         v8::Local<v8::Array> arr =
@@ -187,6 +192,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::remove(ScriptState* script_state,
             ScriptState* ss = resolver->GetScriptState();
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
             resolver->Resolve(ScriptValue(
                 ss->GetIsolate(),
                 v8::Boolean::New(ss->GetIsolate(), success)));
@@ -239,6 +245,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
             ScriptState* ss = resolver->GetScriptState();
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> v8_ctx = ss->GetContext();
             v8::Local<v8::Object> obj = v8::Object::New(isolate);
@@ -268,6 +275,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listShared(
         ScriptState* ss = resolver->GetScriptState();
         if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> ctx = ss->GetContext();
         v8::Local<v8::Array> arr =
@@ -328,6 +336,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::createIdentity(
             ScriptState* ss = resolver->GetScriptState();
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> v8_ctx = ss->GetContext();
             resolver->Resolve(ScriptValue(isolate, MakeDIDCredentialObject(isolate, v8_ctx, info)));
@@ -355,6 +364,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::listIdentities(
         ScriptState* ss = resolver->GetScriptState();
         if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> v8_ctx = ss->GetContext();
         v8::Local<v8::Array> arr =
@@ -392,6 +402,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
         ScriptState* ss = resolver->GetScriptState();
         if (!ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> v8_ctx = ss->GetContext();
         resolver->Resolve(ScriptValue(isolate, MakeDIDCredentialObject(isolate, v8_ctx, info)));

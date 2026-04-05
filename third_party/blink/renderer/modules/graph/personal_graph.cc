@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/modules/graph/triple_event.h"
+#include "v8/include/v8-microtask-queue.h"
 
 namespace blink {
 
@@ -87,6 +88,7 @@ void ResolveWithEmptyArray(ScriptPromiseResolver<IDLAny>* resolver) {
   ScriptState* ss = resolver->GetScriptState();
   if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
   resolver->Resolve(ScriptValue(ss->GetIsolate(),
                                 v8::Array::New(ss->GetIsolate(), 0)));
 }
@@ -95,6 +97,7 @@ void ResolveWithBool(ScriptPromiseResolver<IDLAny>* resolver, bool val) {
   ScriptState* ss = resolver->GetScriptState();
   if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
   resolver->Resolve(ScriptValue(ss->GetIsolate(),
                                 v8::Boolean::New(ss->GetIsolate(), val)));
 }
@@ -104,6 +107,7 @@ void ResolveWithString(ScriptPromiseResolver<IDLAny>* resolver,
   ScriptState* ss = resolver->GetScriptState();
   if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
   resolver->Resolve(ScriptValue(
       ss->GetIsolate(),
       v8::String::NewFromUtf8(ss->GetIsolate(), str.Utf8().c_str())
@@ -116,6 +120,7 @@ void ResolveWithSignedTripleArray(
   ScriptState* ss = resolver->GetScriptState();
   if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Isolate* isolate = ss->GetIsolate();
   v8::Local<v8::Context> ctx = ss->GetContext();
   v8::Local<v8::Array> arr = v8::Array::New(isolate,
@@ -166,6 +171,7 @@ ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,
             ScriptState* ss = resolver->GetScriptState();
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> ctx = ss->GetContext();
             v8::Local<v8::Object> obj = SignedTripleToV8Object(isolate, ctx, result);
@@ -387,6 +393,7 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
             ScriptState* ss = resolver->GetScriptState();
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> ctx = ss->GetContext();
             v8::Local<v8::Array> arr =
@@ -547,6 +554,7 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
             ScriptState* ss = resolver->GetScriptState();
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
+  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> v8_ctx = ss->GetContext();
             v8::Local<v8::Object> obj = v8::Object::New(isolate);
