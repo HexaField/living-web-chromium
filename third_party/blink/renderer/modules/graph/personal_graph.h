@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_PERSONAL_GRAPH_H_
 
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
@@ -26,7 +27,7 @@ class PersonalGraph : public EventTarget {
   // Attributes
   const String& uuid() const { return uuid_; }
   const String& name() const { return name_; }
-  String state() const;
+  V8GraphSyncState state() const;
 
   // Triple operations
   ScriptPromise<IDLAny> addTriple(ScriptState*, ScriptValue);
@@ -50,6 +51,9 @@ class PersonalGraph : public EventTarget {
   ScriptPromise<IDLAny> share(ScriptState*, ScriptValue);
 
   // EventTarget overrides
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleadded, kTripleadded)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleremoved, kTripleremoved)
+
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
 

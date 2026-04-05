@@ -25,8 +25,8 @@ ScriptPromise<T> RejectNotImplemented(ScriptState* script_state) {
 PersonalGraph::PersonalGraph(ExecutionContext* context, const String& uuid)
     : uuid_(uuid), execution_context_(context) {}
 
-String PersonalGraph::state() const {
-  return "private";
+V8GraphSyncState PersonalGraph::state() const {
+  return V8GraphSyncState(V8GraphSyncState::Enum::kPrivate);
 }
 
 ScriptPromise<IDLAny> PersonalGraph::addTriple(ScriptState* script_state,

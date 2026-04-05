@@ -8,6 +8,8 @@
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h"
+#include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
 
 namespace blink {
@@ -19,7 +21,7 @@ class SharedGraph final : public PersonalGraph {
   SharedGraph(ExecutionContext*, const String& uuid, const String& uri);
 
   const String& uri() const { return uri_; }
-  String syncState() const;
+  V8SyncState syncState() const { return V8SyncState(V8SyncState::Enum::kIdle); }
 
   ScriptPromise<IDLAny> peers(ScriptState*);
   ScriptPromise<IDLAny> onlinePeers(ScriptState*);
@@ -28,6 +30,11 @@ class SharedGraph final : public PersonalGraph {
   ScriptPromise<IDLAny> canAddTriple(ScriptState*, const String&, const String&);
   ScriptPromise<IDLAny> constraintsFor(ScriptState*, const String&);
   ScriptPromise<IDLAny> myCapabilities(ScriptState*);
+
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerjoined, kPeerjoined)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerleft, kPeerleft)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(syncstatechange, kSyncstatechange)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
 
   const AtomicString& InterfaceName() const override;
   void Trace(Visitor*) const override;
