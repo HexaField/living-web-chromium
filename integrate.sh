@@ -40,48 +40,48 @@ echo "[1/6] Copying source files..."
 
 # Mojo interfaces
 mkdir -p "$CHROMIUM_SRC/mojo/public/mojom/graph"
-cp -v "$LIVING_WEB/mojo/public/mojom/graph/graph.mojom" \
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph.mojom" \
       "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-cp -v "$LIVING_WEB/mojo/public/mojom/graph/graph_sync.mojom" \
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph_sync.mojom" \
       "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-cp -v "$LIVING_WEB/mojo/public/mojom/graph/graph_governance.mojom" \
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph_governance.mojom" \
       "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-cp -v "$LIVING_WEB/mojo/public/mojom/graph/BUILD.gn" \
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/BUILD.gn" \
       "$CHROMIUM_SRC/mojo/public/mojom/graph/"
 
 # Browser-process graph store
 mkdir -p "$CHROMIUM_SRC/content/browser/graph"
-cp -v "$LIVING_WEB/content/browser/graph/"*.{cc,h} \
+cp -fv "$LIVING_WEB/content/browser/graph/"*.{cc,h} \
       "$CHROMIUM_SRC/content/browser/graph/"
-cp -v "$LIVING_WEB/content/browser/graph/BUILD.gn" \
+cp -fv "$LIVING_WEB/content/browser/graph/BUILD.gn" \
       "$CHROMIUM_SRC/content/browser/graph/"
 
 # Browser-process DID provider
 mkdir -p "$CHROMIUM_SRC/content/browser/did"
-cp -v "$LIVING_WEB/content/browser/did/"*.{cc,h} \
+cp -fv "$LIVING_WEB/content/browser/did/"*.{cc,h} \
       "$CHROMIUM_SRC/content/browser/did/"
-cp -v "$LIVING_WEB/content/browser/did/BUILD.gn" \
+cp -fv "$LIVING_WEB/content/browser/did/BUILD.gn" \
       "$CHROMIUM_SRC/content/browser/did/"
 
 # Browser-process graph sync
 mkdir -p "$CHROMIUM_SRC/content/browser/graph_sync"
-cp -v "$LIVING_WEB/content/browser/graph_sync/"*.{cc,h} \
+cp -fv "$LIVING_WEB/content/browser/graph_sync/"*.{cc,h} \
       "$CHROMIUM_SRC/content/browser/graph_sync/"
-cp -v "$LIVING_WEB/content/browser/graph_sync/BUILD.gn" \
+cp -fv "$LIVING_WEB/content/browser/graph_sync/BUILD.gn" \
       "$CHROMIUM_SRC/content/browser/graph_sync/"
 
 # Browser-process governance
 mkdir -p "$CHROMIUM_SRC/content/browser/graph_governance"
-cp -v "$LIVING_WEB/content/browser/graph_governance/"*.{cc,h} \
+cp -fv "$LIVING_WEB/content/browser/graph_governance/"*.{cc,h} \
       "$CHROMIUM_SRC/content/browser/graph_governance/"
-cp -v "$LIVING_WEB/content/browser/graph_governance/BUILD.gn" \
+cp -fv "$LIVING_WEB/content/browser/graph_governance/BUILD.gn" \
       "$CHROMIUM_SRC/content/browser/graph_governance/"
 
 # Blink renderer modules
 mkdir -p "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph"
-cp -v "$LIVING_WEB/third_party/blink/renderer/modules/graph/"*.{cc,h,idl} \
+cp -fv "$LIVING_WEB/third_party/blink/renderer/modules/graph/"*.{cc,h,idl} \
       "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph/"
-cp -v "$LIVING_WEB/third_party/blink/renderer/modules/graph/BUILD.gn" \
+cp -fv "$LIVING_WEB/third_party/blink/renderer/modules/graph/BUILD.gn" \
       "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph/"
 
 echo ""
