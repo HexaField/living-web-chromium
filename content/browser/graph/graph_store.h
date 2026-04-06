@@ -107,6 +107,7 @@ class GraphStore {
   std::vector<SignedTriple> triples_;
 
   // Shape registry: name → JSON definition
+  const std::unordered_map<std::string, std::string>& shapes() const { return shapes_; }
   std::unordered_map<std::string, std::string> shapes_;
 
   // Persistence

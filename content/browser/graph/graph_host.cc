@@ -4,6 +4,8 @@
 
 #include "content/browser/graph/graph_host.h"
 
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/time/time.h"
 
@@ -190,8 +192,43 @@ void GraphHost::CreateShapeInstance(const std::string& shape_name,
 void GraphHost::GetShapeInstanceData(const std::string& shape_name,
                                       const std::string& instance_uri,
                                       GetShapeInstanceDataCallback callback) {
-  // TODO: Implement in GraphStore.
-  std::move(callback).Run(std::nullopt);
+  auto shape_it = store_->shapes().find(shape_name);
+  if (shape_it == store_->shapes().end()) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  auto shape = base::JSONReader::Read(shape_it->second, base::JSON_PARSE_RFC);
+  if (!shape || !shape->is_dict()) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  const auto* properties = shape->GetDict().FindList("properties");
+  if (!properties) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  base::Value::Dict result;
+  for (const auto& prop_val : *properties) {
+    if (!prop_val.is_dict()) continue;
+    const std::string* name = prop_val.GetDict().FindString("name");
+    const std::string* path = prop_val.GetDict().FindString("path");
+    if (!name || !path) continue;
+
+    TripleQuery q;
+    q.source = instance_uri;
+    q.predicate = *path;
+    auto triples = store_->QueryTriples(q);
+    if (!triples.empty()) {
+      result.Set(*name, triples[0].data.target);
+    }
+  }
+
+  std::string json;
+  base::JSONWriter::Write(base::Value(std::move(result)), &json);
+  std::move(callback).Run(json);
 }
 
 void GraphHost::Subscribe(
