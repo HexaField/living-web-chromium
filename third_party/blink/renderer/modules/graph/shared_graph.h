@@ -38,6 +38,7 @@ class SharedGraph final : public PersonalGraph {
 
   // Signalling (Spec 03 §9)
   ScriptPromise<IDLUndefined> sendSignal(ScriptState*, const String&, ScriptValue);
+  ScriptPromise<IDLUndefined> sendSignalToSession(ScriptState*, const String& remoteDid, const String& sessionId, ScriptValue payload);
   ScriptPromise<IDLUndefined> broadcast(ScriptState*, ScriptValue);
 
   // Governance (Spec 05 §9)

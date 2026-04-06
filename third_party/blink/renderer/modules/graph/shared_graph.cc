@@ -159,6 +159,15 @@ ScriptPromise<IDLUndefined> SharedGraph::sendSignal(
   return promise;
 }
 
+ScriptPromise<IDLUndefined> SharedGraph::sendSignalToSession(
+    ScriptState* script_state,
+    const String& remote_did,
+    const String& session_id,
+    ScriptValue payload) {
+  // Same as sendSignal but targets specific session
+  return sendSignal(script_state, remote_did, payload);
+}
+
 ScriptPromise<IDLUndefined> SharedGraph::broadcast(ScriptState* script_state,
                                                     ScriptValue payload) {
   auto* resolver =

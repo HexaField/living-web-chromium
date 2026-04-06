@@ -23,6 +23,7 @@ interface SharedGraph : PersonalGraph {
 
   // Signalling (Spec 03 §9)
   [CallWith=ScriptState] Promise<undefined> sendSignal(USVString remoteDid, any payload);
+  [CallWith=ScriptState] Promise<undefined> sendSignalToSession(USVString remoteDid, USVString sessionId, any payload);
   [CallWith=ScriptState] Promise<undefined> broadcast(any payload);
 
   // Governance queries (Spec 05 §9)
