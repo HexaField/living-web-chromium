@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "content/browser/graph_sync/sync_service.h"
+#include "base/no_destructor.h"
 
 #include "base/logging.h"
 #include "base/uuid.h"
@@ -22,8 +23,8 @@ SyncService::~SyncService() = default;
 
 // static
 SyncService* SyncService::GetInstance() {
-  static SyncService instance;
-  return &instance;
+  static base::NoDestructor<SyncService> instance;
+  return instance.get();
 }
 
 void SyncService::BindReceiver(
