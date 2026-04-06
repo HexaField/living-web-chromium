@@ -13,6 +13,8 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/uuid.h"
 #include "base/values.h"
 
@@ -368,6 +370,7 @@ void GraphStore::LoadFromDisk() {
   if (persistence_dir_.empty())
     return;
 
+  base::ScopedAllowBlocking allow_blocking;
   base::FilePath path = GetPersistencePath();
   std::string json;
   if (!base::ReadFileToString(path, &json))
@@ -422,6 +425,8 @@ void GraphStore::LoadFromDisk() {
 void GraphStore::PersistToDisk() {
   if (persistence_dir_.empty())
     return;
+
+  base::ScopedAllowBlocking allow_blocking;
 
   // Ensure directory exists.
   if (!base::CreateDirectory(persistence_dir_)) {
