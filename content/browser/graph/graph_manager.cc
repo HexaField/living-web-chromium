@@ -16,9 +16,9 @@ namespace {
 
 base::FilePath GetDefaultPersistenceDir() {
   auto env = base::Environment::Create();
-  std::string home;
-  if (env->GetVar("HOME", &home)) {
-    return base::FilePath(home).AppendASCII(".living-web").AppendASCII("graphs");
+  auto home = env->GetVar("HOME");
+  if (home.has_value()) {
+    return base::FilePath(*home).AppendASCII(".living-web").AppendASCII("graphs");
   }
   return base::FilePath();
 }
