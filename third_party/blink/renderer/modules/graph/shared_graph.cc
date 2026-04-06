@@ -12,7 +12,7 @@
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
-#include "third_party/blink/renderer/platform/wtf/uuid.h"
+#include "base/uuid.h"
 
 namespace blink {
 
@@ -50,7 +50,7 @@ ScriptPromise<IDLAny> SharedGraph::currentRevision(ScriptState* script_state) {
   ScriptState::Scope scope(script_state);
   v8::Isolate* isolate = script_state->GetIsolate();
   resolver->Resolve(ScriptValue(isolate,
-      V8String(isolate, WTF::CreateCanonicalUUIDString())));
+      V8String(isolate, String(base::Uuid::GenerateRandomV4().AsLowercaseString()))));
   return promise;
 }
 
