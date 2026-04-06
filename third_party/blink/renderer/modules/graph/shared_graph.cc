@@ -329,9 +329,12 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
             ScriptState::Scope scope(ss);
             BlinkLog("canAddTriple CALLBACK: entered scope");
             v8::Isolate* isolate = ss->GetIsolate();
+            BlinkLog2("canAddTriple CALLBACK: got isolate=" + std::to_string(isolate != nullptr));
             v8::Local<v8::Context> ctx = ss->GetContext();
-            BlinkLog("canAddTriple CALLBACK: creating result object");
+            BlinkLog2("canAddTriple CALLBACK: got context, empty=" + std::to_string(ctx.IsEmpty()));
+            BlinkLog("canAddTriple CALLBACK: about to create Object::New");
             v8::Local<v8::Object> result = v8::Object::New(isolate);
+            BlinkLog("canAddTriple CALLBACK: object created");
             result->Set(ctx, V8String(isolate, "accepted"),
                         v8::Boolean::New(isolate, accepted)).Check();
             if (!reason.IsNull() && !reason.empty()) {
