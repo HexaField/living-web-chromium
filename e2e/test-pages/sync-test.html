@@ -1,14 +1,24 @@
 <!DOCTYPE html>
-<html><head><title>Sync Test</title>
-<script src="polyfill-bundle.js"></script>
-</head>
+<html><head><title>Sync Test</title></head>
 <body><div id="app"></div>
 <script>
-// Wait for polyfill to be ready by polling for navigator.graph
+// For native Chromium builds, navigator.graph is available immediately.
+// For polyfill builds, load the polyfill bundle as fallback.
 function checkReady() {
   if (typeof navigator !== 'undefined' && navigator.graph) {
     window.__ready = true;
   } else {
+    // Try loading polyfill if native API not available
+    if (!document.getElementById('polyfill-script')) {
+      var s = document.createElement('script');
+      s.id = 'polyfill-script';
+      s.src = 'polyfill-bundle.js';
+      s.onerror = function() {
+        // Polyfill not available, keep polling for native
+        setTimeout(checkReady, 50);
+      };
+      document.head.appendChild(s);
+    }
     setTimeout(checkReady, 50);
   }
 }

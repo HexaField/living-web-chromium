@@ -15,11 +15,10 @@ test.describe('Multi-Tab Sync', () => {
 
       // Tab 1: create identity + graph + share
       const session1 = await page1.evaluate(async () => {
-        const id = await (navigator.credentials as any).create({ did: { displayName: 'Alice' } });
+        await (navigator as any).graph.createIdentity('Alice');
         const g = await (navigator as any).graph.create('multi-tab');
         const shared = await g.share({ relays: ['localhost:4000'] });
         return {
-          did: id.did || id.id || 'unknown',
           uri: shared.uri,
           sessionId: shared.sessionId || 'none',
         };
@@ -29,17 +28,15 @@ test.describe('Multi-Tab Sync', () => {
 
       // Tab 2: create identity + join the shared graph
       const session2 = await page2.evaluate(async (uri: string) => {
-        const id = await (navigator.credentials as any).create({ did: { displayName: 'Alice' } });
+        await (navigator as any).graph.createIdentity('Alice');
         const joined = await (navigator as any).graph.join(uri);
         return {
-          did: id.did || id.id || 'unknown',
           sessionId: joined.sessionId || 'none',
         };
       }, session1.uri);
 
       // Both tabs should be connected
       expect(session1.uri).toBeTruthy();
-      expect(session2.did).toBeTruthy();
 
       // If sessionIds are available, they should differ (different tab sessions)
       if (session1.sessionId !== 'none' && session2.sessionId !== 'none') {
@@ -64,7 +61,7 @@ test.describe('Multi-Tab Sync', () => {
 
       // Tab 1: create + share
       const uri = await page1.evaluate(async () => {
-        await (navigator.credentials as any).create({ did: { displayName: 'Alice' } });
+        await (navigator as any).graph.createIdentity('Alice');
         const g = await (navigator as any).graph.create('tab-sync');
         const shared = await g.share({ relays: ['localhost:4000'] });
         return shared.uri;
@@ -72,7 +69,7 @@ test.describe('Multi-Tab Sync', () => {
 
       // Tab 2: join
       await page2.evaluate(async (uri: string) => {
-        await (navigator.credentials as any).create({ did: { displayName: 'Alice' } });
+        await (navigator as any).graph.createIdentity('Alice');
         await (navigator as any).graph.join(uri);
       }, uri);
 

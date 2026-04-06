@@ -7,26 +7,27 @@ test.describe('Spec 05 — Governance', () => {
     await page.goto('/');
   });
 
-  test('§6.1 setGovernance() on SharedGraph sets governance rules', async ({ page }) => {
+  test('§6.1 canAddTriple() checks governance rules on SharedGraph', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const g = await (navigator as any).graph.create('gov-test');
       const shared = await g.share();
-      const rules = {
-        allowWrite: ['did:key:z6MkTest'],
-        requireApproval: false,
-      };
-      await shared.setGovernance(rules);
-      const gov = await shared.getGovernance();
-      return gov;
+      // canAddTriple returns whether a triple is permitted under current governance
+      const allowed = await shared.canAddTriple({
+        source: 'urn:test',
+        predicate: 'urn:wrote',
+        target: 'urn:data',
+      });
+      return allowed;
     });
+    // Default governance should allow writes from the creator
     expect(result).toBeTruthy();
   });
 
-  test('§6.2 getGovernance() retrieves current governance', async ({ page }) => {
+  test('§6.2 myCapabilities() retrieves current governance capabilities', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const g = await (navigator as any).graph.create('gov-get-test');
       const shared = await g.share();
-      return typeof shared.getGovernance === 'function';
+      return typeof shared.myCapabilities === 'function';
     });
     expect(result).toBe(true);
   });

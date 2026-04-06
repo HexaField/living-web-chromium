@@ -19,7 +19,7 @@ test.describe('WASM Module Loading', () => {
 
     const result = await page.evaluate(async () => {
       try {
-        const id = await (navigator.credentials as any).create({ did: { displayName: 'Tester' } });
+        await (navigator as any).graph.createIdentity('Tester');
         const g = await (navigator as any).graph.create('module-test');
         return { success: true, name: g.name || 'unknown' };
       } catch (e: any) {
@@ -56,7 +56,7 @@ test.describe('WASM Module Loading', () => {
     await page.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
     const uri = await page.evaluate(async () => {
-      const id = await (navigator.credentials as any).create({ did: { displayName: 'Sharer' } });
+      await (navigator as any).graph.createIdentity('Sharer');
       const g = await (navigator as any).graph.create('uri-test');
       const shared = await g.share({ relays: ['localhost:4000'] });
       return shared.uri;
