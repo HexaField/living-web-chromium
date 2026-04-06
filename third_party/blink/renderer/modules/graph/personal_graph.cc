@@ -232,8 +232,10 @@ ScriptPromise<IDLAny> PersonalGraph::removeTriple(ScriptState* script_state,
 
   auto mojo_st = graph::mojom::blink::SignedTriple::New();
   mojo_st->data = MakeMojoTriple(script_state, triple_val);
-  mojo_st->author = GetStringProp(script_state, triple_val, "author");
-  mojo_st->timestamp = GetStringProp(script_state, triple_val, "timestamp");
+  String author = GetStringProp(script_state, triple_val, "author");
+  mojo_st->author = author.IsNull() ? g_empty_string : author;
+  String timestamp = GetStringProp(script_state, triple_val, "timestamp");
+  mojo_st->timestamp = timestamp.IsNull() ? g_empty_string : timestamp;
   mojo_st->proof = graph::mojom::blink::ContentProof::New();
   mojo_st->proof->key = String("");
   mojo_st->proof->signature = String("");
