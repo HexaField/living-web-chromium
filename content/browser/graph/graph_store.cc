@@ -430,14 +430,14 @@ void GraphStore::PersistToDisk() {
     return;
   }
 
-  base::Value::Dict root;
+  base::DictValue root;
   root.Set("uuid", uuid_);
   root.Set("name", name_);
 
   // Serialize triples.
-  base::Value::List triples_list;
+  base::ListValue triples_list;
   for (const auto& st : triples_) {
-    base::Value::Dict td;
+    base::DictValue td;
     td.Set("source", st.data.source);
     td.Set("target", st.data.target);
     if (st.data.predicate)
@@ -451,7 +451,7 @@ void GraphStore::PersistToDisk() {
   root.Set("triples", std::move(triples_list));
 
   // Serialize shapes.
-  base::Value::Dict shapes_dict;
+  base::DictValue shapes_dict;
   for (const auto& [name, json] : shapes_) {
     shapes_dict.Set(name, json);
   }
