@@ -321,9 +321,16 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
              bool accepted, const String& reason) {
             BlinkLog2("canAddTriple CALLBACK: accepted=" + std::to_string(accepted));
             ScriptState* ss = resolver->GetScriptState();
+            BlinkLog2("canAddTriple CALLBACK: got ScriptState=" + std::to_string(ss != nullptr));
+            if (!ss || !ss->ContextIsValid()) {
+              BlinkLog("canAddTriple CALLBACK: ScriptState invalid!");
+              return;
+            }
             ScriptState::Scope scope(ss);
+            BlinkLog("canAddTriple CALLBACK: entered scope");
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> ctx = ss->GetContext();
+            BlinkLog("canAddTriple CALLBACK: creating result object");
             v8::Local<v8::Object> result = v8::Object::New(isolate);
             result->Set(ctx, V8String(isolate, "accepted"),
                         v8::Boolean::New(isolate, accepted)).Check();
@@ -331,7 +338,9 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
               result->Set(ctx, V8String(isolate, "reason"),
                           V8String(isolate, reason)).Check();
             }
+            BlinkLog("canAddTriple CALLBACK: resolving promise");
             resolver->Resolve(ScriptValue(isolate, result));
+            BlinkLog("canAddTriple CALLBACK: promise resolved!");
           },
           WrapPersistent(resolver)));
 
