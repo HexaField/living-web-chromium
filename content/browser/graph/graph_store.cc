@@ -296,6 +296,7 @@ std::vector<std::string> GraphStore::GetShapeInstances(
 }
 
 std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
+                                            const std::string& instance_uri,
                                             const std::string& data_json) {
   auto shape_it = shapes_.find(shape_name);
   if (shape_it == shapes_.end())
@@ -314,9 +315,10 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
   if (!target_class)
     return "";
 
-  // Generate instance URI.
-  std::string instance_uri = *target_class + ":" +
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  // Use provided instance URI, or generate one.
+  std::string uri = instance_uri.empty()
+      ? (*target_class + ":" + base::Uuid::GenerateRandomV4().AsLowercaseString())
+      : instance_uri;
 
   // Execute constructor actions.
   const auto* constructor_list = shape->GetDict().FindList("constructor");
@@ -328,7 +330,11 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
     const auto& action = action_val.GetDict();
 
     const std::string* action_type = action.FindString("action");
-    if (!action_type || *action_type != "addLink") continue;
+    if (!action_type) continue;
+
+    // Support both "addLink" and "setSingleTarget" actions.
+    if (*action_type != "addLink" && *action_type != "setSingleTarget")
+      continue;
 
     const std::string* predicate = action.FindString("predicate");
     if (!predicate) continue;
@@ -350,7 +356,7 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
     if (target_value.empty()) continue;
 
     SignedTriple triple;
-    triple.data.source = instance_uri;
+    triple.data.source = uri;
     triple.data.predicate = *predicate;
     triple.data.target = target_value;
     triple.author = "system";  // Would use active DID in real impl
@@ -359,7 +365,7 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
   }
 
   PersistToDisk();
-  return instance_uri;
+  return uri;
 }
 
 base::FilePath GraphStore::GetPersistencePath() const {

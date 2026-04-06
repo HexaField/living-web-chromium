@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/modules/graph/triple_event.h"
+#include "v8/include/v8-json.h"
 #include "v8/include/v8-microtask-queue.h"
 
 namespace blink {
@@ -456,13 +457,25 @@ ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(
 
 ScriptPromise<IDLUSVString> PersonalGraph::createShapeInstance(
     ScriptState* script_state, const String& shape_name,
-    const String& data_json, ScriptValue) {
+    const String& address, ScriptValue initial_values) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUSVString>>(script_state);
   auto promise = resolver->Promise();
 
+  // Serialize initialValues to JSON string.
+  String data_json = "{}";
+  if (!initial_values.IsEmpty() && !initial_values.V8Value()->IsUndefined() &&
+      !initial_values.V8Value()->IsNull()) {
+    v8::Isolate* isolate = script_state->GetIsolate();
+    v8::Local<v8::Context> ctx = script_state->GetContext();
+    v8::Local<v8::String> json_str;
+    if (v8::JSON::Stringify(ctx, initial_values.V8Value()).ToLocal(&json_str)) {
+      data_json = ToCoreString(isolate, json_str);
+    }
+  }
+
   host_->CreateShapeInstance(
-      shape_name, data_json,
+      shape_name, address, data_json,
       BindOnce(
           [](ScriptPromiseResolver<IDLUSVString>* resolver,
              const String& uri) {

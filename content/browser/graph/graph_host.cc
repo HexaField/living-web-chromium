@@ -176,9 +176,10 @@ void GraphHost::GetShapeInstances(const std::string& shape_name,
 }
 
 void GraphHost::CreateShapeInstance(const std::string& shape_name,
+                                    const std::string& instance_uri,
                                     const std::string& data_json,
                                     CreateShapeInstanceCallback callback) {
-  std::string uri = store_->CreateShapeInstance(shape_name, data_json);
+  std::string uri = store_->CreateShapeInstance(shape_name, instance_uri, data_json);
   if (uri.empty()) {
     std::move(callback).Run(std::nullopt);
   } else {

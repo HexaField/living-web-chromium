@@ -50,6 +50,7 @@ class GraphHost : public graph::mojom::PersonalGraphHost {
   void GetShapeInstances(const std::string& shape_name,
                          GetShapeInstancesCallback callback) override;
   void CreateShapeInstance(const std::string& shape_name,
+                           const std::string& instance_uri,
                            const std::string& data_json,
                            CreateShapeInstanceCallback callback) override;
   void GetShapeInstanceData(const std::string& shape_name,

@@ -124,8 +124,8 @@ interface PersonalGraphHost {
   GetShapes() => (array<string> shape_names);
   RemoveShape(string name) => (bool success);
   GetShapeInstances(string shape_name) => (array<string> instance_uris);
-  CreateShapeInstance(string shape_name, string data_json)
-      => (string? instance_uri);
+  CreateShapeInstance(string shape_name, string instance_uri, string data_json)
+      => (string? result_uri);
   GetShapeInstanceData(string shape_name, string instance_uri)
       => (string? data_json);
 

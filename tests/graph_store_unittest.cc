@@ -179,7 +179,7 @@ TEST(GraphStoreTest, ShapeAddAndQuery) {
   EXPECT_TRUE(store.AddShape("Task", shape_json));
 
   std::string instance_uri = store.CreateShapeInstance(
-      "Task", R"({"title": "My Task"})");
+      "Task", "", R"({"title": "My Task"})");
   EXPECT_FALSE(instance_uri.empty());
 
   auto instances = store.GetShapeInstances("Task");

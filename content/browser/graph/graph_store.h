@@ -88,6 +88,7 @@ class GraphStore {
   bool RemoveShape(const std::string& name);
   std::vector<std::string> GetShapeInstances(const std::string& shape_name) const;
   std::string CreateShapeInstance(const std::string& shape_name,
+                                  const std::string& instance_uri,
                                   const std::string& data_json);
 
  private:
