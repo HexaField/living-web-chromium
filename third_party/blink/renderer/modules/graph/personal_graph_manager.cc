@@ -46,25 +46,35 @@ void PersonalGraphManager::EnsureServiceConnected() {
       service_.BindNewPipeAndPassReceiver(GetTaskRunner(execution_context_)));
 }
 
-// Helper: resolve with a plain {uuid, name} JS object for a graph.
+// Helper: create a real PersonalGraph object backed by a Mojo remote.
 namespace {
 
-void ResolveWithGraphInfo(
+PersonalGraph* CreatePersonalGraphObject(
+    ExecutionContext* context,
+    PersonalGraphManager* manager,
+    const String& uuid,
+    const String& name) {
+  mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host_remote;
+  auto host_receiver = host_remote.InitWithNewPipeAndPassReceiver();
+  manager->GetGraphService()->BindGraph(uuid, std::move(host_receiver));
+  return MakeGarbageCollected<PersonalGraph>(
+      context, uuid, name, std::move(host_remote), manager);
+}
+
+void ResolveWithPersonalGraph(
     ScriptPromiseResolver<IDLAny>* resolver,
+    ExecutionContext* context,
+    PersonalGraphManager* manager,
     const String& uuid,
     const String& name) {
   ScriptState* ss = resolver->GetScriptState();
   if (!ss->ContextIsValid()) return;
   ScriptState::Scope scope(ss);
-  v8::Isolate* isolate = ss->GetIsolate();
-  v8::MicrotasksScope microtasks(isolate,
-      isolate->GetCurrentContext()->GetMicrotaskQueue(),
+  v8::MicrotasksScope microtasks(ss->GetIsolate(),
+      ss->GetContext()->GetMicrotaskQueue(),
       v8::MicrotasksScope::kDoNotRunMicrotasks);
-  v8::Local<v8::Context> v8_ctx = ss->GetContext();
-  v8::Local<v8::Object> obj = v8::Object::New(isolate);
-  obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, uuid)).Check();
-  obj->Set(v8_ctx, V8String(isolate, "name"), V8String(isolate, name)).Check();
-  resolver->Resolve(ScriptValue(isolate, obj));
+  auto* graph = CreatePersonalGraphObject(context, manager, uuid, name);
+  resolver->Resolve(graph);
 }
 
 v8::Local<v8::Object> MakeDIDCredentialObject(
@@ -104,7 +114,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::create(ScriptState* script_state,
                   "Failed to create graph"));
               return;
             }
-            ResolveWithGraphInfo(resolver, info->uuid, info->name);
+            ResolveWithPersonalGraph(resolver, context, manager, info->uuid, info->name);
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),
@@ -134,10 +144,9 @@ ScriptPromise<IDLAny> PersonalGraphManager::list(ScriptState* script_state) {
         v8::Local<v8::Array> arr =
             v8::Array::New(isolate, static_cast<int>(infos.size()));
         for (wtf_size_t i = 0; i < infos.size(); i++) {
-          v8::Local<v8::Object> obj = v8::Object::New(isolate);
-          obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, infos[i]->uuid)).Check();
-          obj->Set(v8_ctx, V8String(isolate, "name"), V8String(isolate, infos[i]->name)).Check();
-          arr->Set(v8_ctx, i, obj).Check();
+          auto* graph = CreatePersonalGraphObject(context, manager, infos[i]->uuid, infos[i]->name);
+          v8::Local<v8::Value> v8_graph = ToV8Traits<PersonalGraph>::ToV8(ss, graph);
+          arr->Set(v8_ctx, i, v8_graph).Check();
         }
         resolver->Resolve(ScriptValue(isolate, arr));
       },
@@ -168,7 +177,7 @@ ScriptPromise<IDLAny> PersonalGraphManager::get(ScriptState* script_state,
                   ScriptValue::CreateNull(resolver->GetScriptState()->GetIsolate()));
               return;
             }
-            ResolveWithGraphInfo(resolver, info->uuid, info->name);
+            ResolveWithPersonalGraph(resolver, context, manager, info->uuid, info->name);
           },
           WrapPersistent(resolver),
           WrapPersistent(execution_context_.Get()),
