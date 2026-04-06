@@ -9,39 +9,23 @@ test.describe('Spec 05 — Governance', () => {
 
   test('§6.1 canAddTriple() checks governance rules on SharedGraph', async ({ page }) => {
     page.on('console', msg => console.log('PAGE:', msg.text()));
+    page.on('crash', () => console.log('PAGE CRASHED!'));
+    page.on('pageerror', (err) => console.log('PAGE ERROR:', err.message));
+    
     const result = await page.evaluate(async () => {
       console.log('step1: creating graph');
       const g = await (navigator as any).graph.create('gov-test');
       console.log('step2: sharing graph');
       const shared = await g.share();
-      console.log('step3: shared=', typeof shared, 'canAddTriple=', typeof shared.canAddTriple);
+      console.log('step3: calling canAddTriple');
       
-      // Try with a race against a timeout to see if promise is stuck
-      const timeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('canAddTriple timed out after 10s')), 10000));
-      
-      try {
-        const allowed = await Promise.race([
-          shared.canAddTriple({
-            source: 'urn:test',
-            predicate: 'urn:wrote',
-            target: 'urn:data',
-          }),
-          timeout
-        ]);
-        console.log('step4: allowed=', JSON.stringify(allowed));
-        return allowed;
-      } catch (e: any) {
-        console.log('step4-error:', e.message);
-        // Try calling peers() to see if shared_host_ pipe works at all
-        try {
-          const peers = await shared.peers();
-          console.log('step5: peers() works:', JSON.stringify(peers));
-        } catch (e2: any) {
-          console.log('step5: peers() also failed:', e2.message);
-        }
-        throw e;
-      }
+      const allowed = await shared.canAddTriple({
+        source: 'urn:test',
+        predicate: 'urn:wrote',
+        target: 'urn:data',
+      });
+      console.log('step4: allowed=', JSON.stringify(allowed));
+      return allowed;
     });
     expect(result).toBeTruthy();
   });
