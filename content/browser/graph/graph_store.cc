@@ -8,10 +8,13 @@
 #include <regex>
 #include <sstream>
 
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/uuid.h"
+#include "base/values.h"
 
 namespace content {
 
@@ -22,8 +25,12 @@ TripleQuery& TripleQuery::operator=(const TripleQuery&) = default;
 TripleQuery::TripleQuery(TripleQuery&&) = default;
 TripleQuery& TripleQuery::operator=(TripleQuery&&) = default;
 
-GraphStore::GraphStore(const std::string& uuid, const std::string& name)
-    : uuid_(uuid), name_(name) {}
+GraphStore::GraphStore(const std::string& uuid,
+                       const std::string& name,
+                       const base::FilePath& persistence_dir)
+    : uuid_(uuid), name_(name), persistence_dir_(persistence_dir) {
+  LoadFromDisk();
+}
 
 GraphStore::~GraphStore() = default;
 
@@ -34,6 +41,7 @@ bool GraphStore::AddTriple(const SignedTriple& triple) {
       return false;
   }
   triples_.push_back(triple);
+  PersistToDisk();
   return true;
 }
 
@@ -49,6 +57,7 @@ bool GraphStore::AddTriples(const std::vector<SignedTriple>& triples) {
   for (const auto& triple : triples) {
     triples_.push_back(triple);
   }
+  PersistToDisk();
   return true;
 }
 
@@ -62,6 +71,7 @@ bool GraphStore::RemoveTriple(const SignedTriple& triple) {
       });
   if (it != triples_.end()) {
     triples_.erase(it);
+    PersistToDisk();
     return true;
   }
   return false;
@@ -81,6 +91,7 @@ bool GraphStore::RemoveShape(const std::string& name) {
   if (it == shapes_.end())
     return false;
   shapes_.erase(it);
+  PersistToDisk();
   return true;
 }
 
@@ -240,6 +251,7 @@ bool GraphStore::AddShape(const std::string& name,
   }
 
   shapes_[name] = shacl_json;
+  PersistToDisk();
 
   // Also store shape as triples in the graph for discoverability.
   std::string shape_uri = "shacl://" + name;
@@ -344,7 +356,118 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
     triples_.push_back(triple);
   }
 
+  PersistToDisk();
   return instance_uri;
+}
+
+base::FilePath GraphStore::GetPersistencePath() const {
+  return persistence_dir_.AppendASCII(uuid_ + ".json");
+}
+
+void GraphStore::LoadFromDisk() {
+  if (persistence_dir_.empty())
+    return;
+
+  base::FilePath path = GetPersistencePath();
+  std::string json;
+  if (!base::ReadFileToString(path, &json))
+    return;
+
+  auto parsed = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_dict()) {
+    LOG(WARNING) << "GraphStore: failed to parse persistence file: " << path;
+    return;
+  }
+
+  const auto& root = parsed->GetDict();
+
+  // Restore triples.
+  const auto* triples_list = root.FindList("triples");
+  if (triples_list) {
+    for (const auto& tv : *triples_list) {
+      if (!tv.is_dict()) continue;
+      const auto& td = tv.GetDict();
+      SignedTriple st;
+      const std::string* source = td.FindString("source");
+      const std::string* target = td.FindString("target");
+      if (source) st.data.source = *source;
+      if (target) st.data.target = *target;
+      const std::string* predicate = td.FindString("predicate");
+      if (predicate) st.data.predicate = *predicate;
+      const std::string* author = td.FindString("author");
+      if (author) st.author = *author;
+      const std::string* timestamp = td.FindString("timestamp");
+      if (timestamp) st.timestamp = *timestamp;
+      const std::string* proof_key = td.FindString("proof_key");
+      if (proof_key) st.proof.key = *proof_key;
+      const std::string* proof_sig = td.FindString("proof_signature");
+      if (proof_sig) st.proof.signature = *proof_sig;
+      triples_.push_back(std::move(st));
+    }
+  }
+
+  // Restore shapes.
+  const auto* shapes_dict = root.FindDict("shapes");
+  if (shapes_dict) {
+    for (auto [name, val] : *shapes_dict) {
+      if (val.is_string())
+        shapes_[name] = val.GetString();
+    }
+  }
+
+  LOG(INFO) << "GraphStore: loaded " << triples_.size() << " triples, "
+            << shapes_.size() << " shapes from " << path;
+}
+
+void GraphStore::PersistToDisk() {
+  if (persistence_dir_.empty())
+    return;
+
+  // Ensure directory exists.
+  if (!base::CreateDirectory(persistence_dir_)) {
+    LOG(ERROR) << "GraphStore: failed to create directory: "
+               << persistence_dir_;
+    return;
+  }
+
+  base::Value::Dict root;
+  root.Set("uuid", uuid_);
+  root.Set("name", name_);
+
+  // Serialize triples.
+  base::Value::List triples_list;
+  for (const auto& st : triples_) {
+    base::Value::Dict td;
+    td.Set("source", st.data.source);
+    td.Set("target", st.data.target);
+    if (st.data.predicate)
+      td.Set("predicate", *st.data.predicate);
+    td.Set("author", st.author);
+    td.Set("timestamp", st.timestamp);
+    td.Set("proof_key", st.proof.key);
+    td.Set("proof_signature", st.proof.signature);
+    triples_list.Append(std::move(td));
+  }
+  root.Set("triples", std::move(triples_list));
+
+  // Serialize shapes.
+  base::Value::Dict shapes_dict;
+  for (const auto& [name, json] : shapes_) {
+    shapes_dict.Set(name, json);
+  }
+  root.Set("shapes", std::move(shapes_dict));
+
+  std::string output;
+  if (!base::JSONWriter::WriteWithOptions(
+          root, base::JSONWriter::OPTIONS_PRETTY_PRINT, &output)) {
+    LOG(ERROR) << "GraphStore: failed to serialize to JSON";
+    return;
+  }
+
+  base::FilePath path = GetPersistencePath();
+  if (!base::WriteFile(path, output)) {
+    LOG(ERROR) << "GraphStore: failed to write: " << path;
+  }
 }
 
 }  // namespace content

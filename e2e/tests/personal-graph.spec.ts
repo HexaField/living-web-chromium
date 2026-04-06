@@ -101,4 +101,25 @@ test.describe('Spec 01 — PersonalGraph', () => {
     expect(result.uuid).toBeTruthy();
     expect(result.name).toBe('get-test');
   });
+
+  test('§6.1 graph data persists across page navigations', async ({ page }) => {
+    await page.goto('/');
+    // Create graph + add triple
+    const uuid = await page.evaluate(async () => {
+      const g = await (navigator as any).graph.create('persist-test');
+      await g.addTriple({ source: 'urn:a', predicate: 'urn:b', target: 'urn:c' });
+      return g.uuid;
+    });
+    // Navigate away
+    await page.goto('about:blank');
+    // Navigate back
+    await page.goto('/');
+    // Get the graph and check triple still there
+    const count = await page.evaluate(async (uuid) => {
+      const g = await (navigator as any).graph.get(uuid);
+      const triples = await g.queryTriples({});
+      return triples.length;
+    }, uuid);
+    expect(count).toBeGreaterThanOrEqual(1);
+  });
 });

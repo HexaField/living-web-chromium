@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "base/files/file_path.h"
 #include "content/browser/graph/triple.h"
 
 namespace content {
@@ -43,7 +44,11 @@ struct TripleQuery {
 // (or a dedicated graph sequence). No internal locking.
 class GraphStore {
  public:
-  GraphStore(const std::string& uuid, const std::string& name);
+  // |persistence_dir| is the directory under which graph JSON files are stored.
+  // If empty, persistence is disabled (in-memory only).
+  GraphStore(const std::string& uuid,
+             const std::string& name,
+             const base::FilePath& persistence_dir = base::FilePath());
   ~GraphStore();
 
   // Disallow copy.
@@ -102,6 +107,12 @@ class GraphStore {
 
   // Shape registry: name → JSON definition
   std::unordered_map<std::string, std::string> shapes_;
+
+  // Persistence
+  base::FilePath persistence_dir_;
+  base::FilePath GetPersistencePath() const;
+  void LoadFromDisk();
+  void PersistToDisk();
 };
 
 }  // namespace content

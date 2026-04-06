@@ -4,11 +4,26 @@
 
 #include "content/browser/graph/graph_manager.h"
 
+#include "base/environment.h"
+#include "base/files/file_path.h"
 #include "base/no_destructor.h"
 #include "base/uuid.h"
 #include "base/logging.h"
 
 namespace content {
+
+namespace {
+
+base::FilePath GetDefaultPersistenceDir() {
+  auto env = base::Environment::Create();
+  std::string home;
+  if (env->GetVar("HOME", &home)) {
+    return base::FilePath(home).AppendASCII(".living-web").AppendASCII("graphs");
+  }
+  return base::FilePath();
+}
+
+}  // namespace
 
 GraphManager::GraphManager()
     : signing_service_(std::make_unique<SigningService>(&did_key_provider_)) {}
@@ -44,7 +59,8 @@ void GraphManager::CreateGraph(const std::optional<std::string>& name,
   std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
   std::string graph_name = name.value_or("");
 
-  auto store = std::make_unique<GraphStore>(uuid, graph_name);
+  auto store = std::make_unique<GraphStore>(uuid, graph_name,
+                                             GetDefaultPersistenceDir());
   auto info = MakeGraphInfo(*store);
 
   stores_[uuid] = std::move(store);
