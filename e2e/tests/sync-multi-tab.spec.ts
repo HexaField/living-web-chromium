@@ -10,8 +10,8 @@ test.describe('Multi-Tab Sync', () => {
     try {
       await page1.goto('http://localhost:8080/sync-test.html');
       await page2.goto('http://localhost:8080/sync-test.html');
-      await page1.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
-      await page2.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+      await page1.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
+      await page2.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
       // Tab 1: create identity + graph + share
       const session1 = await page1.evaluate(async () => {
@@ -59,8 +59,8 @@ test.describe('Multi-Tab Sync', () => {
     try {
       await page1.goto('http://localhost:8080/sync-test.html');
       await page2.goto('http://localhost:8080/sync-test.html');
-      await page1.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
-      await page2.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+      await page1.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
+      await page2.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
       // Tab 1: create + share
       const uri = await page1.evaluate(async () => {

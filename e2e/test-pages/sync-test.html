@@ -4,7 +4,14 @@
 </head>
 <body><div id="app"></div>
 <script>
-  // Polyfill is loaded, navigator.graph is available
-  window.__ready = true;
+// Wait for polyfill to be ready by polling for navigator.graph
+function checkReady() {
+  if (typeof navigator !== 'undefined' && navigator.graph) {
+    window.__ready = true;
+  } else {
+    setTimeout(checkReady, 50);
+  }
+}
+checkReady();
 </script>
 </body></html>

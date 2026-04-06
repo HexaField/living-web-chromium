@@ -4,7 +4,7 @@ test.describe('WASM Module Loading', () => {
 
   test('polyfill exposes navigator.graph after loading', async ({ page }) => {
     await page.goto('http://localhost:8080/sync-test.html');
-    await page.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+    await page.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
     const hasGraph = await page.evaluate(() => {
       return typeof (navigator as any).graph !== 'undefined';
@@ -15,7 +15,7 @@ test.describe('WASM Module Loading', () => {
 
   test('navigator.graph.create returns a graph object', async ({ page }) => {
     await page.goto('http://localhost:8080/sync-test.html');
-    await page.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+    await page.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
     const result = await page.evaluate(async () => {
       try {
@@ -32,7 +32,7 @@ test.describe('WASM Module Loading', () => {
 
   test('module loader rejects tampered content hash', async ({ page }) => {
     await page.goto('http://localhost:8080/sync-test.html');
-    await page.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+    await page.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
     const result = await page.evaluate(async () => {
       try {
@@ -53,7 +53,7 @@ test.describe('WASM Module Loading', () => {
 
   test('share() returns a URI containing graph identifier', async ({ page }) => {
     await page.goto('http://localhost:8080/sync-test.html');
-    await page.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+    await page.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
     const uri = await page.evaluate(async () => {
       const id = await (navigator.credentials as any).create({ did: { displayName: 'Sharer' } });

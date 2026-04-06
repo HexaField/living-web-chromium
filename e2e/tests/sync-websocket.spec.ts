@@ -26,8 +26,8 @@ test.describe('WebSocket Relay Sync', () => {
       await pageB.goto('http://localhost:8080/sync-test.html');
 
       // Wait for polyfill to load
-      await pageA.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
-      await pageB.waitForFunction(() => (window as any).__ready, null, { timeout: 10000 });
+      await pageA.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
+      await pageB.waitForFunction(() => (window as any).navigator?.graph, null, { timeout: 10000 });
 
       // Browser A: create identity + graph + share via relay
       const graphUri = await pageA.evaluate(async () => {
