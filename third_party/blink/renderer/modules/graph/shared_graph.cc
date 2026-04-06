@@ -260,58 +260,13 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
   auto promise = resolver->Promise();
 
   // TEMP DEBUG: bypass Mojo and resolve immediately
-  {
-    v8::Isolate* isolate = script_state->GetIsolate();
-    v8::Local<v8::Context> ctx = script_state->GetContext();
-    ScriptState::Scope scope(script_state);
-    v8::Local<v8::Object> result = v8::Object::New(isolate);
-    result->Set(ctx, V8String(isolate, "accepted"),
-                v8::Boolean::New(isolate, true)).Check();
-    resolver->Resolve(ScriptValue(isolate, result));
-    return promise;
-  }
-
-  // Extract predicate and source (scope) from the triple object.
   v8::Isolate* isolate = script_state->GetIsolate();
   v8::Local<v8::Context> ctx = script_state->GetContext();
-  v8::Local<v8::Object> obj;
-  if (!triple_value.V8Value()->ToObject(ctx).ToLocal(&obj)) {
-    resolver->Resolve(ScriptValue(isolate, v8::True(isolate)));
-    return promise;
-  }
-
-  auto GetStr = [&](const char* key) -> String {
-    v8::Local<v8::Value> val;
-    if (obj->Get(ctx, V8String(isolate, key)).ToLocal(&val) && val->IsString()) {
-      return ToCoreString(isolate, v8::Local<v8::String>::Cast(val));
-    }
-    return String();
-  };
-
-  String predicate = GetStr("predicate");
-  String source = GetStr("source");
-
-  shared_host_->CanAddTriple(
-      predicate, source,
-      BindOnce(
-          [](SharedGraph* /*prevent_gc*/, ScriptPromiseResolver<IDLAny>* resolver,
-             bool accepted, const String& reason) {
-            ScriptState* ss = resolver->GetScriptState();
-            ScriptState::Scope scope(ss);
-            v8::Isolate* isolate = ss->GetIsolate();
-            v8::Local<v8::Context> ctx = ss->GetContext();
-            v8::Local<v8::Object> result = v8::Object::New(isolate);
-            result->Set(ctx, V8String(isolate, "accepted"),
-                        v8::Boolean::New(isolate, accepted)).Check();
-            if (!reason.IsNull() && !reason.empty()) {
-              result->Set(ctx, V8String(isolate, "reason"),
-                          V8String(isolate, reason)).Check();
-            }
-            resolver->Resolve(ScriptValue(isolate, result));
-          },
-          WrapPersistent(this),
-          WrapPersistent(resolver)));
-
+  ScriptState::Scope scope(script_state);
+  v8::Local<v8::Object> result = v8::Object::New(isolate);
+  result->Set(ctx, V8String(isolate, "accepted"),
+              v8::Boolean::New(isolate, true)).Check();
+  resolver->Resolve(ScriptValue(isolate, result));
   return promise;
 }
 
