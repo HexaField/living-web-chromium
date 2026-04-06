@@ -30,7 +30,7 @@ SharedGraph::SharedGraph(
         std::move(shared_host),
         static_cast<scoped_refptr<base::SequencedTaskRunner>>(
             context->GetTaskRunner(TaskType::kMiscPlatformAPI)));
-    shared_host_.set_disconnect_handler(WTF::BindOnce([]() {
+    shared_host_.set_disconnect_handler(BindOnce([]() {
       LOG(ERROR) << "BLINK: SharedGraphHost remote DISCONNECTED";
     }));
   }
