@@ -335,8 +335,16 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
             BlinkLog("canAddTriple CALLBACK: about to create Object::New");
             v8::Local<v8::Object> result = v8::Object::New(isolate);
             BlinkLog("canAddTriple CALLBACK: object created");
-            result->Set(ctx, V8String(isolate, "accepted"),
-                        v8::Boolean::New(isolate, accepted)).Check();
+            auto set_result = result->Set(ctx, V8String(isolate, "accepted"),
+                        v8::Boolean::New(isolate, accepted));
+            BlinkLog2("canAddTriple CALLBACK: Set result IsNothing=" + std::to_string(set_result.IsNothing()));
+            if (!set_result.IsNothing()) {
+              BlinkLog("canAddTriple CALLBACK: Set succeeded");
+            } else {
+              BlinkLog("canAddTriple CALLBACK: Set FAILED - resolving with true instead");
+              resolver->Resolve(ScriptValue(isolate, v8::True(isolate)));
+              return;
+            }
             if (!reason.IsNull() && !reason.empty()) {
               result->Set(ctx, V8String(isolate, "reason"),
                           V8String(isolate, reason)).Check();
