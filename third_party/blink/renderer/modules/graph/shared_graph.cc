@@ -321,37 +321,16 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
              bool accepted, const String& reason) {
             BlinkLog2("canAddTriple CALLBACK: accepted=" + std::to_string(accepted));
             ScriptState* ss = resolver->GetScriptState();
-            BlinkLog2("canAddTriple CALLBACK: got ScriptState=" + std::to_string(ss != nullptr));
             if (!ss || !ss->ContextIsValid()) {
               BlinkLog("canAddTriple CALLBACK: ScriptState invalid!");
               return;
             }
             ScriptState::Scope scope(ss);
-            BlinkLog("canAddTriple CALLBACK: entered scope");
             v8::Isolate* isolate = ss->GetIsolate();
-            BlinkLog2("canAddTriple CALLBACK: got isolate=" + std::to_string(isolate != nullptr));
-            v8::Local<v8::Context> ctx = ss->GetContext();
-            BlinkLog2("canAddTriple CALLBACK: got context, empty=" + std::to_string(ctx.IsEmpty()));
-            BlinkLog("canAddTriple CALLBACK: about to create Object::New");
-            v8::Local<v8::Object> result = v8::Object::New(isolate);
-            BlinkLog("canAddTriple CALLBACK: object created");
-            auto set_result = result->Set(ctx, V8String(isolate, "accepted"),
-                        v8::Boolean::New(isolate, accepted));
-            BlinkLog2("canAddTriple CALLBACK: Set result IsNothing=" + std::to_string(set_result.IsNothing()));
-            if (!set_result.IsNothing()) {
-              BlinkLog("canAddTriple CALLBACK: Set succeeded");
-            } else {
-              BlinkLog("canAddTriple CALLBACK: Set FAILED - resolving with true instead");
-              resolver->Resolve(ScriptValue(isolate, v8::True(isolate)));
-              return;
-            }
-            if (!reason.IsNull() && !reason.empty()) {
-              result->Set(ctx, V8String(isolate, "reason"),
-                          V8String(isolate, reason)).Check();
-            }
-            BlinkLog("canAddTriple CALLBACK: resolving promise");
-            resolver->Resolve(ScriptValue(isolate, result));
-            BlinkLog("canAddTriple CALLBACK: promise resolved!");
+            BlinkLog("canAddTriple CALLBACK: resolving with boolean");
+            resolver->Resolve(
+                ScriptValue(isolate, v8::Boolean::New(isolate, accepted)));
+            BlinkLog("canAddTriple CALLBACK: resolved!");
           },
           WrapPersistent(resolver)));
 
