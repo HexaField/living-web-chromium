@@ -200,14 +200,20 @@ void SharedGraphHostImpl::CanAddTriple(const std::string& predicate,
   }
 
   std::string scope = scope_entity.empty() ? session_->uri : scope_entity;
+  DebugLog("CanAddTriple: calling governance_->CanAddTriple agent=" + agent_did_ +
+           " pred=" + predicate + " scope=" + scope + " root=" + root_did);
   auto result = governance_->CanAddTriple(
       *store_, agent_did_, predicate, scope, root_did);
+  DebugLog("CanAddTriple: governance returned accepted=" +
+           std::to_string(result.accepted) + " reason=" + result.reason);
 
   std::optional<std::string> reason;
   if (!result.accepted && !result.reason.empty()) {
     reason = result.reason;
   }
+  DebugLog("CanAddTriple: about to run callback accepted=" + std::to_string(result.accepted));
   std::move(callback).Run(result.accepted, reason);
+  DebugLog("CanAddTriple: callback ran successfully");
 }
 
 void SharedGraphHostImpl::ConstraintsFor(
