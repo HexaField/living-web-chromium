@@ -346,14 +346,14 @@ std::string GraphStore::CreateShapeInstance(const std::string& shape_name,
     if (value_str) {
       target_value = *value_str;
     } else if (param_str) {
-      // Look up parameter in data.
+      // Look up parameter in data; if not found, use as literal value.
       const std::string* data_val = data->GetDict().FindString(*param_str);
       if (data_val) {
         target_value = *data_val;
+      } else {
+        target_value = *param_str;
       }
     }
-
-    if (target_value.empty()) continue;
 
     SignedTriple triple;
     triple.data.source = uri;
