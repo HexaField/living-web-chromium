@@ -27,7 +27,16 @@ struct SharedGraphInfo {
 // An online peer.
 struct OnlinePeer {
   string did;
+  string session_id;
+  string device_label;
   double last_seen;  // milliseconds since epoch
+};
+
+// Basic peer info.
+struct PeerInfo {
+  string did;
+  string session_id;
+  string device_label;
 };
 
 // A graph diff — unit of change for sync.
@@ -71,14 +80,18 @@ interface GraphSyncService {
 // ============================================================
 
 interface SharedGraphHost {
-  // Get all known peers (by DID).
-  GetPeers() => (array<string> peer_dids);
+  // Get all known peers.
+  GetPeers() => (array<PeerInfo> peers);
 
   // Get currently online peers.
   GetOnlinePeers() => (array<OnlinePeer> peers);
 
   // Send a signal (ephemeral message) to a specific peer.
   SendSignal(string remote_did, string payload_json) => (bool success);
+
+  // Send a signal to a specific peer session.
+  SendSignalToSession(string remote_did, string session_id, string payload_json)
+      => (bool success);
 
   // Broadcast a signal to all peers.
   Broadcast(string payload_json) => (bool success);

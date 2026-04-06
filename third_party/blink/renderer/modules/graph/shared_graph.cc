@@ -12,7 +12,7 @@
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
-#include "base/uuid.h"
+
 
 namespace blink {
 
@@ -46,11 +46,27 @@ ScriptPromise<IDLAny> SharedGraph::currentRevision(ScriptState* script_state) {
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  // Return a stub UUID revision string.
-  ScriptState::Scope scope(script_state);
-  v8::Isolate* isolate = script_state->GetIsolate();
-  resolver->Resolve(ScriptValue(isolate,
-      V8String(isolate, String(base::Uuid::GenerateRandomV4().AsLowercaseString()))));
+  if (!shared_host_.is_bound()) {
+    ScriptState::Scope scope(script_state);
+    v8::Isolate* isolate = script_state->GetIsolate();
+    resolver->Resolve(ScriptValue(isolate, v8::Null(isolate)));
+    return promise;
+  }
+
+  shared_host_->GetCurrentRevision(BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         const String& revision) {
+        ScriptState* ss = resolver->GetScriptState();
+        ScriptState::Scope scope(ss);
+        v8::Isolate* isolate = ss->GetIsolate();
+        if (revision.empty()) {
+          resolver->Resolve(ScriptValue(isolate, v8::Null(isolate)));
+        } else {
+          resolver->Resolve(ScriptValue(isolate, V8String(isolate, revision)));
+        }
+      },
+      WrapPersistent(resolver)));
+
   return promise;
 }
 
@@ -70,15 +86,22 @@ ScriptPromise<IDLAny> SharedGraph::peers(ScriptState* script_state) {
 
   shared_host_->GetPeers(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
-         const Vector<String>& peer_dids) {
+         Vector<graph::mojom::blink::PeerInfoPtr> peers) {
         ScriptState* ss = resolver->GetScriptState();
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> ctx = ss->GetContext();
         v8::Local<v8::Array> arr =
-            v8::Array::New(isolate, static_cast<int>(peer_dids.size()));
-        for (wtf_size_t i = 0; i < peer_dids.size(); i++) {
-          arr->Set(ctx, i, V8String(isolate, peer_dids[i])).Check();
+            v8::Array::New(isolate, static_cast<int>(peers.size()));
+        for (wtf_size_t i = 0; i < peers.size(); i++) {
+          v8::Local<v8::Object> obj = v8::Object::New(isolate);
+          obj->Set(ctx, V8String(isolate, "did"),
+                   V8String(isolate, peers[i]->did)).Check();
+          obj->Set(ctx, V8String(isolate, "sessionId"),
+                   V8String(isolate, peers[i]->session_id)).Check();
+          obj->Set(ctx, V8String(isolate, "deviceLabel"),
+                   V8String(isolate, peers[i]->device_label)).Check();
+          arr->Set(ctx, i, obj).Check();
         }
         resolver->Resolve(ScriptValue(isolate, arr));
       },
@@ -112,6 +135,10 @@ ScriptPromise<IDLAny> SharedGraph::onlinePeers(ScriptState* script_state) {
           v8::Local<v8::Object> obj = v8::Object::New(isolate);
           obj->Set(ctx, V8String(isolate, "did"),
                    V8String(isolate, peers[i]->did)).Check();
+          obj->Set(ctx, V8String(isolate, "sessionId"),
+                   V8String(isolate, peers[i]->session_id)).Check();
+          obj->Set(ctx, V8String(isolate, "deviceLabel"),
+                   V8String(isolate, peers[i]->device_label)).Check();
           obj->Set(ctx, V8String(isolate, "lastSeen"),
                    v8::Number::New(isolate, peers[i]->last_seen)).Check();
           arr->Set(ctx, i, obj).Check();
@@ -164,8 +191,33 @@ ScriptPromise<IDLUndefined> SharedGraph::sendSignalToSession(
     const String& remote_did,
     const String& session_id,
     ScriptValue payload) {
-  // Same as sendSignal but targets specific session
-  return sendSignal(script_state, remote_did, payload);
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (!shared_host_.is_bound()) {
+    resolver->Resolve();
+    return promise;
+  }
+
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::String> json;
+  if (!v8::JSON::Stringify(script_state->GetContext(), payload.V8Value())
+           .ToLocal(&json)) {
+    resolver->Resolve();
+    return promise;
+  }
+  String payload_json = ToCoreString(isolate, json);
+
+  shared_host_->SendSignalToSession(
+      remote_did, session_id, payload_json,
+      BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver, bool success) {
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
 }
 
 ScriptPromise<IDLUndefined> SharedGraph::broadcast(ScriptState* script_state,

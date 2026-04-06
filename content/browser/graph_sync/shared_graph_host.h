@@ -39,6 +39,10 @@ class SharedGraphHostImpl : public graph::mojom::SharedGraphHost {
   void SendSignal(const std::string& remote_did,
                   const std::string& payload_json,
                   SendSignalCallback callback) override;
+  void SendSignalToSession(const std::string& remote_did,
+                           const std::string& session_id,
+                           const std::string& payload_json,
+                           SendSignalToSessionCallback callback) override;
   void Broadcast(const std::string& payload_json,
                  BroadcastCallback callback) override;
   void Sync(SyncCallback callback) override;

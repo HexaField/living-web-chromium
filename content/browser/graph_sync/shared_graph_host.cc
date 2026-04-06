@@ -7,6 +7,7 @@
 #include "base/logging.h"
 #include "base/time/time.h"
 
+#include <algorithm>
 #include <sstream>
 
 namespace content {
@@ -31,19 +32,25 @@ SharedGraphHostImpl::SharedGraphHostImpl(
 SharedGraphHostImpl::~SharedGraphHostImpl() = default;
 
 void SharedGraphHostImpl::GetPeers(GetPeersCallback callback) {
-  std::vector<std::string> peers(session_->peer_dids.begin(),
-                                  session_->peer_dids.end());
+  std::vector<graph::mojom::PeerInfoPtr> peers;
+  for (const auto& did : session_->peer_dids) {
+    auto info = graph::mojom::PeerInfo::New();
+    info->did = did;
+    info->session_id = session_->uri;
+    info->device_label = did.substr(0, std::min<size_t>(did.size(), 16));
+    peers.push_back(std::move(info));
+  }
   std::move(callback).Run(std::move(peers));
 }
 
 void SharedGraphHostImpl::GetOnlinePeers(GetOnlinePeersCallback callback) {
-  // For now, treat all known peers as online. A real implementation would
-  // track heartbeats via the WebRTC DataChannel or signalling server.
   std::vector<graph::mojom::OnlinePeerPtr> online;
   double now_ms = base::Time::Now().InMillisecondsFSinceUnixEpoch();
   for (const auto& did : session_->peer_dids) {
     auto peer = graph::mojom::OnlinePeer::New();
     peer->did = did;
+    peer->session_id = session_->uri;
+    peer->device_label = did.substr(0, std::min<size_t>(did.size(), 16));
     peer->last_seen = now_ms;
     online.push_back(std::move(peer));
   }
@@ -67,6 +74,27 @@ void SharedGraphHostImpl::SendSignal(const std::string& remote_did,
 
   // If we have a client on the receiving end (same-process scenario),
   // deliver inline.
+  if (client_.is_bound()) {
+    client_->OnSignalReceived(remote_did, payload_json);
+  }
+  std::move(callback).Run(true);
+}
+
+void SharedGraphHostImpl::SendSignalToSession(
+    const std::string& remote_did,
+    const std::string& session_id,
+    const std::string& payload_json,
+    SendSignalToSessionCallback callback) {
+  if (session_->peer_dids.find(remote_did) == session_->peer_dids.end()) {
+    LOG(WARNING) << "SendSignalToSession: unknown peer " << remote_did;
+    std::move(callback).Run(false);
+    return;
+  }
+
+  LOG(INFO) << "SendSignalToSession: " << agent_did_ << " -> " << remote_did
+            << " session=" << session_id
+            << " payload=" << payload_json.substr(0, 100);
+
   if (client_.is_bound()) {
     client_->OnSignalReceived(remote_did, payload_json);
   }
