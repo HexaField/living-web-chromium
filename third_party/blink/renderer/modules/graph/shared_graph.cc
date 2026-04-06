@@ -319,18 +319,22 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              bool accepted, const String& reason) {
-            BlinkLog2("canAddTriple CALLBACK: accepted=" + std::to_string(accepted));
             ScriptState* ss = resolver->GetScriptState();
-            if (!ss || !ss->ContextIsValid()) {
-              BlinkLog("canAddTriple CALLBACK: ScriptState invalid!");
-              return;
-            }
+            if (!ss || !ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
-            BlinkLog("canAddTriple CALLBACK: resolving with boolean");
-            resolver->Resolve(
-                ScriptValue(isolate, v8::Boolean::New(isolate, accepted)));
-            BlinkLog("canAddTriple CALLBACK: resolved!");
+            v8::Local<v8::Context> ctx = ss->GetContext();
+            v8::MicrotasksScope microtasks(
+                isolate, ctx->GetMicrotaskQueue(),
+                v8::MicrotasksScope::kDoNotRunMicrotasks);
+            v8::Local<v8::Object> result = v8::Object::New(isolate);
+            result->Set(ctx, V8String(isolate, "accepted"),
+                        v8::Boolean::New(isolate, accepted)).Check();
+            if (!reason.IsNull() && !reason.empty()) {
+              result->Set(ctx, V8String(isolate, "reason"),
+                          V8String(isolate, reason)).Check();
+            }
+            resolver->Resolve(ScriptValue(isolate, result));
           },
           WrapPersistent(resolver)));
 
