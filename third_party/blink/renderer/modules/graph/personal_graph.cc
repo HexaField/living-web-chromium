@@ -506,7 +506,7 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
   auto options = graph::mojom::blink::SharedGraphOptions::New();
   options->sync_protocol = "webrtc-crdt";
 
-  // Extract name/description from options if provided.
+  // Extract name/description/module/relays from options if provided.
   if (!options_val.IsEmpty() && !options_val.IsUndefined()) {
     String name = GetStringProp(script_state, options_val, "name");
     if (!name.IsNull())
@@ -514,6 +514,9 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
     String desc = GetStringProp(script_state, options_val, "description");
     if (!desc.IsNull())
       options->description = desc;
+    // module and relays are accepted but ignored for now (use defaults).
+    // String module = GetStringProp(script_state, options_val, "module");
+    // ScriptValue relays = GetProp(script_state, options_val, "relays");
   }
 
   sync_service->ShareGraph(

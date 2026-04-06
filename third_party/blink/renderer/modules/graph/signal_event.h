@@ -17,19 +17,19 @@ class SignalEvent final : public Event {
 
  public:
   static SignalEvent* Create(const AtomicString& type,
-                              const String& remote_did,
+                              const String& sender_did,
                               const ScriptValue& payload) {
-    return MakeGarbageCollected<SignalEvent>(type, remote_did, payload);
+    return MakeGarbageCollected<SignalEvent>(type, sender_did, payload);
   }
 
   SignalEvent(const AtomicString& type,
-              const String& remote_did,
+              const String& sender_did,
               const ScriptValue& payload)
       : Event(type, Bubbles::kNo, Cancelable::kNo),
-        remote_did_(remote_did),
+        sender_did_(sender_did),
         payload_(payload) {}
 
-  const String& remoteDid() const { return remote_did_; }
+  const String& senderDid() const { return sender_did_; }
   ScriptValue payload() const { return payload_; }
 
   void Trace(Visitor* visitor) const override {
@@ -38,7 +38,7 @@ class SignalEvent final : public Event {
   }
 
  private:
-  String remote_did_;
+  String sender_did_;
   ScriptValue payload_;
 };
 

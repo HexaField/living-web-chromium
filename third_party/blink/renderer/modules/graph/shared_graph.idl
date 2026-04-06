@@ -11,20 +11,24 @@ enum SyncState { "idle", "syncing", "synced", "error" };
 [Exposed=(Window,Worker), SecureContext]
 interface SharedGraph : PersonalGraph {
   readonly attribute USVString uri;
+  readonly attribute USVString moduleHash;
   readonly attribute SyncState syncState;
 
   // Peer operations (Spec 03 §5.2)
-  [CallWith=ScriptState, NewObject] Promise<any> peers();
-  [CallWith=ScriptState, NewObject] Promise<any> onlinePeers();
+  [NewObject, CallWith=ScriptState] Promise<any> peers();
+  [NewObject, CallWith=ScriptState] Promise<any> onlinePeers();
+
+  // Revision (Spec 03 §6)
+  [NewObject, CallWith=ScriptState] Promise<any> currentRevision();
 
   // Signalling (Spec 03 §9)
-  [CallWith=ScriptState, NewObject] Promise<undefined> sendSignal(USVString remoteDid, any payload);
-  [CallWith=ScriptState, NewObject] Promise<undefined> broadcast(any payload);
+  [CallWith=ScriptState] Promise<undefined> sendSignal(USVString remoteDid, any payload);
+  [CallWith=ScriptState] Promise<undefined> broadcast(any payload);
 
   // Governance queries (Spec 05 §9)
-  [CallWith=ScriptState, NewObject] Promise<any> canAddTriple(any triple);
-  [CallWith=ScriptState, NewObject] Promise<any> constraintsFor(optional USVString? entityAddress = null);
-  [CallWith=ScriptState, NewObject] Promise<any> myCapabilities();
+  [NewObject, CallWith=ScriptState] Promise<any> canAddTriple(any triple);
+  [NewObject, CallWith=ScriptState] Promise<any> constraintsFor(optional USVString? scopeEntity = null);
+  [NewObject, CallWith=ScriptState] Promise<any> myCapabilities();
 
   // Events (Spec 03)
   attribute EventHandler onpeerjoined;

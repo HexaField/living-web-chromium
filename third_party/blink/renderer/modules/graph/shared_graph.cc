@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/wtf/uuid.h"
 
 namespace blink {
 
@@ -34,6 +35,23 @@ SharedGraph::SharedGraph(
 
 V8SyncState SharedGraph::syncState() const {
   return V8SyncState(V8SyncState::Enum::kIdle);
+}
+
+String SharedGraph::moduleHash() const {
+  return String("default");
+}
+
+ScriptPromise<IDLAny> SharedGraph::currentRevision(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto promise = resolver->Promise();
+
+  // Return a stub UUID revision string.
+  ScriptState::Scope scope(script_state);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  resolver->Resolve(ScriptValue(isolate,
+      V8String(isolate, WTF::CreateCanonicalUUIDString())));
+  return promise;
 }
 
 // ---------- Peers ----------

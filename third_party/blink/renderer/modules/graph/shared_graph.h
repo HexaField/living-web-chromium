@@ -26,11 +26,15 @@ class SharedGraph final : public PersonalGraph {
               mojo::PendingRemote<graph::mojom::blink::SharedGraphHost> shared_host);
 
   const String& uri() const { return uri_; }
+  String moduleHash() const;
   V8SyncState syncState() const;
 
   // Peer operations (Spec 03 §5.2)
   ScriptPromise<IDLAny> peers(ScriptState*);
   ScriptPromise<IDLAny> onlinePeers(ScriptState*);
+
+  // Revision (Spec 03 §6)
+  ScriptPromise<IDLAny> currentRevision(ScriptState*);
 
   // Signalling (Spec 03 §9)
   ScriptPromise<IDLUndefined> sendSignal(ScriptState*, const String&, ScriptValue);
