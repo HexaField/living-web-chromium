@@ -28,6 +28,7 @@ interface PersonalGraph : EventTarget {
   // Shape operations (Spec 01 §5 + Spec 04 §5)
   [CallWith=ScriptState, NewObject] Promise<undefined> addShape(DOMString name, DOMString shapeJson);
   [CallWith=ScriptState, NewObject] Promise<any> getShapes();
+  [CallWith=ScriptState, NewObject] Promise<undefined> removeShape(DOMString name);
   [CallWith=ScriptState, NewObject] Promise<any> getShapeInstances(DOMString shapeName);
   [CallWith=ScriptState, NewObject] Promise<USVString> createShapeInstance(DOMString shapeName, USVString address, optional any initialValues);
   [CallWith=ScriptState, NewObject] Promise<any> getShapeInstanceData(DOMString shapeName, USVString address);

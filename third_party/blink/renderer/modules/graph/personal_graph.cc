@@ -375,8 +375,48 @@ ScriptPromise<IDLUndefined> PersonalGraph::addShape(
 ScriptPromise<IDLAny> PersonalGraph::getShapes(ScriptState* script_state) {
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
-  ResolveWithEmptyArray(resolver);
-  return resolver->Promise();
+  auto promise = resolver->Promise();
+
+  host_->GetShapes(BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         const Vector<String>& shape_names) {
+        ScriptState* ss = resolver->GetScriptState();
+        if (!ss->ContextIsValid()) return;
+        ScriptState::Scope scope(ss);
+        v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
+        v8::Isolate* isolate = ss->GetIsolate();
+        v8::Local<v8::Context> ctx = ss->GetContext();
+        v8::Local<v8::Array> arr =
+            v8::Array::New(isolate, static_cast<int>(shape_names.size()));
+        for (wtf_size_t i = 0; i < shape_names.size(); i++) {
+          arr->Set(ctx, i,
+                   v8::String::NewFromUtf8(isolate,
+                                           shape_names[i].Utf8().c_str())
+                       .ToLocalChecked())
+              .Check();
+        }
+        resolver->Resolve(ScriptValue(isolate, arr));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> PersonalGraph::removeShape(
+    ScriptState* script_state, const String& name) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  host_->RemoveShape(
+      name,
+      BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver, bool) {
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
 }
 
 ScriptPromise<IDLAny> PersonalGraph::getShapeInstances(

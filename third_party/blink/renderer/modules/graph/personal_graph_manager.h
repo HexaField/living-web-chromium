@@ -50,6 +50,7 @@ class PersonalGraphManager final : public ScriptWrappable {
   ScriptPromise<IDLAny> createIdentity(ScriptState*, const String& display_name = String());
   ScriptPromise<IDLAny> listIdentities(ScriptState*);
   ScriptPromise<IDLAny> activeIdentity(ScriptState*);
+  ScriptPromise<IDLAny> setActiveIdentity(ScriptState*, const String& did);
 
   // Expose DID service remote for DIDCredential objects.
   HeapMojoRemote<graph::mojom::blink::DIDCredentialService>& GetDIDService() {

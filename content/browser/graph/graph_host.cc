@@ -158,6 +158,17 @@ void GraphHost::AddShape(const std::string& name,
   std::move(callback).Run(ok);
 }
 
+void GraphHost::GetShapes(GetShapesCallback callback) {
+  auto shapes = store_->GetShapes();
+  std::move(callback).Run(std::move(shapes));
+}
+
+void GraphHost::RemoveShape(const std::string& name,
+                             RemoveShapeCallback callback) {
+  bool ok = store_->RemoveShape(name);
+  std::move(callback).Run(ok);
+}
+
 void GraphHost::GetShapeInstances(const std::string& shape_name,
                                    GetShapeInstancesCallback callback) {
   auto instances = store_->GetShapeInstances(shape_name);

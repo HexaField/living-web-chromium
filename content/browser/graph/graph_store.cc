@@ -53,12 +53,35 @@ bool GraphStore::AddTriples(const std::vector<SignedTriple>& triples) {
 }
 
 bool GraphStore::RemoveTriple(const SignedTriple& triple) {
-  auto it = std::find(triples_.begin(), triples_.end(), triple);
+  // Match by source/predicate/target only, not by author/timestamp/proof.
+  auto it = std::find_if(triples_.begin(), triples_.end(),
+      [&triple](const SignedTriple& existing) {
+        return existing.data.source == triple.data.source &&
+               existing.data.target == triple.data.target &&
+               existing.data.predicate == triple.data.predicate;
+      });
   if (it != triples_.end()) {
     triples_.erase(it);
     return true;
   }
   return false;
+}
+
+std::vector<std::string> GraphStore::GetShapes() const {
+  std::vector<std::string> names;
+  names.reserve(shapes_.size());
+  for (const auto& [name, _] : shapes_) {
+    names.push_back(name);
+  }
+  return names;
+}
+
+bool GraphStore::RemoveShape(const std::string& name) {
+  auto it = shapes_.find(name);
+  if (it == shapes_.end())
+    return false;
+  shapes_.erase(it);
+  return true;
 }
 
 std::vector<SignedTriple> GraphStore::QueryTriples(

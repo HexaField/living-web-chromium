@@ -53,6 +53,7 @@ class PersonalGraph : public EventTarget {
   // Shape operations (Spec 01 §5 + Spec 04 §5)
   ScriptPromise<IDLUndefined> addShape(ScriptState*, const String&, const String&);
   ScriptPromise<IDLAny> getShapes(ScriptState*);
+  ScriptPromise<IDLUndefined> removeShape(ScriptState*, const String&);
   ScriptPromise<IDLAny> getShapeInstances(ScriptState*, const String&);
   ScriptPromise<IDLUSVString> createShapeInstance(ScriptState*, const String&, const String&, ScriptValue = ScriptValue());
   ScriptPromise<IDLAny> getShapeInstanceData(ScriptState*, const String&, const String&);

@@ -121,6 +121,8 @@ interface PersonalGraphHost {
 
   // Shape operations (Dynamic Graph Shape Validation spec)
   AddShape(string name, string shacl_json) => (bool success);
+  GetShapes() => (array<string> shape_names);
+  RemoveShape(string name) => (bool success);
   GetShapeInstances(string shape_name) => (array<string> instance_uris);
   CreateShapeInstance(string shape_name, string data_json)
       => (string? instance_uri);

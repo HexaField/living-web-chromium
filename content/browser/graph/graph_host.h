@@ -44,6 +44,9 @@ class GraphHost : public graph::mojom::PersonalGraphHost {
   void AddShape(const std::string& name,
                 const std::string& shacl_json,
                 AddShapeCallback callback) override;
+  void GetShapes(GetShapesCallback callback) override;
+  void RemoveShape(const std::string& name,
+                   RemoveShapeCallback callback) override;
   void GetShapeInstances(const std::string& shape_name,
                          GetShapeInstancesCallback callback) override;
   void CreateShapeInstance(const std::string& shape_name,

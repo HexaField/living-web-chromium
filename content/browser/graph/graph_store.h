@@ -79,6 +79,8 @@ class GraphStore {
 
   // Shape operations
   bool AddShape(const std::string& name, const std::string& shacl_json);
+  std::vector<std::string> GetShapes() const;
+  bool RemoveShape(const std::string& name);
   std::vector<std::string> GetShapeInstances(const std::string& shape_name) const;
   std::string CreateShapeInstance(const std::string& shape_name,
                                   const std::string& data_json);

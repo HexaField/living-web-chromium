@@ -424,6 +424,59 @@ ScriptPromise<IDLAny> PersonalGraphManager::activeIdentity(
   return promise;
 }
 
+ScriptPromise<IDLAny> PersonalGraphManager::setActiveIdentity(
+    ScriptState* script_state,
+    const String& did) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto promise = resolver->Promise();
+
+  EnsureDIDServiceConnected();
+
+  // List credentials to find the one matching the DID, then set it active.
+  did_service_->ListCredentials(BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         ExecutionContext* context,
+         PersonalGraphManager* manager,
+         const String& target_did,
+         Vector<graph::mojom::blink::DIDCredentialInfoPtr> infos) {
+        String credential_id;
+        for (const auto& info : infos) {
+          if (info->did == target_did) {
+            credential_id = info->id;
+            break;
+          }
+        }
+        if (credential_id.IsNull()) {
+          ScriptState* ss = resolver->GetScriptState();
+          if (!ss->ContextIsValid()) return;
+          ScriptState::Scope scope(ss);
+          v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
+          resolver->Resolve(ScriptValue(ss->GetIsolate(),
+                                        v8::Boolean::New(ss->GetIsolate(), false)));
+          return;
+        }
+        manager->GetDIDService()->SetActiveCredential(
+            credential_id.Utf8().c_str(),
+            BindOnce(
+                [](ScriptPromiseResolver<IDLAny>* resolver, bool success) {
+                  ScriptState* ss = resolver->GetScriptState();
+                  if (!ss->ContextIsValid()) return;
+                  ScriptState::Scope scope(ss);
+                  v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
+                  resolver->Resolve(ScriptValue(ss->GetIsolate(),
+                                                v8::Boolean::New(ss->GetIsolate(), success)));
+                },
+                WrapPersistent(resolver)));
+      },
+      WrapPersistent(resolver),
+      WrapPersistent(execution_context_.Get()),
+      WrapPersistent(this),
+      did));
+
+  return promise;
+}
+
 void PersonalGraphManager::Trace(Visitor* visitor) const {
   visitor->Trace(execution_context_);
   visitor->Trace(service_);
