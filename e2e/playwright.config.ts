@@ -34,6 +34,7 @@ export default defineConfig({
         '--unsafely-treat-insecure-origin-as-secure=http://localhost:8080',
         '--enable-logging=stderr',
         '--v=0',
+        '--log-file=/tmp/chrome_log.txt',
       ],
     },
     baseURL: 'http://localhost:8080',
