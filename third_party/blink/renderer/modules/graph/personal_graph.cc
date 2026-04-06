@@ -576,7 +576,6 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
             }
 
             ExecutionContext* context = manager->GetExecutionContext();
-            (void)context;  // May be used in future.
             String uri = info->uri;
 
             // Bind a PersonalGraphHost for triple operations on the
@@ -600,12 +599,14 @@ ScriptPromise<IDLAny> PersonalGraph::share(ScriptState* script_state,
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
   v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
-            v8::Isolate* isolate = ss->GetIsolate();
-            v8::Local<v8::Context> v8_ctx = ss->GetContext();
-            v8::Local<v8::Object> obj = v8::Object::New(isolate);
-            obj->Set(v8_ctx, V8String(isolate, "uuid"), V8String(isolate, graph_uuid)).Check();
-            obj->Set(v8_ctx, V8String(isolate, "uri"), V8String(isolate, uri)).Check();
-            resolver->Resolve(ScriptValue(isolate, obj));
+
+            auto* shared = MakeGarbageCollected<SharedGraph>(
+                context, graph_uuid, uri,
+                std::move(host_remote), std::move(shared_remote));
+            v8::Local<v8::Value> v8_shared =
+                ToV8Traits<SharedGraph>::ToV8(ss, shared);
+            resolver->Resolve(
+                ScriptValue(ss->GetIsolate(), v8_shared));
           },
           WrapPersistent(resolver),
           WrapPersistent(manager_.Get()),

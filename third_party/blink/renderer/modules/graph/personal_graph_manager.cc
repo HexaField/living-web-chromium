@@ -235,14 +235,11 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
             }
 
             ExecutionContext* context = manager->GetExecutionContext();
-            (void)context;  // May be used in future for binding.
 
             // For a joined graph, we don't have a local graph UUID yet.
-            // Create an empty PersonalGraphHost (no triple ops until synced).
+            // Create an unbound PersonalGraphHost (no triple ops until synced).
             mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost>
                 host_remote;
-            // Don't bind — the joined graph's triple store lives remotely.
-            // Operations will go through sync.
 
             // Bind SharedGraphHost for sync/governance.
             mojo::PendingRemote<graph::mojom::blink::SharedGraphHost>
@@ -256,13 +253,16 @@ ScriptPromise<IDLAny> PersonalGraphManager::join(ScriptState* script_state,
             if (!ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
         v8::MicrotasksScope microtasks(ss->GetIsolate(), ss->GetContext()->GetMicrotaskQueue(), v8::MicrotasksScope::kDoNotRunMicrotasks);
-            v8::Isolate* isolate = ss->GetIsolate();
-            v8::Local<v8::Context> v8_ctx = ss->GetContext();
-            v8::Local<v8::Object> obj = v8::Object::New(isolate);
-            obj->Set(v8_ctx, V8String(isolate, "uri"), V8String(isolate, info->uri)).Check();
-            obj->Set(v8_ctx, V8String(isolate, "name"), V8String(isolate, info->name)).Check();
-            obj->Set(v8_ctx, V8String(isolate, "peerCount"), v8::Number::New(isolate, info->peer_count)).Check();
-            resolver->Resolve(ScriptValue(isolate, obj));
+
+            // For joined graphs, uuid is empty until synced locally.
+            String joined_uuid = "";
+            auto* shared = MakeGarbageCollected<SharedGraph>(
+                context, joined_uuid, uri,
+                std::move(host_remote), std::move(shared_remote));
+            v8::Local<v8::Value> v8_shared =
+                ToV8Traits<SharedGraph>::ToV8(ss, shared);
+            resolver->Resolve(
+                ScriptValue(ss->GetIsolate(), v8_shared));
           },
           WrapPersistent(resolver),
           WrapPersistent(this),
