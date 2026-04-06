@@ -32,6 +32,8 @@ export default defineConfig({
         '--disable-gpu',
         '--disable-dev-shm-usage',
         '--unsafely-treat-insecure-origin-as-secure=http://localhost:8080',
+        '--enable-logging=stderr',
+        '--v=0',
       ],
     },
     baseURL: 'http://localhost:8080',
