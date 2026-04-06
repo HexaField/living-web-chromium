@@ -23,9 +23,13 @@ SharedGraph::SharedGraph(
     mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host,
     mojo::PendingRemote<graph::mojom::blink::SharedGraphHost> shared_host)
     : PersonalGraph(context, uuid, String(), std::move(host)),
-      uri_(uri) {
+      uri_(uri),
+      shared_host_(context) {
   if (shared_host) {
-    shared_host_.Bind(std::move(shared_host));
+    shared_host_.Bind(
+        std::move(shared_host),
+        static_cast<scoped_refptr<base::SequencedTaskRunner>>(
+            context->GetTaskRunner(TaskType::kMiscPlatformAPI)));
   }
 }
 
@@ -400,6 +404,7 @@ const AtomicString& SharedGraph::InterfaceName() const {
 }
 
 void SharedGraph::Trace(Visitor* visitor) const {
+  visitor->Trace(shared_host_);
   PersonalGraph::Trace(visitor);
 }
 
