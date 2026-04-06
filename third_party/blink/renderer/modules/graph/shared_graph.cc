@@ -289,6 +289,10 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
   String predicate = GetStr("predicate");
   String source = GetStr("source");
 
+  // Mojo string parameters are non-nullable; ensure empty rather than null.
+  if (predicate.IsNull()) predicate = g_empty_string;
+  if (source.IsNull()) source = g_empty_string;
+
   shared_host_->CanAddTriple(
       predicate, source,
       BindOnce(
