@@ -229,7 +229,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
       predicate, source,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             bool accepted, const std::optional<WTF::String>& reason) {
+             bool accepted, const std::optional<String>& reason) {
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
@@ -261,7 +261,7 @@ ScriptPromise<IDLAny> SharedGraph::constraintsFor(ScriptState* script_state,
     return promise;
   }
 
-  std::optional<WTF::String> scope_entity;
+  std::optional<String> scope_entity;
   if (!entity.IsNull() && !entity.empty()) {
     scope_entity = entity;
   }
@@ -270,7 +270,7 @@ ScriptPromise<IDLAny> SharedGraph::constraintsFor(ScriptState* script_state,
       scope_entity,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             const WTF::String& constraints_json) {
+             const String& constraints_json) {
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
@@ -311,7 +311,7 @@ ScriptPromise<IDLAny> SharedGraph::myCapabilities(ScriptState* script_state) {
 
   shared_host_->MyCapabilities(BindOnce(
       [](ScriptPromiseResolver<IDLAny>* resolver,
-         const WTF::String& capabilities_json) {
+         const String& capabilities_json) {
         ScriptState* ss = resolver->GetScriptState();
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
