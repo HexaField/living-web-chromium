@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/modules/graph/personal_graph.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/mojom/graph/graph_sync.mojom-blink.h"
 
 namespace blink {
@@ -59,7 +60,7 @@ class SharedGraph final : public PersonalGraph {
 
  private:
   String uri_;
-  HeapMojoRemote<graph::mojom::blink::SharedGraphHost> shared_host_;
+  mojo::Remote<graph::mojom::blink::SharedGraphHost> shared_host_;
 };
 
 }  // namespace blink

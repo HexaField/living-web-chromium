@@ -31,8 +31,9 @@ test.describe('Spec 05 — Governance', () => {
     const result = await page.evaluate(async () => {
       const g = await (navigator as any).graph.create('gov-get-test');
       const shared = await g.share();
-      return typeof shared.myCapabilities === 'function';
+      const caps = await shared.myCapabilities();
+      return caps;
     });
-    expect(result).toBe(true);
+    expect(result).toBeTruthy();
   });
 });
