@@ -1,6 +1,23 @@
 import { defineConfig } from '@playwright/test';
 
 const CHROME_PATH = process.env.CHROME_PATH || '/home/josh/chromium/src/out/LivingWeb/chrome';
+const RELAY_COMMAND = process.env.RELAY_COMMAND || '';
+
+const webServers: any[] = [
+  {
+    command: 'python3 -m http.server 8080 -d ./test-pages',
+    port: 8080,
+    reuseExistingServer: true,
+  },
+];
+
+if (RELAY_COMMAND) {
+  webServers.push({
+    command: RELAY_COMMAND,
+    port: 4000,
+    reuseExistingServer: true,
+  });
+}
 
 export default defineConfig({
   testDir: './tests',
@@ -20,16 +37,5 @@ export default defineConfig({
     baseURL: 'http://localhost:8080',
     headless: true,
   },
-  webServer: [
-    {
-      command: 'python3 -m http.server 8080 -d ./test-pages',
-      port: 8080,
-      reuseExistingServer: true,
-    },
-    {
-      command: 'npx tsx ../../w3c-living-web-proposals/examples/relay/src/index.ts',
-      port: 4000,
-      reuseExistingServer: true,
-    },
-  ],
+  webServer: webServers,
 });
