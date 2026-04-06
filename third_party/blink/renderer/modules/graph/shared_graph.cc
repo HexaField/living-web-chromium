@@ -266,6 +266,18 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
     return promise;
   }
 
+  // TEMP DEBUG: bypass Mojo and resolve immediately
+  {
+    v8::Isolate* isolate = script_state->GetIsolate();
+    v8::Local<v8::Context> ctx = script_state->GetContext();
+    ScriptState::Scope scope(script_state);
+    v8::Local<v8::Object> result = v8::Object::New(isolate);
+    result->Set(ctx, V8String(isolate, "accepted"),
+                v8::Boolean::New(isolate, true)).Check();
+    resolver->Resolve(ScriptValue(isolate, result));
+    return promise;
+  }
+
   // Extract predicate and source (scope) from the triple object.
   v8::Isolate* isolate = script_state->GetIsolate();
   v8::Local<v8::Context> ctx = script_state->GetContext();
