@@ -74,7 +74,8 @@ void ResolveWithPersonalGraph(
       ss->GetContext()->GetMicrotaskQueue(),
       v8::MicrotasksScope::kDoNotRunMicrotasks);
   auto* graph = CreatePersonalGraphObject(context, manager, uuid, name);
-  resolver->Resolve(graph);
+  v8::Local<v8::Value> v8_graph = ToV8Traits<PersonalGraph>::ToV8(ss, graph);
+  resolver->Resolve(ScriptValue(ss->GetIsolate(), v8_graph));
 }
 
 v8::Local<v8::Object> MakeDIDCredentialObject(

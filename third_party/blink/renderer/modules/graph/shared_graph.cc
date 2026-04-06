@@ -229,7 +229,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
       predicate, source,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
-             bool accepted, const std::optional<String>& reason) {
+             bool accepted, const String& reason) {
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
@@ -237,9 +237,9 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
             v8::Local<v8::Object> result = v8::Object::New(isolate);
             result->Set(ctx, V8String(isolate, "accepted"),
                         v8::Boolean::New(isolate, accepted)).Check();
-            if (reason.has_value()) {
+            if (!reason.IsNull() && !reason.empty()) {
               result->Set(ctx, V8String(isolate, "reason"),
-                          V8String(isolate, *reason)).Check();
+                          V8String(isolate, reason)).Check();
             }
             resolver->Resolve(ScriptValue(isolate, result));
           },
@@ -261,7 +261,7 @@ ScriptPromise<IDLAny> SharedGraph::constraintsFor(ScriptState* script_state,
     return promise;
   }
 
-  std::optional<String> scope_entity;
+  String scope_entity;
   if (!entity.IsNull() && !entity.empty()) {
     scope_entity = entity;
   }

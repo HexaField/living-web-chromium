@@ -20,6 +20,12 @@ SyncSession& SyncSession::operator=(SyncSession&&) = default;
 SyncService::SyncService() = default;
 SyncService::~SyncService() = default;
 
+// static
+SyncService* SyncService::GetInstance() {
+  static SyncService instance;
+  return &instance;
+}
+
 void SyncService::BindReceiver(
     mojo::PendingReceiver<graph::mojom::GraphSyncService> receiver) {
   receivers_.Add(this, std::move(receiver));

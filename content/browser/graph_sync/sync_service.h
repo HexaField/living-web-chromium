@@ -43,6 +43,8 @@ class SyncService : public graph::mojom::GraphSyncService {
   SyncService();
   ~SyncService() override;
 
+  static SyncService* GetInstance();
+
   void BindReceiver(
       mojo::PendingReceiver<graph::mojom::GraphSyncService> receiver);
 
