@@ -90,6 +90,7 @@ class GraphStore {
   std::string CreateShapeInstance(const std::string& shape_name,
                                   const std::string& instance_uri,
                                   const std::string& data_json);
+  const std::unordered_map<std::string, std::string>& shapes() const { return shapes_; }
 
  private:
   // Simple SPARQL BGP parser — extracts basic triple patterns from
@@ -107,7 +108,6 @@ class GraphStore {
   std::vector<SignedTriple> triples_;
 
   // Shape registry: name → JSON definition
-  const std::unordered_map<std::string, std::string>& shapes() const { return shapes_; }
   std::unordered_map<std::string, std::string> shapes_;
 
   // Persistence

@@ -5,7 +5,6 @@
 #include "content/browser/graph/graph_host.h"
 
 #include "base/json/json_reader.h"
-#include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/time/time.h"
 
@@ -210,7 +209,9 @@ void GraphHost::GetShapeInstanceData(const std::string& shape_name,
     return;
   }
 
-  base::Value::Dict result;
+  // Build result JSON manually.
+  std::string json = "{";
+  bool first = true;
   for (const auto& prop_val : *properties) {
     if (!prop_val.is_dict()) continue;
     const std::string* name = prop_val.GetDict().FindString("name");
@@ -222,12 +223,13 @@ void GraphHost::GetShapeInstanceData(const std::string& shape_name,
     q.predicate = *path;
     auto triples = store_->QueryTriples(q);
     if (!triples.empty()) {
-      result.Set(*name, triples[0].data.target);
+      if (!first) json += ",";
+      json += "\"" + *name + "\":\"" + triples[0].data.target + "\"";
+      first = false;
     }
   }
+  json += "}";
 
-  std::string json;
-  base::JSONWriter::Write(base::Value(std::move(result)), &json);
   std::move(callback).Run(json);
 }
 
