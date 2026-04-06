@@ -289,7 +289,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
   shared_host_->CanAddTriple(
       predicate, source,
       BindOnce(
-          [](ScriptPromiseResolver<IDLAny>* resolver,
+          [](SharedGraph* /*prevent_gc*/, ScriptPromiseResolver<IDLAny>* resolver,
              bool accepted, const String& reason) {
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
@@ -304,6 +304,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
             }
             resolver->Resolve(ScriptValue(isolate, result));
           },
+          WrapPersistent(this),
           WrapPersistent(resolver)));
 
   return promise;
