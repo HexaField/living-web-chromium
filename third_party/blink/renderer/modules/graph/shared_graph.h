@@ -59,8 +59,7 @@ class SharedGraph final : public PersonalGraph {
 
  private:
   String uri_;
-  HeapMojoRemote<graph::mojom::blink::SharedGraphHost,
-                 HeapMojoWrapperMode::kForceWithoutContextObserver> shared_host_;
+  HeapMojoRemote<graph::mojom::blink::SharedGraphHost> shared_host_;
 };
 
 }  // namespace blink

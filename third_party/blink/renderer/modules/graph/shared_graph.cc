@@ -13,19 +13,6 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 
-#include <fstream>
-
-namespace {
-void BlinkLog(const char* msg) {
-  std::ofstream f("/tmp/blink_debug.log", std::ios::app);
-  f << msg << std::endl;
-}
-void BlinkLog2(const std::string& msg) {
-  std::ofstream f("/tmp/blink_debug.log", std::ios::app);
-  f << msg << std::endl;
-}
-}  // namespace
-
 
 namespace blink {
 
@@ -43,9 +30,6 @@ SharedGraph::SharedGraph(
         std::move(shared_host),
         static_cast<scoped_refptr<base::SequencedTaskRunner>>(
             context->GetTaskRunner(TaskType::kMiscPlatformAPI)));
-    shared_host_.set_disconnect_handler(BindOnce([]() {
-      LOG(ERROR) << "BLINK: SharedGraphHost remote DISCONNECTED";
-    }));
   }
 }
 
@@ -73,6 +57,7 @@ ScriptPromise<IDLAny> SharedGraph::currentRevision(ScriptState* script_state) {
       [](ScriptPromiseResolver<IDLAny>* resolver,
          const String& revision) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss || !ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         if (revision.empty()) {
@@ -104,9 +89,13 @@ ScriptPromise<IDLAny> SharedGraph::peers(ScriptState* script_state) {
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::PeerInfoPtr> peers) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss || !ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> ctx = ss->GetContext();
+        v8::MicrotasksScope microtasks(
+            isolate, ctx->GetMicrotaskQueue(),
+            v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Local<v8::Array> arr =
             v8::Array::New(isolate, static_cast<int>(peers.size()));
         for (wtf_size_t i = 0; i < peers.size(); i++) {
@@ -142,9 +131,13 @@ ScriptPromise<IDLAny> SharedGraph::onlinePeers(ScriptState* script_state) {
       [](ScriptPromiseResolver<IDLAny>* resolver,
          Vector<graph::mojom::blink::OnlinePeerPtr> peers) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss || !ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> ctx = ss->GetContext();
+        v8::MicrotasksScope microtasks(
+            isolate, ctx->GetMicrotaskQueue(),
+            v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Local<v8::Array> arr =
             v8::Array::New(isolate, static_cast<int>(peers.size()));
         for (wtf_size_t i = 0; i < peers.size(); i++) {
@@ -271,12 +264,10 @@ ScriptPromise<IDLUndefined> SharedGraph::broadcast(ScriptState* script_state,
 
 ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
                                                  ScriptValue triple_value) {
-  BlinkLog("canAddTriple: entered");
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  BlinkLog2("canAddTriple: shared_host_.is_bound()=" + std::to_string(shared_host_.is_bound()));
   if (!shared_host_.is_bound()) {
     ScriptState::Scope scope(script_state);
     resolver->Resolve(ScriptValue(script_state->GetIsolate(),
@@ -308,12 +299,6 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
   if (predicate.IsNull()) predicate = g_empty_string;
   if (source.IsNull()) source = g_empty_string;
 
-  BlinkLog2("canAddTriple: predicate=" + std::string(predicate.Utf8().c_str()) +
-            " source=" + std::string(source.Utf8().c_str()) +
-            " predicate.IsNull()=" + std::to_string(predicate.IsNull()) +
-            " source.IsNull()=" + std::to_string(source.IsNull()));
-  BlinkLog("canAddTriple: about to call shared_host_->CanAddTriple");
-
   shared_host_->CanAddTriple(
       predicate, source,
       BindOnce(
@@ -338,7 +323,6 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
           },
           WrapPersistent(resolver)));
 
-  BlinkLog("canAddTriple: call dispatched, returning promise");
   return promise;
 }
 
@@ -366,9 +350,13 @@ ScriptPromise<IDLAny> SharedGraph::constraintsFor(ScriptState* script_state,
           [](ScriptPromiseResolver<IDLAny>* resolver,
              const String& constraints_json) {
             ScriptState* ss = resolver->GetScriptState();
+            if (!ss || !ss->ContextIsValid()) return;
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
             v8::Local<v8::Context> ctx = ss->GetContext();
+            v8::MicrotasksScope microtasks(
+                isolate, ctx->GetMicrotaskQueue(),
+                v8::MicrotasksScope::kDoNotRunMicrotasks);
             v8::Local<v8::Value> parsed;
             v8::Local<v8::String> json_str = V8String(isolate, constraints_json);
             if (v8::JSON::Parse(ctx, json_str).ToLocal(&parsed)) {
@@ -407,9 +395,13 @@ ScriptPromise<IDLAny> SharedGraph::myCapabilities(ScriptState* script_state) {
       [](ScriptPromiseResolver<IDLAny>* resolver,
          const String& capabilities_json) {
         ScriptState* ss = resolver->GetScriptState();
+        if (!ss || !ss->ContextIsValid()) return;
         ScriptState::Scope scope(ss);
         v8::Isolate* isolate = ss->GetIsolate();
         v8::Local<v8::Context> ctx = ss->GetContext();
+        v8::MicrotasksScope microtasks(
+            isolate, ctx->GetMicrotaskQueue(),
+            v8::MicrotasksScope::kDoNotRunMicrotasks);
         v8::Local<v8::Value> parsed;
         v8::Local<v8::String> json_str = V8String(isolate, capabilities_json);
         if (v8::JSON::Parse(ctx, json_str).ToLocal(&parsed)) {
