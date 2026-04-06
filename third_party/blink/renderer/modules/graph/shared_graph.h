@@ -52,6 +52,7 @@ class SharedGraph final : public PersonalGraph {
   DEFINE_ATTRIBUTE_EVENT_LISTENER(peerleft, kPeerleft)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(syncstatechange, kSyncstatechange)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(diff, kDiff)
 
   void Trace(Visitor*) const override;
 

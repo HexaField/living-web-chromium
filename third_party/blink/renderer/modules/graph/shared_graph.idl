@@ -35,4 +35,5 @@ interface SharedGraph : PersonalGraph {
   attribute EventHandler onpeerleft;
   attribute EventHandler onsyncstatechange;
   attribute EventHandler onsignal;
+  attribute EventHandler ondiff;
 };

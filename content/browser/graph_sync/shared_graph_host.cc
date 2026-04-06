@@ -7,6 +7,8 @@
 #include "base/logging.h"
 #include "base/time/time.h"
 
+#include <sstream>
+
 namespace content {
 
 SharedGraphHostImpl::SharedGraphHostImpl(
@@ -132,6 +134,123 @@ void SharedGraphHostImpl::Subscribe(
     mojo::PendingRemote<graph::mojom::SharedGraphClient> client) {
   client_.Bind(std::move(client));
   LOG(INFO) << "SharedGraphHost: client subscribed for " << session_->uri;
+}
+
+void SharedGraphHostImpl::CanAddTriple(const std::string& predicate,
+                                        const std::string& scope_entity,
+                                        CanAddTripleCallback callback) {
+  if (!governance_ || !store_) {
+    std::move(callback).Run(true, std::nullopt);
+    return;
+  }
+
+  // Use the first peer DID as root authority (graph creator).
+  std::string root_did;
+  if (!session_->peer_dids.empty()) {
+    root_did = *session_->peer_dids.begin();
+  }
+
+  std::string scope = scope_entity.empty() ? session_->uri : scope_entity;
+  auto result = governance_->CanAddTriple(
+      *store_, agent_did_, predicate, scope, root_did);
+
+  std::optional<std::string> reason;
+  if (!result.accepted && !result.reason.empty()) {
+    reason = result.reason;
+  }
+  std::move(callback).Run(result.accepted, reason);
+}
+
+void SharedGraphHostImpl::ConstraintsFor(
+    const std::optional<std::string>& scope_entity,
+    ConstraintsForCallback callback) {
+  if (!governance_ || !store_) {
+    std::move(callback).Run("[]");
+    return;
+  }
+
+  std::string scope = (scope_entity && !scope_entity->empty())
+                           ? *scope_entity
+                           : session_->uri;
+  auto constraints = governance_->GetConstraintsFor(*store_, scope);
+
+  // Serialize to JSON array of {kind, id} objects.
+  std::string json = "[";
+  bool first = true;
+  auto append = [&](const std::string& kind, const std::string& id) {
+    if (!first) json += ",";
+    json += "{\"kind\":\"" + kind + "\",\"id\":\"" + id + "\"}";
+    first = false;
+  };
+  for (const auto& c : constraints.capabilities)
+    append("capability", c.constraint_id);
+  for (const auto& c : constraints.temporals)
+    append("temporal", c.constraint_id);
+  for (const auto& c : constraints.contents)
+    append("content", c.constraint_id);
+  for (const auto& c : constraints.credentials)
+    append("credential", c.constraint_id);
+  json += "]";
+
+  std::move(callback).Run(json);
+}
+
+void SharedGraphHostImpl::MyCapabilities(MyCapabilitiesCallback callback) {
+  if (!governance_ || !store_) {
+    // Permissive default.
+    std::move(callback).Run(
+        "{\"canAddTriples\":true,\"canRemoveTriples\":true,"
+        "\"allowedPredicates\":[]}");
+    return;
+  }
+
+  std::string root_did;
+  if (!session_->peer_dids.empty()) {
+    root_did = *session_->peer_dids.begin();
+  }
+
+  // Find all ZCAPs for this agent to determine allowed predicates.
+  TripleQuery query;
+  query.source = agent_did_;
+  query.predicate = "governance://has_zcap";
+  auto zcaps = store_->QueryTriples(query);
+
+  std::vector<std::string> predicates;
+  for (const auto& zcap_triple : zcaps) {
+    auto preds_opt = [&]() -> std::optional<std::string> {
+      TripleQuery pq;
+      pq.source = zcap_triple.data.target;
+      pq.predicate = "governance://capability_predicates";
+      auto r = store_->QueryTriples(pq);
+      if (r.empty()) return std::nullopt;
+      return r[0].data.target;
+    }();
+    if (preds_opt) {
+      std::istringstream ss(*preds_opt);
+      std::string item;
+      while (std::getline(ss, item, ',')) {
+        size_t s = item.find_first_not_of(" \t");
+        size_t e = item.find_last_not_of(" \t");
+        if (s != std::string::npos)
+          predicates.push_back(item.substr(s, e - s + 1));
+      }
+    }
+  }
+
+  // Check basic add/remove by testing a hypothetical triple.
+  bool can_add = governance_->CanAddTriple(
+      *store_, agent_did_, "", session_->uri, root_did).accepted;
+
+  std::string json = "{\"canAddTriples\":" + std::string(can_add ? "true" : "false");
+  json += ",\"canRemoveTriples\":" + std::string(can_add ? "true" : "false");
+  json += ",\"allowedPredicates\":[";
+  for (size_t i = 0; i < predicates.size(); i++) {
+    if (i > 0) json += ",";
+    json += "\"" + predicates[i] + "\"";
+  }
+  json += "]}";
+
+  std::move(callback).Run(json);
 }
 
 }  // namespace content

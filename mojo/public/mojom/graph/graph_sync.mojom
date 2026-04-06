@@ -94,6 +94,19 @@ interface SharedGraphHost {
 
   // Subscribe to sync events.
   Subscribe(pending_remote<SharedGraphClient> client);
+
+  // Governance — delegated from Blink SharedGraph.
+  // Can the current agent add a triple with this predicate in this scope?
+  CanAddTriple(string predicate, string scope_entity)
+      => (bool accepted, string? reason);
+
+  // What constraints apply to a given entity scope?
+  ConstraintsFor(string? scope_entity)
+      => (string constraints_json);
+
+  // What can this agent do in this graph?
+  MyCapabilities()
+      => (string capabilities_json);
 };
 
 // ============================================================

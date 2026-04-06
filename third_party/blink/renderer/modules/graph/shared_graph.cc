@@ -198,7 +198,6 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  // If no shared host bound, default to allowed (permissive fallback).
   if (!shared_host_.is_bound()) {
     ScriptState::Scope scope(script_state);
     resolver->Resolve(ScriptValue(script_state->GetIsolate(),
@@ -206,7 +205,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
     return promise;
   }
 
-  // Extract source, predicate, target from the triple object.
+  // Extract predicate and source (scope) from the triple object.
   v8::Isolate* isolate = script_state->GetIsolate();
   v8::Local<v8::Context> ctx = script_state->GetContext();
   v8::Local<v8::Object> obj;
@@ -223,18 +222,28 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
     return String();
   };
 
-  String source = GetStr("source");
   String predicate = GetStr("predicate");
-  String target = GetStr("target");
+  String source = GetStr("source");
 
-  // Use GetPeers as a proxy — the real governance call isn't in
-  // SharedGraphHost mojom yet in the way canAddTriple expects
-  // (source/predicate/target). We'll use the Sync() -> current revision
-  // path for now and just return true with metadata.
-  // Actually, let's resolve with true for now as governance validation
-  // happens on Commit in the browser process.
-  ScriptState::Scope scope(script_state);
-  resolver->Resolve(ScriptValue(isolate, v8::True(isolate)));
+  shared_host_->CanAddTriple(
+      predicate, source,
+      BindOnce(
+          [](ScriptPromiseResolver<IDLAny>* resolver,
+             bool accepted, const std::optional<WTF::String>& reason) {
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> ctx = ss->GetContext();
+            v8::Local<v8::Object> result = v8::Object::New(isolate);
+            result->Set(ctx, V8String(isolate, "accepted"),
+                        v8::Boolean::New(isolate, accepted)).Check();
+            if (reason.has_value()) {
+              result->Set(ctx, V8String(isolate, "reason"),
+                          V8String(isolate, *reason)).Check();
+            }
+            resolver->Resolve(ScriptValue(isolate, result));
+          },
+          WrapPersistent(resolver)));
 
   return promise;
 }
@@ -245,11 +254,38 @@ ScriptPromise<IDLAny> SharedGraph::constraintsFor(ScriptState* script_state,
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  // Return empty constraints array — real implementation would call
-  // GovernanceService.ConstraintsFor via a separate Mojo pipe.
-  ScriptState::Scope scope(script_state);
-  resolver->Resolve(ScriptValue(script_state->GetIsolate(),
-                                v8::Array::New(script_state->GetIsolate(), 0)));
+  if (!shared_host_.is_bound()) {
+    ScriptState::Scope scope(script_state);
+    resolver->Resolve(ScriptValue(script_state->GetIsolate(),
+                                  v8::Array::New(script_state->GetIsolate(), 0)));
+    return promise;
+  }
+
+  std::optional<WTF::String> scope_entity;
+  if (!entity.IsNull() && !entity.empty()) {
+    scope_entity = entity;
+  }
+
+  shared_host_->ConstraintsFor(
+      scope_entity,
+      BindOnce(
+          [](ScriptPromiseResolver<IDLAny>* resolver,
+             const WTF::String& constraints_json) {
+            ScriptState* ss = resolver->GetScriptState();
+            ScriptState::Scope scope(ss);
+            v8::Isolate* isolate = ss->GetIsolate();
+            v8::Local<v8::Context> ctx = ss->GetContext();
+            v8::Local<v8::Value> parsed;
+            v8::Local<v8::String> json_str = V8String(isolate, constraints_json);
+            if (v8::JSON::Parse(ctx, json_str).ToLocal(&parsed)) {
+              resolver->Resolve(ScriptValue(isolate, parsed));
+            } else {
+              resolver->Resolve(ScriptValue(isolate,
+                  v8::Array::New(isolate, 0)));
+            }
+          },
+          WrapPersistent(resolver)));
+
   return promise;
 }
 

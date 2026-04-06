@@ -47,6 +47,12 @@ class SharedGraphHostImpl : public graph::mojom::SharedGraphHost {
   void GetCurrentRevision(GetCurrentRevisionCallback callback) override;
   void Subscribe(
       mojo::PendingRemote<graph::mojom::SharedGraphClient> client) override;
+  void CanAddTriple(const std::string& predicate,
+                    const std::string& scope_entity,
+                    CanAddTripleCallback callback) override;
+  void ConstraintsFor(const std::optional<std::string>& scope_entity,
+                      ConstraintsForCallback callback) override;
+  void MyCapabilities(MyCapabilitiesCallback callback) override;
 
  private:
   // Not owned — SyncService owns SyncSession, GraphManager owns GraphStore.
