@@ -294,18 +294,46 @@ ScriptPromise<IDLAny> SharedGraph::myCapabilities(ScriptState* script_state) {
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  // Return a capabilities object with sensible defaults.
-  ScriptState::Scope scope(script_state);
-  v8::Isolate* isolate = script_state->GetIsolate();
-  v8::Local<v8::Context> ctx = script_state->GetContext();
-  v8::Local<v8::Object> caps = v8::Object::New(isolate);
-  caps->Set(ctx, V8String(isolate, "canAddTriples"),
-            v8::True(isolate)).Check();
-  caps->Set(ctx, V8String(isolate, "canRemoveTriples"),
-            v8::True(isolate)).Check();
-  caps->Set(ctx, V8String(isolate, "allowedPredicates"),
-            v8::Array::New(isolate, 0)).Check();
-  resolver->Resolve(ScriptValue(isolate, caps));
+  if (!shared_host_.is_bound()) {
+    ScriptState::Scope scope(script_state);
+    v8::Isolate* isolate = script_state->GetIsolate();
+    v8::Local<v8::Context> ctx = script_state->GetContext();
+    v8::Local<v8::Object> caps = v8::Object::New(isolate);
+    caps->Set(ctx, V8String(isolate, "canAddTriples"),
+              v8::True(isolate)).Check();
+    caps->Set(ctx, V8String(isolate, "canRemoveTriples"),
+              v8::True(isolate)).Check();
+    caps->Set(ctx, V8String(isolate, "allowedPredicates"),
+              v8::Array::New(isolate, 0)).Check();
+    resolver->Resolve(ScriptValue(isolate, caps));
+    return promise;
+  }
+
+  shared_host_->MyCapabilities(BindOnce(
+      [](ScriptPromiseResolver<IDLAny>* resolver,
+         const WTF::String& capabilities_json) {
+        ScriptState* ss = resolver->GetScriptState();
+        ScriptState::Scope scope(ss);
+        v8::Isolate* isolate = ss->GetIsolate();
+        v8::Local<v8::Context> ctx = ss->GetContext();
+        v8::Local<v8::Value> parsed;
+        v8::Local<v8::String> json_str = V8String(isolate, capabilities_json);
+        if (v8::JSON::Parse(ctx, json_str).ToLocal(&parsed)) {
+          resolver->Resolve(ScriptValue(isolate, parsed));
+        } else {
+          // Fallback to permissive defaults if JSON parse fails.
+          v8::Local<v8::Object> caps = v8::Object::New(isolate);
+          caps->Set(ctx, V8String(isolate, "canAddTriples"),
+                    v8::True(isolate)).Check();
+          caps->Set(ctx, V8String(isolate, "canRemoveTriples"),
+                    v8::True(isolate)).Check();
+          caps->Set(ctx, V8String(isolate, "allowedPredicates"),
+                    v8::Array::New(isolate, 0)).Check();
+          resolver->Resolve(ScriptValue(isolate, caps));
+        }
+      },
+      WrapPersistent(resolver)));
+
   return promise;
 }
 
