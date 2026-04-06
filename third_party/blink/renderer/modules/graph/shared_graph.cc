@@ -13,6 +13,19 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 
+#include <fstream>
+
+namespace {
+void BlinkLog(const char* msg) {
+  std::ofstream f("/tmp/blink_debug.log", std::ios::app);
+  f << msg << std::endl;
+}
+void BlinkLog2(const std::string& msg) {
+  std::ofstream f("/tmp/blink_debug.log", std::ios::app);
+  f << msg << std::endl;
+}
+}  // namespace
+
 
 namespace blink {
 
@@ -258,10 +271,12 @@ ScriptPromise<IDLUndefined> SharedGraph::broadcast(ScriptState* script_state,
 
 ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
                                                  ScriptValue triple_value) {
+  BlinkLog("canAddTriple: entered");
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
+  BlinkLog2("canAddTriple: shared_host_.is_bound()=" + std::to_string(shared_host_.is_bound()));
   if (!shared_host_.is_bound()) {
     ScriptState::Scope scope(script_state);
     resolver->Resolve(ScriptValue(script_state->GetIsolate(),
@@ -293,11 +308,18 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
   if (predicate.IsNull()) predicate = g_empty_string;
   if (source.IsNull()) source = g_empty_string;
 
+  BlinkLog2("canAddTriple: predicate=" + std::string(predicate.Utf8().c_str()) +
+            " source=" + std::string(source.Utf8().c_str()) +
+            " predicate.IsNull()=" + std::to_string(predicate.IsNull()) +
+            " source.IsNull()=" + std::to_string(source.IsNull()));
+  BlinkLog("canAddTriple: about to call shared_host_->CanAddTriple");
+
   shared_host_->CanAddTriple(
       predicate, source,
       BindOnce(
           [](ScriptPromiseResolver<IDLAny>* resolver,
              bool accepted, const String& reason) {
+            BlinkLog2("canAddTriple CALLBACK: accepted=" + std::to_string(accepted));
             ScriptState* ss = resolver->GetScriptState();
             ScriptState::Scope scope(ss);
             v8::Isolate* isolate = ss->GetIsolate();
@@ -313,6 +335,7 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
           },
           WrapPersistent(resolver)));
 
+  BlinkLog("canAddTriple: call dispatched, returning promise");
   return promise;
 }
 
