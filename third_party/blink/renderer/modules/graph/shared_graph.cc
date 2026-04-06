@@ -259,13 +259,6 @@ ScriptPromise<IDLAny> SharedGraph::canAddTriple(ScriptState* script_state,
       MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!shared_host_.is_bound()) {
-    ScriptState::Scope scope(script_state);
-    resolver->Resolve(ScriptValue(script_state->GetIsolate(),
-                                  v8::True(script_state->GetIsolate())));
-    return promise;
-  }
-
   // TEMP DEBUG: bypass Mojo and resolve immediately
   {
     v8::Isolate* isolate = script_state->GetIsolate();
