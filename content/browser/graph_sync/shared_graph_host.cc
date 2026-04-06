@@ -8,7 +8,15 @@
 #include "base/time/time.h"
 
 #include <algorithm>
+#include <fstream>
 #include <sstream>
+
+namespace {
+void DebugLog(const std::string& msg) {
+  std::ofstream f("/tmp/shared_graph_debug.log", std::ios::app);
+  f << msg << std::endl;
+}
+}
 
 namespace content {
 
@@ -23,12 +31,12 @@ SharedGraphHostImpl::SharedGraphHostImpl(
       governance_(std::unique_ptr<GovernanceEngine>(governance)),
       agent_did_(agent_did),
       receiver_(this, std::move(receiver)) {
-  LOG(ERROR) << "SharedGraphHostImpl CREATED for session=" << session_->uri
-             << " store=" << (store_ ? "yes" : "null")
-             << " governance=" << (governance_ ? "yes" : "null");
+  DebugLog("SharedGraphHostImpl CREATED session=" + session_->uri +
+           " store=" + (store_ ? "yes" : "null") +
+           " governance=" + (governance_ ? "yes" : "null"));
   receiver_.set_disconnect_handler(base::BindOnce(
       [](const std::string& uri) {
-        LOG(ERROR) << "SharedGraphHost Mojo pipe DISCONNECTED for " << uri;
+        DebugLog("SharedGraphHost Mojo pipe DISCONNECTED for " + uri);
       },
       session_->uri));
   // Register ourselves as a peer in the session.
@@ -38,7 +46,7 @@ SharedGraphHostImpl::SharedGraphHostImpl(
 }
 
 SharedGraphHostImpl::~SharedGraphHostImpl() {
-  LOG(ERROR) << "SharedGraphHostImpl DESTROYED for session=" << session_->uri;
+  DebugLog("SharedGraphHostImpl DESTROYED session=" + session_->uri);
 }
 
 void SharedGraphHostImpl::GetPeers(GetPeersCallback callback) {
@@ -177,12 +185,10 @@ void SharedGraphHostImpl::Subscribe(
 void SharedGraphHostImpl::CanAddTriple(const std::string& predicate,
                                         const std::string& scope_entity,
                                         CanAddTripleCallback callback) {
-  LOG(ERROR) << "SharedGraphHostImpl::CanAddTriple called! predicate="
-             << predicate << " scope=" << scope_entity
-             << " governance_=" << (governance_ ? "yes" : "null")
-             << " store_=" << (store_ ? "yes" : "null");
+  DebugLog("CanAddTriple called predicate=" + predicate + " scope=" + scope_entity +
+           " gov=" + (governance_ ? "yes" : "null") + " store=" + (store_ ? "yes" : "null"));
   if (!governance_ || !store_) {
-    LOG(ERROR) << "CanAddTriple: early return (true) - no governance or store";
+    DebugLog("CanAddTriple: early return true (no gov/store)");
     std::move(callback).Run(true, std::nullopt);
     return;
   }
