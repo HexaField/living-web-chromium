@@ -7,13 +7,7 @@ test.describe('Spec 05 — Governance', () => {
     await page.goto('/');
   });
 
-  // Skip: share() currently returns a plain {uuid, uri} object, not a SharedGraph instance.
-  // Governance methods (canAddTriple, myCapabilities, constraintsFor) are defined on the
-  // SharedGraph C++ class and IDL, but the share() resolver doesn't wrap the result in a
-  // SharedGraph object yet. Requires C++ fix in PersonalGraph::share() to construct and
-  // return a SharedGraph instead of a plain v8::Object.
-  test.skip('§6.1 canAddTriple() checks governance rules on SharedGraph', async ({ page }) => {
-    // SKIP: SharedGraph wrapper works but service-side CanAddTriple handler doesn't respond yet
+  test('§6.1 canAddTriple() checks governance rules on SharedGraph', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const g = await (navigator as any).graph.create('gov-test');
       const shared = await g.share();
