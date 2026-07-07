@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DID Identity — Decentralised Identity (Spec 01) — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 01 — Decentralised Identity Integration for the Web Platform
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_decentralised-identity-web-platform.md
+//
+// The canonical creation surface is navigator.credentials.create({ did })
+// returning a `DIDCredential : Credential` (§3.1). That path attaches to
+// Chromium's credentialmanagement module (see credential_management_did.idl).
+// The DIDCredential object and its full signing surface (§6–§7) are exercised
+// here through the equivalent, reachable navigator.graph identity methods,
+// which return the identical DIDCredential object.
+// ==========================================================================
+
+// §3 DIDCredential attributes.
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('Test Identity');
+  assert_true(cred.did.startsWith('did:key:z'), 'MUST be a did:key URI');
+  // Every Ed25519 did:key begins did:key:z6Mk (0xed01 multicodec prefix).
+  assert_true(cred.did.startsWith('did:key:z6Mk'), 'MUST be Ed25519 did:key');
+  assert_equals(cred.method, 'key', 'method MUST be "key"');
+  assert_equals(cred.algorithm, 'Ed25519', 'MUST use Ed25519');
+  assert_equals(cred.displayName, 'Test Identity');
+  assert_true(cred.createdAt.length > 0, 'MUST have createdAt');
+  assert_false(cred.isLocked, 'MUST not be locked initially');
+}, '§3 createIdentity MUST return a DIDCredential with correct attributes');
+
+promise_test(async t => {
+  const c1 = await navigator.graph.createIdentity('ID1');
+  const c2 = await navigator.graph.createIdentity('ID2');
+  assert_not_equals(c1.did, c2.did, 'DIDs MUST be unique');
+}, '§4.1 Each created DIDCredential MUST have a unique DID');
+
+promise_test(async t => {
+  await navigator.graph.createIdentity('Retrievable');
+  const list = await navigator.graph.listIdentities();
+  assert_true(Array.isArray(list) && list.length > 0, 'MUST list identities');
+  assert_true(list[0].did.startsWith('did:key:z'));
+  const active = await navigator.graph.activeIdentity();
+  assert_true(active === null || active.did.startsWith('did:key:z'));
+}, '§3 listIdentities / activeIdentity MUST return DIDCredentials');
+
+// §6.1 sign() / §6.4 signing algorithm.
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('Signer');
+  const data = { message: 'Hello', number: 42 };
+  const signed = await cred.sign(data);
+
+  assert_equals(signed.author, cred.did, 'author MUST be signer DID');
+  assert_true(signed.timestamp.length > 0, 'MUST have RFC 3339 timestamp');
+  assert_true(signed.proof.method.startsWith(cred.did + '#'),
+    'proof.method MUST be a verification method of the signer DID');
+  assert_equals(signed.proof.type, 'Ed25519Signature2020',
+    'proof.type MUST be Ed25519Signature2020');
+  assert_true(signed.proof.signature.length > 0, 'MUST have signature');
+  assert_true(signed.proof.signature.startsWith('z'),
+    'signature MUST be multibase base58btc (z-prefixed)');
+  assert_equals(signed.data.message, 'Hello', 'data MUST round-trip');
+  assert_equals(signed.data.number, 42);
+}, '§6.1/§6.4 sign() MUST return SignedContent with author, timestamp, proof');
+
+// §6.2 verify().
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('Verifier');
+  const signed = await cred.sign({ test: true });
+  assert_true(await cred.verify(signed), 'MUST verify a valid signature');
+}, '§6.2 verify() MUST return true for a valid signature');
+
+// §6.4 JCS canonicalisation: key order MUST NOT affect the signature.
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('JCS');
+  const a = await cred.sign({ a: 1, b: 2 });
+  const b = await cred.sign({ b: 2, a: 1 });
+  // Same logical content, different key order → same canonical form → both
+  // verify. (Timestamps differ, so signatures are not byte-identical.)
+  assert_true(await cred.verify(a));
+  assert_true(await cred.verify(b));
+}, '§6.4 sign() MUST canonicalise data with JCS (key-order independent)');
+
+// §6.3 signCapability().
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('Delegator');
+  const zcap = {
+    parentCapability: 'urn:root',
+    delegatee: 'did:key:z6MkContractor',
+    actions: ['createLink'],
+    resource: 'urn:example:budget-2026'
+  };
+  const signed = await cred.signCapability(zcap);
+  assert_equals(signed.author, cred.did);
+  assert_equals(signed.proof.type, 'Ed25519Signature2020');
+  assert_true(await cred.verify(signed), 'signed capability MUST verify');
+}, '§6.3 signCapability() MUST sign a ZCAP-LD document');
+
+// §6.5 signRaw().
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('RawSigner');
+  const payload = new Uint8Array([1, 2, 3, 4, 5]);
+  const sig = await cred.signRaw(payload);
+  assert_true(sig instanceof ArrayBuffer, 'signRaw MUST return an ArrayBuffer');
+  assert_equals(sig.byteLength, 64, 'Ed25519 signature MUST be 64 bytes');
+}, '§6.5 signRaw() MUST return a raw 64-byte Ed25519 signature');
+
+// §7 resolve().
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('Resolvable');
+  const doc = await cred.resolve();
+  assert_equals(doc.id, cred.did, 'resolved document id MUST equal the DID');
+  assert_true(Array.isArray(doc.verificationMethod));
+  assert_equals(doc.trustLevel, 'local', 'did:key resolution MUST be "local"');
+}, '§7 resolve() MUST return the DID document with trustLevel "local"');
+
+// §5.3.2 Lock and unlock.
+
+promise_test(async t => {
+  const cred = await navigator.graph.createIdentity('Lockable');
+  const lockResult = await cred.lock();
+  assert_equals(lockResult, undefined, 'lock() MUST resolve with undefined');
+  assert_true(cred.isLocked, 'MUST be locked after lock()');
+
+  await promise_rejects_dom(t, 'InvalidStateError',
+    cred.sign({ data: 'test' }),
+    'sign() MUST reject with InvalidStateError while locked');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    cred.signRaw(new Uint8Array([1])),
+    'signRaw() MUST reject with InvalidStateError while locked');
+
+  await cred.unlock();
+  assert_false(cred.isLocked, 'MUST be unlocked after unlock()');
+  const signed = await cred.sign({ ok: true });
+  assert_true(await cred.verify(signed), 'signing MUST work after unlock()');
+}, '§5.3.2 lock() MUST block signing with InvalidStateError; unlock() restores it');
+</script>

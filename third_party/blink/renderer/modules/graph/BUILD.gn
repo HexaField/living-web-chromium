@@ -1,0 +1,27 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//third_party/blink/renderer/modules/modules.gni")
+
+# Spec 01 — Decentralised Identity. The renderer-side DIDCredential surface and
+# its supporting value objects. Later specs add their own sources (PersonalGraph
+# for Spec 02, SharedGraph for Spec 05, and so on) to this target.
+#
+# IDL files are intentionally not listed here — they are wired separately during
+# full-tree integration; only .cc/.h sources belong in blink_modules_sources.
+blink_modules_sources("graph") {
+  sources = [
+    "content_proof.h",
+    "did_credential.cc",
+    "did_credential.h",
+    "signed_content.cc",
+    "signed_content.h",
+  ]
+
+  deps = [
+    "//mojo/public/mojom/graph:graph_blink",
+    "//third_party/blink/renderer/core",
+    "//third_party/blink/renderer/platform",
+  ]
+}

@@ -17,13 +17,29 @@ target_include_directories(ed25519 PUBLIC third_party/ed25519)
 target_compile_definitions(ed25519 PRIVATE USE_OPENSSL)
 target_link_libraries(ed25519 PRIVATE OpenSSL::Crypto)
 
+# Spec 01 — Decentralised Identity.
+#
+# The Chromium-independent core of the did:key implementation: the multibase /
+# multicodec did:key codec (§3, §4.1) and the JSON Canonicalisation Scheme
+# (RFC 8785) used to produce a stable signing payload (§6.4). These compile
+# outside a Chromium tree and back the DIDKeyProvider header consumed by the
+# tests.
+add_library(living_web STATIC
+    content/browser/did/did_key_codec.cc
+    content/browser/did/jcs.cc
+)
+target_include_directories(living_web PUBLIC
+    standalone
+    ${CMAKE_SOURCE_DIR}
+)
+target_compile_definitions(living_web PRIVATE USE_OPENSSL)
+target_link_libraries(living_web PUBLIC ed25519 OpenSSL::Crypto)
+
 # Standalone test harness.
 #
-# The base ships the self-registering test framework and the runner only (zero
-# tests). Each per-spec branch adds its own Chromium-independent sources — a
-# `living_web` static library built from `standalone/` and the shared
-# `content/browser/**` modules — and links it in here, alongside its TEST()
-# blocks in living_web_tests.cc.
+# The base ships the self-registering test framework and the runner; each
+# per-spec branch adds its own Chromium-independent sources to the `living_web`
+# library above and its TEST() blocks to living_web_tests.cc.
 add_executable(living_web_tests
     standalone/living_web_tests.cc
 )
@@ -32,4 +48,4 @@ target_include_directories(living_web_tests PRIVATE
     ${CMAKE_SOURCE_DIR}
 )
 target_compile_definitions(living_web_tests PRIVATE USE_OPENSSL)
-target_link_libraries(living_web_tests PRIVATE ed25519 OpenSSL::Crypto)
+target_link_libraries(living_web_tests PRIVATE living_web ed25519 OpenSSL::Crypto)
