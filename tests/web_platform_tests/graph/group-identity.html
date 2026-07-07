@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Decentralised Group Identity (Spec 03) — navigator.graph groups — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 03 — Decentralised Group Identity
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md
+//
+// A "group" (§4) is a groupified Personal Linked Data Graph (Spec 02): a fresh
+// Ed25519 keypair is minted, a did:graph is derived from it, and the DID
+// document — verification methods and their capability-section memberships — is
+// written as ordinary triples in the host graph (§4.2, §4.4). The group surface
+// hangs off navigator.graph (§8.2): createGroup / groupify / forkGroup /
+// openGroup / listGroups, each resolving with a `Group` (§8.1). The Group folds
+// the §5.4 did:graph credential surface (delegate management, grantSection /
+// revokeSection, signGraph, deactivate, acting-delegate selection) onto the one
+// handle, since the browser exposes no separate DIDCredential for a group.
+// ==========================================================================
+
+// The group's sync module is REQUIRED (§4.5). Its content-addressing is defined
+// by the Sync Module Architecture (Spec 06); here any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// The publicKeyMultibase of an Ed25519 did:key is exactly the method-specific id
+// after the "did:key:" prefix (§4.1 shares did:key's encoding). §4.4 keys a
+// group verification method by that same multibase fragment.
+function multibaseOf(didKey) {
+  return didKey.slice('did:key:'.length);
+}
+
+// Build the DIDDocumentMethod (§4.4) that introduces `memberDidKey` as a signer
+// of `group`. Its id is "<group-did>#<memberKeyMultibase>" and it is controlled
+// by the group DID.
+function methodFor(group, memberDidKey) {
+  const mb = multibaseOf(memberDidKey);
+  return {
+    id: `${group.did}#${mb}`,
+    type: 'Ed25519VerificationKey2020',
+    controller: group.did,
+    publicKeyMultibase: mb,
+  };
+}
+
+// §4.2 createGroup — mints a did:graph, binds it to a fresh host graph, and
+// seeds a group-of-one whose creator key holds all four capability sections.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({
+    syncModule: SYNC,
+    displayName: 'Book Club',
+    description: 'We read books',
+  });
+  assert_true(group instanceof Group, 'createGroup() MUST return a Group');
+  assert_true(group.did.startsWith('did:graph:z6'),
+    'the group identity MUST be an Ed25519 did:graph');
+  assert_true(group.iri.startsWith('graph://'),
+    'the host graph MUST expose a graph:// content address');
+  assert_true(group.graph instanceof Graph,
+    'group.graph MUST be the host Graph');
+  assert_equals(group.name, 'Book Club', 'MUST store the display name');
+  assert_equals(group.description, 'We read books');
+  assert_true(group.created.length > 0, 'MUST stamp a created timestamp');
+  // §4.2: the human's prior-active DID is recorded as the creator.
+  assert_true(group.creator.startsWith('did:key:'),
+    'the creator MUST be the founding did:key');
+}, '§4.2 createGroup() MUST mint a did:graph group with seed metadata');
+
+// §4.4/§4.7 resolve() — the DID document projects to a [[DID-CORE]] JSON-LD
+// object; a group-of-one lists its creator key in every section.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const doc = await group.resolve();
+  assert_equals(doc.id, group.did, 'resolved document id MUST equal the DID');
+  assert_equals(doc.trustLevel, 'local',
+    'a local mount MUST resolve with trustLevel "local"');
+  assert_true(Array.isArray(doc.verificationMethod));
+  assert_equals(doc.verificationMethod.length, 1,
+    'a group-of-one MUST have exactly one verification method');
+  // §11: the sole creator key is a member of all four sections.
+  assert_equals(doc.capabilityInvocation.length, 1);
+  assert_equals(doc.capabilityDelegation.length, 1);
+  assert_equals(doc.assertionMethod.length, 1);
+  assert_equals(doc.authentication.length, 1);
+  assert_true(!doc.deactivated, 'a live group MUST NOT be deactivated');
+}, '§4.4/§4.7 resolve() MUST project a group-of-one DID document');
+
+// §8.2 createGroup — syncModule is a REQUIRED dictionary member (§4.5).
+
+promise_test(async t => {
+  await promise_rejects_js(t, TypeError,
+    navigator.graph.createGroup({ displayName: 'No Sync' }),
+    'createGroup() without syncModule MUST reject (required member)');
+}, '§4.5 createGroup() MUST require a syncModule');
+
+// §4.2 groupify — one-way promotion of an existing Graph; content survives.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'Existing' });
+  await graph.addTriple(new Triple(
+    'urn:note:1', 'urn:p:body', new LiteralValue('hi')));
+
+  const group = await navigator.graph.groupify(graph, { syncModule: SYNC });
+  assert_true(group instanceof Group, 'groupify() MUST return a Group');
+  assert_true(group.did.startsWith('did:graph:z6'),
+    'groupify() MUST bind a did:graph identity');
+
+  // Pre-existing content survives groupification.
+  const rows = await group.graph.queryTriples({ subject: 'urn:note:1' });
+  assert_equals(rows.length, 1, 'groupify() MUST preserve existing triples');
+  assert_equals(rows[0].object.lexicalValue, 'hi');
+
+  // §4.2: groupification is one-way — re-groupifying rejects.
+  await promise_rejects_dom(t, 'InvalidStateError',
+    navigator.graph.groupify(graph, { syncModule: SYNC }),
+    're-groupifying an existing group MUST reject with InvalidStateError');
+}, '§4.2 groupify() MUST promote a Graph one-way and preserve its content');
+
+// §5.4/§8.1.4 delegate management — addSigner / signers / isSigner /
+// grantSection / revokeSection / removeSigner.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const member = await navigator.graph.createIdentity('Member');
+  const method = methodFor(group, member.did);
+
+  assert_false(await group.isSigner(member.did),
+    'a fresh member MUST NOT be a signer');
+  await group.addSigner(method,
+    ['capabilityInvocation', 'assertionMethod']);
+  assert_true(await group.isSigner(member.did),
+    'addSigner() MUST make the member a signer');
+  assert_true(await group.isSigner(member.did, 'assertionMethod'),
+    'the member MUST be in the granted assertionMethod section');
+  assert_false(await group.isSigner(member.did, 'capabilityDelegation'),
+    'the member MUST NOT be in an ungranted section');
+
+  const signers = await group.signers();
+  assert_equals(signers.length, 2, 'signers() MUST list creator + member');
+
+  await group.grantSection(method.id, 'authentication');
+  assert_true(await group.isSigner(member.did, 'authentication'),
+    'grantSection() MUST add the section membership');
+  await group.revokeSection(method.id, 'authentication');
+  assert_false(await group.isSigner(member.did, 'authentication'),
+    'revokeSection() MUST remove the section membership');
+
+  await group.removeSigner(method.id);
+  assert_false(await group.isSigner(member.did),
+    'removeSigner() MUST remove the method entirely');
+}, '§5.4/§8.1.4 addSigner/grantSection/revokeSection/removeSigner MUST manage delegates');
+
+// §5.4 brick-state guard — the sole capabilityDelegation method cannot be
+// removed or have its capabilityDelegation membership revoked.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const doc = await group.resolve();
+  assert_equals(doc.capabilityDelegation.length, 1);
+  const sole = doc.capabilityDelegation[0];
+
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.removeSigner(sole),
+    'removing the sole capabilityDelegation method MUST reject');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.revokeSection(sole, 'capabilityDelegation'),
+    'revoking the sole capabilityDelegation membership MUST reject');
+}, '§5.4 the sole capabilityDelegation method MUST be brick-guarded');
+
+// §6.2/§5.4 authorship — an acting delegate that lacks the required section
+// cannot author the governed write (NotAllowedError).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const member = await navigator.graph.createIdentity('InvocationOnly');
+  const method = methodFor(group, member.did);
+  await group.addSigner(method, ['capabilityInvocation']);
+
+  // Act as the invocation-only delegate (setActingCredential takes the internal
+  // credential id, DIDCredential.id — not the DID).
+  await group.setActingCredential(member.id);
+
+  // Accepting participation demands capabilityDelegation authorship (§6.2).
+  await promise_rejects_dom(t, 'NotAllowedError',
+    group.invite('urn:person:bob'),
+    'invite() without capabilityDelegation MUST reject with NotAllowedError');
+  // signGraph demands assertionMethod (§5.4).
+  await promise_rejects_dom(t, 'NotAllowedError',
+    group.signGraph(group.did),
+    'signGraph() without assertionMethod MUST reject with NotAllowedError');
+}, '§6.2/§5.4 governed writes MUST require the acting delegate to hold the section');
+
+// §7.1/§8.1.1-8.1.3 participation lifecycle — invite / hasParticipant /
+// participants / revokeParticipation.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  assert_false(await group.hasParticipant('urn:person:alice'));
+
+  await group.invite('urn:person:alice');
+  assert_true(await group.hasParticipant('urn:person:alice'),
+    'invite() MUST record the participant');
+
+  const parts = await group.participants();
+  assert_equals(parts.length, 1, 'participants() MUST list the direct member');
+  assert_equals(parts[0].did, 'urn:person:alice');
+  assert_false(parts[0].isGroup, 'an IRI participant MUST NOT be a group');
+  assert_true(parts[0].joinedAt.length > 0,
+    'each participant MUST carry a joinedAt timestamp');
+
+  await group.revokeParticipation('urn:person:alice');
+  assert_false(await group.hasParticipant('urn:person:alice'),
+    'revokeParticipation() MUST remove the participant');
+}, '§7.1/§8.1 participation MUST invite, list, and revoke members');
+
+// §5.4/§11 signGraph — a group-of-one signs with its own did:graph key.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const signed = await group.signGraph(group.did);
+  assert_equals(signed.author, group.did,
+    'signGraph() MUST attribute the signature to the group DID');
+  assert_equals(signed.proof.type, 'Ed25519Signature2020');
+  assert_true(signed.proof.method.startsWith(group.did + '#'),
+    'proof.method MUST be a verification method of the group DID');
+  assert_true(signed.proof.signature.startsWith('z'),
+    'the signature MUST be multibase base58btc (z-prefixed)');
+}, '§5.4 signGraph() MUST let a group-of-one sign with its did:graph key');
+
+// §6.3/§8.1.3 nesting — transitiveParticipants descends into sub-groups;
+// childGroups lists the participating groups.
+
+promise_test(async t => {
+  const parent = await navigator.graph.createGroup({ syncModule: SYNC });
+  const child = await navigator.graph.createGroup({ syncModule: SYNC });
+
+  await child.invite('urn:person:alice');
+  await parent.invite(child.did);       // a sub-group participates
+  await parent.invite('urn:person:bob');
+
+  const direct = await parent.participants();
+  assert_equals(direct.length, 2, 'the sub-group counts as one direct member');
+
+  const trans = await parent.transitiveParticipants();
+  assert_equals(trans.length, 2,
+    'transitiveParticipants() MUST flatten to individuals (alice + bob)');
+  const dids = trans.map(p => p.did).sort();
+  assert_array_equals(dids, ['urn:person:alice', 'urn:person:bob']);
+  for (const p of trans)
+    assert_false(p.isGroup, 'transitive members MUST all be individuals');
+
+  const kids = await parent.childGroups();
+  assert_equals(kids.length, 1, 'childGroups() MUST list the sub-group');
+  assert_equals(kids[0].did, child.did);
+}, '§6.3/§8.1.3 transitiveParticipants() MUST descend into participating sub-groups');
+
+// §4.8 forkGroup — mint a new identity over a copy of the parent's state,
+// inherit content, record lineage, and strip the parent identity.
+
+promise_test(async t => {
+  const parent = await navigator.graph.createGroup({
+    syncModule: SYNC, displayName: 'Origin',
+  });
+  await parent.graph.addTriple(new Triple(
+    'urn:book:1', 'urn:p:title', new LiteralValue('Dune')));
+
+  const child = await navigator.graph.forkGroup(parent.did, {
+    syncModule: SYNC, displayName: 'Fork',
+  });
+  assert_true(child instanceof Group, 'forkGroup() MUST return a Group');
+  assert_not_equals(child.did, parent.did,
+    'a fork MUST mint a fresh identity');
+
+  // Inherited content survives in the child.
+  const inherited = await child.graph.queryTriples({ subject: 'urn:book:1' });
+  assert_equals(inherited.length, 1, 'the fork MUST inherit content triples');
+  assert_equals(inherited[0].object.lexicalValue, 'Dune');
+
+  // §4.8 step 4: the child records its lineage (an IRI object is a plain string).
+  const lineage = await child.graph.queryTriples({
+    subject: child.did, predicate: 'group://forkedFrom',
+  });
+  assert_equals(lineage.length, 1, 'the fork MUST record group://forkedFrom');
+  assert_equals(lineage[0].object, parent.did,
+    'forkedFrom MUST point at the parent DID');
+}, '§4.8 forkGroup() MUST inherit content and record lineage');
+
+// §4.9 deactivate — reflected in subsequent resolution.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  await group.deactivate();
+  const doc = await group.resolve();
+  assert_true(doc.deactivated === true,
+    'a deactivated group MUST resolve with deactivated: true');
+}, '§4.9 deactivate() MUST be reflected in resolve()');
+
+// §8.2 openGroup / listGroups — reopen a locally-mounted group by DID; an
+// unknown DID rejects with NotFoundError; listGroups enumerates the mounts.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+
+  const reopened = await navigator.graph.openGroup(group.did);
+  assert_true(reopened instanceof Group, 'openGroup() MUST return a Group');
+  assert_equals(reopened.did, group.did,
+    'openGroup(did) MUST resolve the same group');
+
+  await promise_rejects_dom(t, 'NotFoundError',
+    navigator.graph.openGroup('did:graph:zUnknownUnmounted'),
+    'openGroup() of an unmounted DID MUST reject with NotFoundError');
+
+  const all = await navigator.graph.listGroups();
+  assert_true(all.some(g => g.did === group.did),
+    'listGroups() MUST include every locally-mounted group');
+}, '§8.2 openGroup() MUST reopen by DID; listGroups() MUST enumerate mounts');
+</script>

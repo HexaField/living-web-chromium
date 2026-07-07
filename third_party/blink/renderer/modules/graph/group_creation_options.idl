@@ -1,0 +1,21 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GroupCreationOptions — options for GraphManager.createGroup(). Decentralised
+// Group Identity spec §8.2.
+//
+// The `relays` (sync relay hints) and `enforcementMode` (initial governance
+// mode) members from the spec dictionary are consumed by the Context Sync
+// Protocol ([[CONTEXT-SYNC]], Spec 05) and the Capability Framework
+// ([[CAPABILITY-FRAMEWORK]], Spec 04) respectively; they are wired in by those
+// specifications and are intentionally absent from this Spec 03 slice so that the
+// slice neither silently drops nor half-implements a cross-spec input.
+
+dictionary GroupCreationOptions {
+  required USVString syncModule;         // content hash of the group's sync module (§4.5)
+  DOMString displayName;
+  DOMString description;
+  sequence<USVString> initialDelegates;  // extra capabilityInvocation delegate DIDs
+  USVString participatesIn;              // IRI or did:graph of parent to join (§7.1)
+};

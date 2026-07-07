@@ -1,0 +1,61 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Group — a convenience handle over a groupified Graph and its did:graph
+// signing identity. Decentralised Group Identity spec §8.1.
+//
+// The spec calls Group "a thin convenience wrapper over Graph + DIDCredential …
+// everything it does can be done directly via the underlying APIs (§5.4)". This
+// realisation folds the §5.4 did:graph DIDCredential surface (grantSection,
+// revokeSection, signGraph, deactivate, and acting-delegate selection) onto the
+// Group handle, because the browser does not surface a separate DIDCredential
+// object for a group's did:graph — the Group *is* that credential handle. Every
+// governed operation on a group is therefore reachable here (full capability, no
+// subset). See SPEC_COMPLIANCE.md for the recorded amendments.
+//
+// Exposed on (Window,Worker) — matching Graph and GraphManager — rather than the
+// spec's Window-only, so GraphManager.createGroup()/openGroup() (which are
+// (Window,Worker)) can return a usable Group in a worker realm.
+//
+// delegateCapability() (§8.1.5) issues a ZCAP and is defined by the Capability
+// Framework ([[CAPABILITY-FRAMEWORK]], Spec 04); it is added by that
+// specification and is intentionally absent from this slice.
+
+[Exposed=(Window,Worker), SecureContext]
+interface Group {
+  readonly attribute USVString did;      // did:graph:... (the signing identity)
+  readonly attribute USVString iri;      // graph://<content-hash> (host graph IRI)
+  readonly attribute Graph graph;        // the host graph
+  readonly attribute DOMString? name;
+  readonly attribute DOMString? description;
+  readonly attribute DOMString created;  // RFC 3339
+  readonly attribute USVString creator;  // did:key:... or did:graph:...
+
+  // Participation — §8.1.1–8.1.3.
+  [CallWith=ScriptState, NewObject] Promise<sequence<Participant>> participants();
+  [CallWith=ScriptState, NewObject] Promise<sequence<Participant>> transitiveParticipants();
+  [CallWith=ScriptState, NewObject] Promise<sequence<Group>> parentGroups();
+  [CallWith=ScriptState, NewObject] Promise<sequence<Group>> childGroups();
+  [CallWith=ScriptState, NewObject] Promise<undefined> invite(USVString participantDid);
+  [CallWith=ScriptState, NewObject] Promise<undefined> revokeParticipation(USVString participantDid);
+  [CallWith=ScriptState, NewObject] Promise<boolean> hasParticipant(USVString did);
+
+  // Signing authority / delegate management — §8.1.4, §5.4.
+  [CallWith=ScriptState, NewObject] Promise<sequence<DIDDocumentMethod>> signers(optional DIDCapabilitySection section);
+  [CallWith=ScriptState, NewObject] Promise<undefined> addSigner(DIDDocumentMethod method, sequence<DIDCapabilitySection> sections);
+  [CallWith=ScriptState, NewObject] Promise<undefined> removeSigner(USVString methodId);
+  [CallWith=ScriptState, NewObject] Promise<undefined> replaceSigner(USVString oldMethodId, DIDDocumentMethod newMethod, sequence<DIDCapabilitySection> sections);
+  [CallWith=ScriptState, NewObject] Promise<boolean> isSigner(USVString did, optional DIDCapabilitySection section);
+  [CallWith=ScriptState, NewObject] Promise<undefined> grantSection(USVString methodId, DIDCapabilitySection section);
+  [CallWith=ScriptState, NewObject] Promise<undefined> revokeSection(USVString methodId, DIDCapabilitySection section);
+
+  // Assertion / acting delegate / deactivation — §5.4, §4.9.
+  [CallWith=ScriptState, NewObject] Promise<SignedContent> signGraph(USVString target);
+  [CallWith=ScriptState, NewObject] Promise<undefined> setActingCredential(USVString credentialId);
+  [CallWith=ScriptState, NewObject] Promise<undefined> deactivate();
+
+  // Identity resolution — §4.7. Resolves with the [[DID-CORE]] JSON-LD DID
+  // document (same `any` shape DIDCredential.resolve() returns).
+  [CallWith=ScriptState, NewObject] Promise<any> resolve();
+};

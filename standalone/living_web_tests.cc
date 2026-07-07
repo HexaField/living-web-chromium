@@ -25,6 +25,10 @@
 #include "content/browser/graph/oxigraph_store.h"
 #include "content/browser/graph/sparql_results.h"
 
+// Spec 03 — Decentralised Group Identity.
+#include "group_provider.h"
+#include "content/browser/did/did_graph.h"
+
 using namespace living_web;
 
 // ============================================================
@@ -992,6 +996,354 @@ TEST(Graph_HolonicSparqlAcrossTwoGraphs) {
   const SparqlTerm* body = sel.solutions[0].Get("body");
   EXPECT_TRUE(body != nullptr);
   EXPECT_EQ(body->value, "hello");
+}
+
+// ============================================================
+// Spec 03 — Decentralised Group Identity
+// ============================================================
+
+namespace {
+
+// Create a provider with one human did:key active, plus a graph + group manager.
+struct GroupFixture {
+  DIDKeyProvider provider;
+  GraphManager graphs{&provider};
+  GroupManager groups{&provider, &graphs};
+  GroupFixture() { provider.CreateKey("Human"); }
+};
+
+GroupCreationOptions DefaultGroupOptions() {
+  GroupCreationOptions o;
+  o.sync_module = "urn:sync:module:default";
+  return o;
+}
+
+}  // namespace
+
+// ---- did:graph codec (§4.1) ----
+
+TEST(Group_DidGraphCodecRoundTrip) {
+  std::vector<uint8_t> pk(32, 0x11);
+  auto did = did_graph::DeriveDidGraphEd25519(pk);
+  EXPECT_TRUE(did.has_value());
+  EXPECT_EQ(did->substr(0, 12), "did:graph:z6");
+  EXPECT_TRUE(did_graph::IsDidGraph(*did));
+  EXPECT_FALSE(did_graph::IsDidGraph("did:key:z6MkFoo"));
+  auto pk2 = did_graph::ParseDidGraphEd25519(*did);
+  EXPECT_TRUE(pk2.has_value());
+  EXPECT_TRUE(*pk2 == pk);
+}
+
+// ---- createGroup: binding + seed + resolution (§4.2, §4.7) ----
+
+TEST(Group_CreateBindsDidGraphAndSeed) {
+  GroupFixture f;
+  auto opts = DefaultGroupOptions();
+  opts.display_name = "Book Club";
+  opts.description = "We read books";
+  auto group = f.groups.CreateGroup(opts);
+  EXPECT_TRUE(group != nullptr);
+  EXPECT_EQ(group->did().substr(0, 10), "did:graph:");
+  EXPECT_TRUE(group->name().has_value());
+  EXPECT_EQ(*group->name(), "Book Club");
+  EXPECT_EQ(*group->description(), "We read books");
+  EXPECT_TRUE(group->created().has_value());
+  // The human's prior-active DID is recorded as creator (§4.2).
+  EXPECT_TRUE(group->creator().has_value());
+  EXPECT_EQ(group->creator()->substr(0, 8), "did:key:");
+
+  DidDocument doc;
+  EXPECT_TRUE(group->Resolve(&doc));
+  EXPECT_EQ(doc.id, group->did());
+  EXPECT_EQ(doc.trust_level, "local");
+  EXPECT_FALSE(doc.deactivated);
+  // Group-of-one: the creator key holds every section (§11).
+  EXPECT_EQ(doc.verification_method.size(), 1u);
+  EXPECT_EQ(doc.capability_invocation.size(), 1u);
+  EXPECT_EQ(doc.capability_delegation.size(), 1u);
+  EXPECT_EQ(doc.assertion_method.size(), 1u);
+  EXPECT_EQ(doc.authentication.size(), 1u);
+
+  auto sm = group_detail::FirstLiteralOf(group->graph(), group->did(),
+                                         kGroupSyncModule);
+  EXPECT_TRUE(sm.has_value());
+  EXPECT_EQ(*sm, "urn:sync:module:default");
+}
+
+TEST(Group_CreateRequiresSyncModule) {
+  GroupFixture f;
+  GroupCreationOptions opts;  // no sync_module
+  auto group = f.groups.CreateGroup(opts);
+  EXPECT_TRUE(group == nullptr);
+  EXPECT_EQ(f.groups.last_error(), "SyntaxError");
+}
+
+// ---- groupify: one-way promotion of an existing graph (§4.2) ----
+
+TEST(Group_GroupifyExistingGraphOneWay) {
+  GroupFixture f;
+  auto g = f.graphs.Create("Existing");
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:note:1", "urn:p:body", "hi")));
+
+  GroupifyOptions opts;
+  opts.sync_module = "urn:sync:module:default";
+  auto group = f.groups.Groupify(g.get(), opts);
+  EXPECT_TRUE(group != nullptr);
+  EXPECT_TRUE(g->did().has_value());
+  EXPECT_EQ(*g->did(), group->did());
+  // Pre-existing content survives groupification.
+  auto body = group_detail::FirstLiteralOf(g.get(), "urn:note:1", "urn:p:body");
+  EXPECT_TRUE(body.has_value());
+  EXPECT_EQ(*body, "hi");
+
+  // Re-groupify is rejected — groupification is one-way (§4.2).
+  auto again = f.groups.Groupify(g.get(), opts);
+  EXPECT_TRUE(again == nullptr);
+  EXPECT_EQ(f.groups.last_error(), "InvalidStateError");
+}
+
+// ---- delegate management (§5.4, §8.1.4) ----
+
+TEST(Group_AddAndRemoveDelegate) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+
+  auto member = f.provider.CreateKey("Member");  // a did:key holder
+  auto vm = group_detail::MethodFromDelegateDid(group->did(), member->did);
+  EXPECT_TRUE(vm.has_value());
+
+  EXPECT_TRUE(group->AddDelegate(
+      *vm, {DIDCapabilitySection::kCapabilityInvocation,
+            DIDCapabilitySection::kAssertionMethod}));
+  EXPECT_TRUE(group->IsSigner(member->did));
+  EXPECT_TRUE(
+      group->IsSigner(member->did, DIDCapabilitySection::kAssertionMethod));
+  EXPECT_FALSE(
+      group->IsSigner(member->did, DIDCapabilitySection::kCapabilityDelegation));
+
+  DidDocument doc;
+  group->Resolve(&doc);
+  EXPECT_EQ(doc.verification_method.size(), 2u);
+
+  EXPECT_TRUE(group->RemoveDelegate(vm->id));
+  EXPECT_FALSE(group->IsSigner(member->did));
+  group->Resolve(&doc);
+  EXPECT_EQ(doc.verification_method.size(), 1u);
+}
+
+TEST(Group_GrantAndRevokeSection) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+  auto member = f.provider.CreateKey("Member");
+  auto vm = group_detail::MethodFromDelegateDid(group->did(), member->did);
+  EXPECT_TRUE(group->AddDelegate(*vm,
+                                 {DIDCapabilitySection::kCapabilityInvocation}));
+  EXPECT_FALSE(
+      group->IsSigner(member->did, DIDCapabilitySection::kAuthentication));
+  EXPECT_TRUE(
+      group->GrantSection(vm->id, DIDCapabilitySection::kAuthentication));
+  EXPECT_TRUE(
+      group->IsSigner(member->did, DIDCapabilitySection::kAuthentication));
+  EXPECT_TRUE(
+      group->RevokeSection(vm->id, DIDCapabilitySection::kAuthentication));
+  EXPECT_FALSE(
+      group->IsSigner(member->did, DIDCapabilitySection::kAuthentication));
+}
+
+// ---- brick-state guards (§5.4) ----
+
+TEST(Group_RemoveSoleCapabilityDelegationBricks) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+  DidDocument doc;
+  group->Resolve(&doc);
+  EXPECT_EQ(doc.capability_delegation.size(), 1u);
+  const std::string sole = doc.capability_delegation[0];
+
+  // Removing the only capabilityDelegation method would brick the group (§5.4).
+  EXPECT_FALSE(group->RemoveSigner(sole));
+  EXPECT_EQ(group->last_error(), "InvalidStateError");
+  // Revoking its capabilityDelegation membership likewise bricks.
+  EXPECT_FALSE(
+      group->RevokeSection(sole, DIDCapabilitySection::kCapabilityDelegation));
+  EXPECT_EQ(group->last_error(), "InvalidStateError");
+}
+
+// ---- authorship rules (§6.2, §5.4) ----
+
+TEST(Group_WritesRequireDelegateAuthority) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+
+  // Add a capabilityInvocation-only delegate, then act as it.
+  auto member = f.provider.CreateKey("Member");
+  auto vm = group_detail::MethodFromDelegateDid(group->did(), member->did);
+  EXPECT_TRUE(group->AddDelegate(*vm,
+                                 {DIDCapabilitySection::kCapabilityInvocation}));
+  group->SetActingCredential(member->id);
+
+  // Accepting participation demands capabilityDelegation authorship (§6.2).
+  EXPECT_FALSE(group->Invite("urn:person:bob"));
+  EXPECT_EQ(group->last_error(), "NotAllowedError");
+  // Managing delegates demands capabilityDelegation (§5.4).
+  EXPECT_FALSE(
+      group->AddDelegate(*vm, {DIDCapabilitySection::kAuthentication}));
+  EXPECT_EQ(group->last_error(), "NotAllowedError");
+  // signGraph demands assertionMethod (§5.4).
+  SignedContentResult sr;
+  EXPECT_FALSE(group->SignGraph(group->did(), &sr));
+  EXPECT_EQ(group->last_error(), "NotAllowedError");
+}
+
+// ---- participation lifecycle (§7.1, §8.1.1-8.1.3) ----
+
+TEST(Group_ParticipationLifecycle) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+  EXPECT_FALSE(group->HasParticipant("urn:person:alice"));
+  EXPECT_TRUE(group->Invite("urn:person:alice"));
+  EXPECT_TRUE(group->HasParticipant("urn:person:alice"));
+
+  auto parts = group->Participants();
+  EXPECT_EQ(parts.size(), 1u);
+  EXPECT_EQ(parts[0].did, "urn:person:alice");
+  EXPECT_FALSE(parts[0].is_group);
+  EXPECT_FALSE(parts[0].joined_at.empty());
+
+  EXPECT_TRUE(group->RevokeParticipation("urn:person:alice"));
+  EXPECT_FALSE(group->HasParticipant("urn:person:alice"));
+}
+
+// ---- signGraph, group-of-one (§5.4, §11) ----
+
+TEST(Group_SignGraphGroupOfOne) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+  SignedContentResult sr;
+  EXPECT_TRUE(group->SignGraph(group->did(), &sr));
+  EXPECT_EQ(sr.author, group->did());
+  EXPECT_FALSE(sr.proof_sig.empty());
+  EXPECT_EQ(sr.proof_type, "Ed25519Signature2020");
+  EXPECT_EQ(sr.proof_method.substr(0, group->did().size()), group->did());
+}
+
+// ---- nesting + transitive participation (§6.3, §8.1.3) ----
+
+TEST(Group_NestedTransitiveParticipants) {
+  GroupFixture f;
+  auto parent = f.groups.CreateGroup(DefaultGroupOptions());
+  auto child = f.groups.CreateGroup(DefaultGroupOptions());
+
+  EXPECT_TRUE(child->Invite("urn:person:alice"));
+  EXPECT_TRUE(parent->Invite(child->did()));  // a sub-group participates
+  EXPECT_TRUE(parent->Invite("urn:person:bob"));
+
+  EXPECT_EQ(parent->Participants().size(), 2u);
+
+  auto trans = parent->TransitiveParticipants();
+  EXPECT_EQ(trans.size(), 2u);  // alice (via child) + bob; child is not an individual
+  bool has_alice = false, has_bob = false;
+  for (auto& p : trans) {
+    EXPECT_FALSE(p.is_group);
+    if (p.did == "urn:person:alice") has_alice = true;
+    if (p.did == "urn:person:bob") has_bob = true;
+  }
+  EXPECT_TRUE(has_alice);
+  EXPECT_TRUE(has_bob);
+
+  auto kids = parent->ChildGroups();
+  EXPECT_EQ(kids.size(), 1u);
+  EXPECT_EQ(kids[0]->did(), child->did());
+}
+
+TEST(Group_TransitiveParticipantsCycleSafe) {
+  GroupFixture f;
+  auto a = f.groups.CreateGroup(DefaultGroupOptions());
+  auto b = f.groups.CreateGroup(DefaultGroupOptions());
+  EXPECT_TRUE(a->Invite(b->did()));
+  EXPECT_TRUE(b->Invite(a->did()));  // mutual participation forms a cycle
+  EXPECT_TRUE(a->Invite("urn:person:solo"));
+
+  auto trans = a->TransitiveParticipants();  // must terminate
+  EXPECT_EQ(trans.size(), 1u);
+  EXPECT_EQ(trans[0].did, "urn:person:solo");
+}
+
+// ---- forking (§4.8) ----
+
+TEST(Group_ForkInheritsAndRelinks) {
+  GroupFixture f;
+  auto opts = DefaultGroupOptions();
+  opts.display_name = "Origin";
+  auto parent = f.groups.CreateGroup(opts);
+  const std::string parent_did = parent->did();
+
+  // Plain content the fork should inherit.
+  EXPECT_TRUE(
+      parent->graph()->AddTriple(MakeLit("urn:book:1", "urn:p:title", "Dune")));
+
+  ForkOptions fo;
+  fo.sync_module = "urn:sync:module:default";
+  fo.display_name = "Fork";
+  auto child = f.groups.ForkGroup(parent_did, fo);
+  EXPECT_TRUE(child != nullptr);
+  const std::string child_did = child->did();
+  EXPECT_NE(child_did, parent_did);
+
+  // Inherited content survives in the child.
+  auto title =
+      group_detail::FirstLiteralOf(child->graph(), "urn:book:1", "urn:p:title");
+  EXPECT_TRUE(title.has_value());
+  EXPECT_EQ(*title, "Dune");
+
+  // The child records its lineage (§4.8 step 4).
+  auto ff =
+      group_detail::FirstIriOf(child->graph(), child_did, kGroupForkedFrom);
+  EXPECT_TRUE(ff.has_value());
+  EXPECT_EQ(*ff, parent_did);
+  auto fr = group_detail::FirstLiteralOf(child->graph(), child_did,
+                                         kGroupForkedAtRevision);
+  EXPECT_TRUE(fr.has_value());
+
+  // The parent identity is stripped from the child (§4.8 step 3).
+  DidDocument stale;
+  group_detail::ProjectDidDocument(child->graph(), parent_did, &stale);
+  EXPECT_EQ(stale.verification_method.size(), 0u);
+
+  // The parent announces the fork (§4.8 step 6).
+  auto to = group_detail::FirstIriOf(parent->graph(), parent_did, kGroupForkedTo);
+  EXPECT_TRUE(to.has_value());
+  EXPECT_EQ(*to, child_did);
+}
+
+// ---- deactivation + reopen (§4.9, §8.2) ----
+
+TEST(Group_DeactivateReflectsInResolution) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+  EXPECT_TRUE(group->Deactivate());
+  DidDocument doc;
+  group->Resolve(&doc);
+  EXPECT_TRUE(doc.deactivated);
+}
+
+TEST(Group_OpenByDidAndByIri) {
+  GroupFixture f;
+  auto group = f.groups.CreateGroup(DefaultGroupOptions());
+  const std::string did = group->did();
+
+  auto by_did = f.groups.OpenGroup(did);
+  EXPECT_TRUE(by_did != nullptr);
+  EXPECT_EQ(by_did->did(), did);
+
+  std::string iri;
+  EXPECT_TRUE(group->iri(&iri));
+  auto by_iri = f.groups.OpenGroup(iri);
+  EXPECT_TRUE(by_iri != nullptr);
+  EXPECT_EQ(by_iri->did(), did);
+
+  EXPECT_TRUE(f.groups.OpenGroup("did:graph:zUnknown") == nullptr);
+  EXPECT_EQ(f.groups.last_error(), "NotFoundError");
 }
 
 // ============================================================

@@ -477,6 +477,18 @@ bool GraphBackend::LoadVerifiedNquads(const std::string& nquads) {
   return true;
 }
 
+bool GraphBackend::DumpNquads(std::string* out) {
+  if (dissolved_) {
+    last_error_ = "InvalidStateError";
+    return false;
+  }
+  if (!store_.DumpNquads(out)) {
+    last_error_ = store_.last_error();
+    return false;
+  }
+  return true;
+}
+
 bool GraphBackend::BuildReifierDoc(const Triple& triple,
                                    const std::string& label,
                                    const DIDKeyPair* active,

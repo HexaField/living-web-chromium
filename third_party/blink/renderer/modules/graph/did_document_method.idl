@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// DIDDocumentMethod — a did:graph DID-document verification method. Decentralised
+// Group Identity spec §4.4 / §5.4. Supplied to addSigner()/replaceSigner() and
+// returned (without section membership) from signers().
+
+dictionary DIDDocumentMethod {
+  required USVString id;                 // "<did>#<publicKeyMultibase>"
+  required DOMString type;               // "Ed25519VerificationKey2020"
+  required USVString controller;         // the group DID
+  required USVString publicKeyMultibase; // "z6Mk..."
+};

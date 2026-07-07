@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// ForkOptions — options for GraphManager.forkGroup(). Decentralised Group
+// Identity spec §8.2 / §4.8.
+
+dictionary ForkOptions {
+  required USVString syncModule;         // MAY equal the parent's (§4.8.1)
+  USVString forkRevision;                // revision to fork at; defaults to the parent's current IRI
+  boolean announceFork = true;           // write group://forkedTo on the parent (§4.8)
+  sequence<USVString> initialDelegates;  // delegates to seed on the child (defaults to the forking agent)
+  DOMString displayName;
+  DOMString description;
+};

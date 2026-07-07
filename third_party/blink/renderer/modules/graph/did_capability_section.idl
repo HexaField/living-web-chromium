@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// DIDCapabilitySection — the four sections a did:graph verification method may
+// be referenced from. Decentralised Group Identity spec §5.1 / §5.4. There is
+// deliberately no aggregate/threshold section: a signature by any current method
+// in the relevant section is a signature by the DID.
+
+enum DIDCapabilitySection {
+  "capabilityInvocation",
+  "capabilityDelegation",
+  "assertionMethod",
+  "authentication"
+};

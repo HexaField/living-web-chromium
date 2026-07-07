@@ -20,7 +20,7 @@ to this file** and flips its row to ✅.
 |---|--------------|-----------------|--------|--------|
 | 01 | [Decentralised Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_decentralised-identity-web-platform.md) | `navigator.credentials` + `DIDCredential` | `spec-01-identity` | ✅ |
 | 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `navigator.graph`, `Graph` | `spec-02-graphs` | ✅ |
-| 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | Group DIDs | `spec-03-group-identity` | 🔲 |
+| 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | `did:graph`, `navigator.graph` groups, `Group` | `spec-03-group-identity` | ✅ |
 | 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | ZCAP-LD capabilities | `spec-04-capabilities` | 🔲 |
 | 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `SharedGraph`, `graph.join()` | `spec-05-sync` | 🔲 |
 | 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | Pluggable sync modules | `spec-06-sync-modules` | 🔲 |
@@ -233,6 +233,122 @@ RDF 1.2 tooling:
   mandated, and triple-term canonicalisation is pinned to RDF-1.2 N-Quads term equality so
   the content hash is a pure function of the abstract dataset. This impl delegates both to a
   single pinned canonicaliser (Oxigraph 0.5, `rdf-12`).
+
+---
+
+## Spec 03 — Decentralised Group Identity ✅
+
+Fully implemented and tested. A **group** is a groupified Spec 02 graph (§4.2): a
+fresh Ed25519 keypair is minted, a `did:graph` is derived from it, and the DID
+document — verification methods and their capability-section memberships — is
+written as ordinary triples in the host graph and resolved back out of it. The
+`did:graph` codec and the DID-document model (`content/browser/did/did_graph.*`,
+namespace `living_web`) are Chromium-independent and shared verbatim by the
+browser-process group service and the standalone harness, so the triples written,
+signed, and projected never diverge. The normative behaviour is exercised by the
+`Group_*` blocks of the C++ harness (`living_web_tests`, 15 `Group_*` tests, all
+green); the renderer exposes the complete `Group` surface off `navigator.graph`.
+
+### `did:graph` method (§4)
+
+| Capability | Spec | C++ | WPT | Status | Notes |
+|------------|------|-----|-----|--------|-------|
+| `did:graph` identifier (Ed25519 multibase) | §4.1 | ✅ | ✅ | ✅ | `did:graph:z6Mk…` — same base58btc(`0xed01` ‖ pubkey) body as did:key; only the method prefix differs. Round-trips losslessly. |
+| Groupification (one-way bootstrap) | §4.2 | ✅ | ✅ | ✅ | Atomic seed write: binding triple + seed DID document (creator holds all four sections) + `group://syncModule`. Re-groupify → `InvalidStateError`. `syncModule` REQUIRED → `SyntaxError`. |
+| Binding triple `group://didIdentity` | §4.3 | ✅ | ✅ | ✅ | Locates a group's host graph by DID; the durable key is the DID, never the volatile `graph://` IRI. See Amendment (ii). |
+| DID document as triples | §4.4 | ✅ | ✅ | ✅ | `did://verificationMethod` + per-section membership predicates; per-method `type`/`controller`/`publicKeyMultibase`. Method id = `<did>#<publicKeyMultibase>`. See Amendment (i). |
+| Immutable seed predicates | §4.5 | ✅ | — | ✅ | `group://syncModule`, `group://forkedFrom`, `group://forkedAtRevision` — written at groupification/fork, never mutated. |
+| Resolution → DID document | §4.7 | ✅ | ✅ | ✅ | Projects the triples to a [[DID-CORE]] JSON-LD document; local mount ⇒ `trustLevel: "local"`. |
+| Forking | §4.8 | ✅ | ✅ | ✅ | Mints a new identity over a full N-Quads copy of the parent (`DumpNquads`), strips the parent identity, records `group://forkedFrom`/`forkedAtRevision`, and (default) announces `group://forkedTo` on the parent. |
+| Deactivation | §4.9 | ✅ | ✅ | ✅ | Reflected in subsequent `resolve()` (`deactivated: true`). |
+
+### DID-document delegates & capability sections (§5)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `addSigner(method, sections)` | §5.4, §8.1.4 | ✅ | ✅ | ✅ | ✅ | Adds a `DIDDocumentMethod` + its section memberships. Requires `capabilityDelegation` authorship → else `NotAllowedError`. |
+| `removeSigner(methodId)` / `replaceSigner` | §5.4, §8.1.4 | ✅ | ✅ | ✅ | ✅ | Removing the sole `capabilityDelegation` method → `InvalidStateError` (brick guard). |
+| `grantSection` / `revokeSection` | §5.4 | ✅ | ✅ | ✅ | ✅ | Revoking the sole `capabilityDelegation` membership → `InvalidStateError`. |
+| `signers(section?)` / `isSigner(did, section?)` | §5.4, §8.1.4 | ✅ | ✅ | ✅ | ✅ | Enumerates / tests membership, optionally scoped to one section. |
+| `signGraph(target)` → `SignedContent` | §5.4 | ✅ | ✅ | ✅ | ✅ | Requires `assertionMethod` authorship → else `NotAllowedError`. Reuses the Spec 01 `Ed25519Signature2020` proof shape; signature multibase base58btc. |
+| `setActingCredential(id)` | §5.4 | ✅ | ✅ | ✅ | ✅ | Selects which held delegate credential authors subsequent governed writes; defaults to the creator key (group of one). |
+
+The four capability sections are `capabilityInvocation`, `capabilityDelegation`,
+`assertionMethod`, `authentication` (`DIDCapabilitySection`, §5.1).
+
+### Participation vs signing authority (§6, §7)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `invite(did)` / `revokeParticipation(did)` | §7.1, §8.1.1–2 | ✅ | ✅ | ✅ | ✅ | Participation is structurally separate from signing authority (§7.3). Accepting participation requires `capabilityDelegation` authorship → else `NotAllowedError`. |
+| `hasParticipant(did)` / `participants()` | §8.1.3 | ✅ | ✅ | ✅ | ✅ | Each participant carries `did`, `isGroup`, `joinedAt`, and (if locally resolvable) `name`. |
+| `transitiveParticipants()` | §6.3, §8.1.3 | ✅ | ✅ | ✅ | ✅ | Descends into participating sub-groups, flattens to individuals; cycle-safe (mutual participation terminates). |
+| `parentGroups()` / `childGroups()` | §6.3, §8.1.3 | ✅ | ✅ | ✅ | ✅ | Sub-group nesting via `group://` participation edges between locally-mounted groups. |
+
+### GraphManager group surface (§8.2)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `createGroup(options)` → `Group` | §8.2.1 | ✅ | ✅ | ✅ | ✅ | Mints a host graph and groupifies it. `syncModule` REQUIRED (`TypeError` at bindings / `SyntaxError` in the port). |
+| `groupify(graph, options)` → `Group` | §8.2.2 | ✅ | ✅ | ✅ | ✅ | Takes the **live `Graph`**, not an IRI — see Amendment (ii). Re-groupify → `InvalidStateError`. |
+| `forkGroup(parentIriOrDid, options)` → `Group` | §8.2.4 | ✅ | ✅ | ✅ | ✅ | Inherits content + lineage; mints a fresh identity. |
+| `openGroup(iriOrDid)` → `Group` | §8.2.3 | ✅ | ✅ | ✅ | ✅ | Reopens a locally-mounted group by DID or IRI; unknown → `NotFoundError`. |
+| `listGroups()` → `sequence<Group>` | §8.2 | ✅ | ✅ | ✅ | ✅ | Enumerates the mounted groups. |
+
+### Group interface (§8.1) & isomorphism (§11)
+
+`Group` attributes: `did`, `iri`, `graph` (the host `Graph`), `name`,
+`description`, `created`, `creator`. A **group of one** (§11) — the state right
+after `createGroup` — has its single creator key in all four capability sections;
+an individual identity and a group are therefore the same structure at different
+cardinalities, and `resolve()` returns a one-verification-method DID document.
+
+### Normative parameters
+
+- **`did:graph`** (§4.1): `did:graph:z` ‖ base58btc(`0xed01` ‖ 32-byte Ed25519 public
+  key). The codec reuses the Spec 01 did:key multibase machinery byte-for-byte; only the
+  method prefix differs, so a group's initial key is an ordinary `DIDKeyPair` with
+  `method = "graph"`.
+- **Verification-method id** (§4.4): `<did> + "#" + publicKeyMultibase` — self-certifying,
+  derivable from the key alone (Amendment (i)).
+- **Authorship** (§5.4, §6.2): governed writes are gated on the acting delegate holding the
+  required section — delegate management and accepting participation need
+  `capabilityDelegation`; `signGraph` needs `assertionMethod`; failure is `NotAllowedError`.
+- **Brick guards** (§5.4): the group MUST always retain at least one `capabilityDelegation`
+  method; operations that would remove the last one fail with `InvalidStateError`.
+- **Errors** map to DOMException names: missing `syncModule` → `SyntaxError`; re-groupify /
+  brick / deactivated-state → `InvalidStateError`; missing section authority → `NotAllowedError`;
+  unknown DID/IRI on open → `NotFoundError`.
+- Authoritative reference impl: `standalone/group_provider.h` over
+  `content/browser/did/did_graph.*`, verified by the 15 `Group_*` tests in
+  `standalone/living_web_tests.cc`; the browser port
+  (`content/browser/did/group_backend*.*`, `group_service.*`, `group_host.*`) and the
+  renderer (`third_party/blink/renderer/modules/graph/group.*`) mirror it.
+
+### Amendments
+
+Two under-specified areas surfaced while implementing Spec 03 have been **folded
+into draft 03 as normative detail** on `w3c-living-web-proposals` `main` (the same
+practice used for Specs 01–02). Neither weakens the implementation; both remove an
+interoperability hazard the draft left open:
+
+- **(i) A verification-method id fragment is the key's `publicKeyMultibase`** — draft §4.4
+  ("Verification-method identifiers"). The draft's algorithm (§4.2 step 4) constructs the
+  creator's method id as `did + "#" + multibase_ed25519(pk)`, but §4.4's examples used
+  arbitrary `#key-creator` / `#key-alice` labels. The amendment pins the fragment to the
+  method's own `publicKeyMultibase`, so a method id is self-certifying (reconstructible from
+  the key, collision-free, identical across implementations) and marks the `#key-*` labels
+  elsewhere as non-normative mnemonics. This implementation uses `<did>#<publicKeyMultibase>`
+  throughout (`group_detail::MethodId`).
+- **(ii) `groupify` takes the live `Graph`, not a `graph://` IRI** — draft §4.3 ("Durable
+  identity vs. content address") + §8.2.2. A graph's content-address IRI advances on every
+  write, **including the groupification bootstrap itself** (§4.2 step 4), so an IRI captured
+  before the call cannot identify the graph after it and an IRI-keyed lookup can race the
+  bootstrap write. The amendment changes the `groupify(USVString graphIri, …)` signature to
+  `groupify(Graph graph, …)`, pins the DID (content-independent) as the durable group key,
+  and records that the binding triple's subject is the graph's pre-final-state IRI (a
+  consumer MUST NOT assume it equals the current `iri`). The browser keys graphs by a stable
+  internal id and the Blink `groupify(Graph)` binding hands that id straight through.
 
 ---
 
