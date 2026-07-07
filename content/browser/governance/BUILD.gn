@@ -1,0 +1,54 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Spec 04 — Graph Capability Framework (ZCAP-LD): the browser-process
+# governance service.
+#
+# Authorisation lives at the data layer: every governed write to a Spec 02 graph
+# is checked against the capabilities constituted for that graph (§4). This
+# source_set is the top of the identity/graph stack — it depends on the graph
+# layer ("//content/browser/graph"), the group layer ("//content/browser/did:group",
+# for the did:graph codec + DID-document projection used to resolve delegation
+# chains), and the identity layer ("//content/browser/did:did", for the did:key
+# codec + signing) — none of which depend back on it, so no cycle forms.
+#
+# GovernanceBackend is a per-realm object (it holds the realm-wide plug-in
+# registry for constraint-kind / caveat / action-prefix handlers) and operates on
+# whichever GraphBackend is passed to each call; it is owned by
+# PersonalGraphManager alongside the graph backends. The Spec 04 §11 renderer API
+# (canAddTriple / canPerformAction / constraintsFor / myCapabilities /
+# enforcementMode / setEnforcementMode) is a `partial interface Graph`, so those
+# methods are folded into PersonalGraphHost in the ":graph" target rather than
+# exposed through a separate host here — in the production single //content/browser
+# target the two co-compile and PersonalGraphHost calls straight into
+# GovernanceBackend with no cross-target boundary.
+#
+# The Ed25519 verify primitive (third_party/ed25519, used by delegation-proof
+# checking) is NOT listed in deps: it is pulled in through its own third_party
+# target by the //content build, and //third_party/boringssl supplies the SHA-256
+# backing crypto::SHA256HashString.
+source_set("governance") {
+  sources = [
+    # Chromium-independent byte-critical core (namespace living_web), shared
+    # verbatim with the standalone conformance harness so the delegation-proof
+    # pre-image and attenuation bytes never diverge between the two build worlds.
+    "zcap.cc",
+    "zcap.h",
+
+    # Spec 04 §4/§13/§15 port + plug-in registry (namespace content).
+    "governance_backend.cc",
+    "governance_backend.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/browser/did:did",
+    "//content/browser/did:group",
+    "//content/browser/graph",
+    "//crypto",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+    "//third_party/boringssl",
+  ]
+}

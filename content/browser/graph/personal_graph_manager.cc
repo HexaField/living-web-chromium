@@ -12,7 +12,7 @@
 namespace content {
 
 PersonalGraphManager::PersonalGraphManager(DIDKeyProvider* identity)
-    : backends_(identity) {}
+    : backends_(identity), governance_(identity) {}
 
 PersonalGraphManager::~PersonalGraphManager() = default;
 
@@ -83,7 +83,7 @@ void PersonalGraphManager::Create(
     mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver,
     CreateCallback callback) {
   GraphBackend* backend = backends_.Create(display_name);
-  Retain(std::make_unique<PersonalGraphHost>(backend, &backends_,
+  Retain(std::make_unique<PersonalGraphHost>(backend, &backends_, &governance_,
                                              std::move(receiver)),
          backend->id());
   std::move(callback).Run(BuildInfo(backend));
@@ -101,7 +101,7 @@ void PersonalGraphManager::FromSnapshot(
     std::move(callback).Run(nullptr, error);
     return;
   }
-  Retain(std::make_unique<PersonalGraphHost>(backend, &backends_,
+  Retain(std::make_unique<PersonalGraphHost>(backend, &backends_, &governance_,
                                              std::move(receiver)),
          backend->id());
   std::move(callback).Run(BuildInfo(backend), std::nullopt);

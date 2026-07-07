@@ -19,6 +19,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "content/browser/did/did_key_provider.h"
+#include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph/personal_graph_host.h"
@@ -45,6 +46,11 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // §4.7 local group resolution). The borrower must not outlive this manager.
   GraphBackendManager* backends() { return &backends_; }
 
+  // The realm's Spec 04 governance backend (the plug-in registry + §11 surface).
+  // Shared with the Spec 03 GroupService so group-authored delegations and the
+  // renderer §11 API run against one registry. Must not outlive this manager.
+  GovernanceBackend* governance() { return &governance_; }
+
   // graph::mojom::PersonalGraphManager:
   void Create(const std::optional<std::string>& display_name,
               mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver,
@@ -70,6 +76,7 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   void OnHostDisconnected(PersonalGraphHost* host, const std::string& id);
 
   GraphBackendManager backends_;
+  GovernanceBackend governance_;
   std::vector<std::unique_ptr<PersonalGraphHost>> hosts_;
   mojo::ReceiverSet<graph::mojom::PersonalGraphManager> receivers_;
   base::WeakPtrFactory<PersonalGraphManager> weak_factory_{this};

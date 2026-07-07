@@ -16,6 +16,7 @@
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_enforcement_mode.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_trust_level.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/modules/event_target_modules.h"
@@ -32,7 +33,11 @@
 
 namespace blink {
 
+class CapabilityInfo;
+class CapabilityProofInput;
 class ExecutionContext;
+class GovernanceValidationResult;
+class GraphConstraint;
 class GraphSnapshotOptions;
 class ScriptPromiseResolverBase;
 class ScriptState;
@@ -74,6 +79,25 @@ class Graph final : public EventTarget,
   ScriptPromise<GraphSnapshot> getAsSnapshot(ScriptState*,
                                              const GraphSnapshotOptions* options);
   ScriptPromise<IDLUndefined> dissolve(ScriptState*);
+
+  // §11 governance API — added by the Graph Capability Framework (Spec 04).
+  // Advisory helpers; the mandatory enforcement point is the data-layer check in
+  // addTriple()/addTriples(). Each round-trips to the per-realm GovernanceBackend
+  // over the graph's own host.
+  ScriptPromise<GovernanceValidationResult> canAddTriple(ScriptState*,
+                                                         Triple* triple);
+  ScriptPromise<GovernanceValidationResult> canPerformAction(
+      ScriptState*,
+      const String& action,
+      const String& author_did,
+      const CapabilityProofInput* proof);
+  ScriptPromise<IDLSequence<GraphConstraint>> constraintsFor(
+      ScriptState*,
+      const String& context_did);
+  ScriptPromise<IDLSequence<CapabilityInfo>> myCapabilities(ScriptState*);
+  ScriptPromise<V8EnforcementMode> enforcementMode(ScriptState*);
+  ScriptPromise<IDLUndefined> setEnforcementMode(ScriptState*,
+                                                 const V8EnforcementMode& mode);
 
   // EventTarget overrides.
   const AtomicString& InterfaceName() const override;

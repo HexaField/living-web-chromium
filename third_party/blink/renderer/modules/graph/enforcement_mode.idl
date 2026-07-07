@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// EnforcementMode — the governance enforcement level of a graph. Graph
+// Capability Framework spec §5.1 / §11. "open" skips capability checks,
+// "announced" makes them advisory, "enforced" makes them a mandatory
+// data-layer gate.
+
+enum EnforcementMode {
+  "open",
+  "announced",
+  "enforced"
+};

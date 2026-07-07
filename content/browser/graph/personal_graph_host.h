@@ -22,6 +22,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -34,12 +35,14 @@ namespace content {
 
 class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
  public:
-  // |backend| is owned by |manager|; both outlive this host. The host binds
-  // itself to |receiver| and pushes tripleadded/tripleremoved events to the
-  // client supplied via Subscribe.
+  // |backend| is owned by |manager|; both outlive this host, as does the
+  // per-realm |governance| (owned by PersonalGraphManager and shared with the
+  // Spec 03 GroupService). The host binds itself to |receiver| and pushes
+  // tripleadded/tripleremoved events to the client supplied via Subscribe.
   PersonalGraphHost(
       GraphBackend* backend,
       GraphBackendManager* manager,
+      GovernanceBackend* governance,
       mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver);
 
   PersonalGraphHost(const PersonalGraphHost&) = delete;
@@ -83,6 +86,20 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   void Subscribe(mojo::PendingRemote<graph::mojom::PersonalGraphClient> client)
       override;
 
+  // ---- Spec 04 §11 governance API (folded into this host) ----
+  void CanAddTriple(graph::mojom::TriplePtr triple,
+                    CanAddTripleCallback callback) override;
+  void CanPerformAction(const std::string& action,
+                        const std::string& author_did,
+                        graph::mojom::CapabilityProofInputPtr proof,
+                        CanPerformActionCallback callback) override;
+  void ConstraintsFor(const std::string& context_did,
+                      ConstraintsForCallback callback) override;
+  void MyCapabilities(MyCapabilitiesCallback callback) override;
+  void GetEnforcementMode(GetEnforcementModeCallback callback) override;
+  void SetEnforcementMode(graph::mojom::EnforcementMode mode,
+                          SetEnforcementModeCallback callback) override;
+
  private:
   // Converters between the union/enum shapes.
   static graph::mojom::LiteralValuePtr ToMojo(const living_web::LiteralValue& v);
@@ -96,13 +113,22 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   static SnapshotFormat FormatFromMojo(graph::mojom::SnapshotFormat f);
   static GraphSignBy SignByFromMojo(graph::mojom::GraphSignBy s);
 
+  // ---- Spec 04 §11 result converters ----
+  static graph::mojom::EnforcementMode ModeToMojo(EnforcementMode m);
+  static EnforcementMode ModeFromMojo(graph::mojom::EnforcementMode m);
+  static graph::mojom::GovernanceValidationResultPtr ToMojo(
+      const GovernanceValidationResult& r);
+  static graph::mojom::GraphConstraintPtr ToMojo(const GraphConstraint& c);
+  static graph::mojom::CapabilityInfoPtr ToMojo(const CapabilityInfo& c);
+
   // Forwards backend commit events to the subscribed client. Bound weakly so a
   // backend that outlives this host never touches freed client state.
   void OnTripleAdded(const living_web::Triple& triple);
   void OnTripleRemoved(const living_web::Triple& triple);
 
-  raw_ptr<GraphBackend> backend_;         // Owned by |manager_|.
-  raw_ptr<GraphBackendManager> manager_;  // Not owned.
+  raw_ptr<GraphBackend> backend_;          // Owned by |manager_|.
+  raw_ptr<GraphBackendManager> manager_;   // Not owned.
+  raw_ptr<GovernanceBackend> governance_;  // Per-realm; owned by the manager.
   mojo::Receiver<graph::mojom::PersonalGraphHost> receiver_;
   mojo::Remote<graph::mojom::PersonalGraphClient> client_;
   base::WeakPtrFactory<PersonalGraphHost> weak_factory_{this};

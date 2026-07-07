@@ -49,13 +49,16 @@ add_custom_target(oxigraph_ffi_build DEPENDS ${OXIGRAPH_FFI_LIB})
 set(OXIGRAPH_FFI_SYSTEM_LIBS stdc++ gcc_s util rt pthread m dl c)
 
 # Spec 01 — Decentralised Identity + Spec 02 — Personal Linked Data Graphs +
-# Spec 03 — Decentralised Group Identity.
+# Spec 03 — Decentralised Group Identity + Spec 04 — Graph Capability Framework.
 #
 # The Chromium-independent cores shared by the browser-process services and the
 # standalone harness: the did:key codec + JCS (Spec 01); the RDF 1.2 term
 # serialisation, Oxigraph RAII wrapper, and SPARQL Results decoder (Spec 02);
-# and the did:graph codec + DID-document model (Spec 03), which reuses the
-# did:key codec for the byte-level Ed25519 multibase work.
+# the did:graph codec + DID-document model (Spec 03), which reuses the did:key
+# codec for the byte-level Ed25519 multibase work; and the ZCAP-LD
+# canonicalisation core (Spec 04) — the delegation-proof pre-image, the
+# actions-subset / immutable-caveats attenuation tests, and the caveat-JSON
+# scanner — so the bytes a proof signs never diverge between the two build worlds.
 add_library(living_web STATIC
     content/browser/did/did_key_codec.cc
     content/browser/did/did_graph.cc
@@ -63,6 +66,7 @@ add_library(living_web STATIC
     content/browser/graph/rdf_serialization.cc
     content/browser/graph/oxigraph_store.cc
     content/browser/graph/sparql_results.cc
+    content/browser/governance/zcap.cc
 )
 add_dependencies(living_web oxigraph_ffi_build)
 target_include_directories(living_web PUBLIC

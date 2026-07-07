@@ -42,7 +42,8 @@ GroupBackend::GroupBackend(DIDKeyProvider* identity,
       manager_(manager),
       graph_(graph),
       did_(std::move(did)),
-      acting_credential_id_(std::move(group_credential_id)) {}
+      acting_credential_id_(group_credential_id),
+      group_credential_id_(std::move(group_credential_id)) {}
 
 GroupBackend::~GroupBackend() = default;
 

@@ -38,3 +38,27 @@ interface Graph : EventTarget {
 };
 
 enum GraphTrustLevel { "local", "external" };
+
+// §11 Governance API — added by the Graph Capability Framework
+// ([[CAPABILITY-FRAMEWORK]], Spec 04). canAddTriple() and myCapabilities() are
+// advisory (UI gating only); the mandatory enforcement point is the data-layer
+// check inside addTriple()/addTriples() (§2, §11). Folded onto Graph because the
+// browser constitutes a graph's capabilities on that graph's own host.
+[Exposed=(Window,Worker), SecureContext]
+partial interface Graph {
+  // §11.1 — would the current identity be permitted to add |triple|?
+  [CallWith=ScriptState, NewObject] Promise<GovernanceValidationResult> canAddTriple(Triple triple);
+  // §7.1 — authorise a non-triple operation (e.g. mountContext) for |authorDid|,
+  // optionally with an explicitly supplied leaf->root delegation chain.
+  [CallWith=ScriptState, NewObject] Promise<GovernanceValidationResult> canPerformAction(USVString action, USVString authorDid, optional CapabilityProofInput proof);
+  // §11.2 — the constraints bound to this graph (per-graph; |contextDid| is
+  // accepted for API parity but ignored).
+  [CallWith=ScriptState, NewObject] Promise<sequence<GraphConstraint>> constraintsFor(USVString contextDid);
+  // §11.3 — valid, non-revoked, non-expired capabilities the current identity
+  // holds for this graph.
+  [CallWith=ScriptState, NewObject] Promise<sequence<CapabilityInfo>> myCapabilities();
+  // §11.4 — read/set the enforcement mode; the setter requires an
+  // updateGovernance capability (§5.2).
+  [CallWith=ScriptState, NewObject] Promise<EnforcementMode> enforcementMode();
+  [CallWith=ScriptState, NewObject] Promise<undefined> setEnforcementMode(EnforcementMode mode);
+};

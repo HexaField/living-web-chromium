@@ -8,7 +8,7 @@ Native Chromium implementation of the [Living Web specs](https://github.com/Hexa
 An **overlay**, not a full Chromium checkout. It contains:
 
 - Curated files that drop into a real `chromium/src/` tree:
-  `content/browser/{did,graph,graph_sync,graph_governance}/`,
+  `content/browser/{did,graph,governance,graph_sync}/`,
   `third_party/blink/renderer/modules/graph/`, `mojo/public/mojom/graph/`.
 - A **standalone CMake harness** (`standalone/`, `tests/`, `CMakeLists.txt`) that mirrors
   the browser-process backends and is the **only locally buildable/testable** part.
@@ -171,11 +171,11 @@ Spec numbering (current, 10 specs):
 | 01 | Decentralised Identity | `content/browser/did/`, `.../graph/did_credential.*`, `signed_content.*`, `content_proof.*` |
 | 02 | Personal Linked Data Graphs | `.../graph/{graph,graph_manager,triple,literal_value,reifier,graph_snapshot,graph_triple_event}.*`, `content/browser/graph/` |
 | 03 | Decentralised Group Identity | `content/browser/did/{did_graph,group_backend,group_backend_manager,group_host,group_service}.*`, `.../graph/group.*` |
-| 04 | Graph Capability Framework | `content/browser/graph_governance/` (ZCAP) |
+| 04 | Graph Capability Framework | `content/browser/governance/{governance_backend,zcap}.*` (ZCAP-LD + enforcement), `standalone/capability_provider.h`, `.../graph/graph.*` (§11 surface) + `group.*` (`delegateCapability`) |
 | 05 | Context Sync Protocol | `.../graph/shared_graph*`, `content/browser/graph_sync/` |
 | 06 | Sync Module Architecture | — (planned) |
 | 07 | Dynamic Graph Shape Validation | `.../graph/personal_graph*` (shape methods) |
-| 08 | Governance Constraint Vocabulary | `content/browser/graph_governance/` |
+| 08 | Governance Constraint Vocabulary | `content/browser/governance/` (constraint-kind handlers) |
 | 09 | Default Sync Module | — (planned, CRDT + MLS) |
 | 10 | Graph Flows | — (planned) |
 

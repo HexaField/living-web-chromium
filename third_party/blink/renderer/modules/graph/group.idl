@@ -20,7 +20,7 @@
 //
 // delegateCapability() (§8.1.5) issues a ZCAP and is defined by the Capability
 // Framework ([[CAPABILITY-FRAMEWORK]], Spec 04); it is added by that
-// specification and is intentionally absent from this slice.
+// specification (see below).
 
 [Exposed=(Window,Worker), SecureContext]
 interface Group {
@@ -54,6 +54,12 @@ interface Group {
   [CallWith=ScriptState, NewObject] Promise<SignedContent> signGraph(USVString target);
   [CallWith=ScriptState, NewObject] Promise<undefined> setActingCredential(USVString credentialId);
   [CallWith=ScriptState, NewObject] Promise<undefined> deactivate();
+
+  // Capability delegation — §8.1.5. Issues a ZCAP whose resource is a did:graph
+  // this group has authority over, signed by a current capabilityDelegation
+  // delegate. Added by the Graph Capability Framework ([[CAPABILITY-FRAMEWORK]],
+  // Spec 04); see SPEC_COMPLIANCE.md.
+  [CallWith=ScriptState, NewObject] Promise<SignedContent> delegateCapability(DelegateOptions options);
 
   // Identity resolution — §4.7. Resolves with the [[DID-CORE]] JSON-LD DID
   // document (same `any` shape DIDCredential.resolve() returns).

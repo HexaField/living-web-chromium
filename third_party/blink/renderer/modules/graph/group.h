@@ -31,6 +31,7 @@
 
 namespace blink {
 
+class DelegateOptions;
 class DIDDocumentMethod;
 class ExecutionContext;
 class Graph;
@@ -97,6 +98,10 @@ class Group final : public ScriptWrappable {
   ScriptPromise<IDLUndefined> setActingCredential(ScriptState*,
                                                   const String& credential_id);
   ScriptPromise<IDLUndefined> deactivate(ScriptState*);
+
+  // Capability delegation — §8.1.5 (Graph Capability Framework, Spec 04).
+  ScriptPromise<SignedContent> delegateCapability(ScriptState*,
+                                                  const DelegateOptions* options);
 
   // Identity resolution — §4.7.
   ScriptPromise<IDLAny> resolve(ScriptState*);
