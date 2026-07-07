@@ -19,7 +19,7 @@ to this file** and flips its row to ✅.
 | # | Specification | Primary surface | Branch | Status |
 |---|--------------|-----------------|--------|--------|
 | 01 | [Decentralised Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_decentralised-identity-web-platform.md) | `navigator.credentials` + `DIDCredential` | `spec-01-identity` | ✅ |
-| 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `navigator.graph`, `PersonalGraph` | `spec-02-graphs` | 🔲 |
+| 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `navigator.graph`, `Graph` | `spec-02-graphs` | ✅ |
 | 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | Group DIDs | `spec-03-group-identity` | 🔲 |
 | 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | ZCAP-LD capabilities | `spec-04-capabilities` | 🔲 |
 | 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `SharedGraph`, `graph.join()` | `spec-05-sync` | 🔲 |
@@ -106,6 +106,133 @@ implementation contains no dead code.
   canonicalisation, hashing, timestamp, or framing.
 - **Resolution** (§7): local did:key resolution only, `trustLevel: "local"`; there is no
   global resolver (§7.3).
+
+---
+
+## Spec 02 — Personal Linked Data Graphs ✅
+
+Fully implemented and tested. The `Graph` / `GraphManager` runtime (§4 API, §5
+snapshots, §7 holonic SPARQL) is built on the RDF 1.2 quad store, RDF Dataset
+Canonicalization (`rdfc-1.0`), and SPARQL 1.2 provided by **Oxigraph** — nothing
+here is hand-rolled. Oxigraph is compiled to a static archive through a thin Rust
+FFI (`third_party/oxigraph_ffi`, crate `oxigraph 0.5`, `features = ["rdf-12"]`)
+and shared verbatim by the browser-process service and the standalone harness, so
+the two never diverge on the bytes hashed, signed, or queried. The normative
+behaviour is exercised by the `Graph_*` blocks of the C++ harness
+(`living_web_tests`, 22 `Graph_*` tests, all green); the renderer exposes the
+complete `Graph` method surface.
+
+### Attributes (§3.3)
+
+| Attribute | Spec | IDL | C++ | WPT | Status |
+|-----------|------|-----|-----|-----|--------|
+| `Graph.id` (stable `urn:graph:` URN) | §3.3 | ✅ | ✅ | ✅ | ✅ |
+| `Graph.iri` (`graph://<content-hash>`) | §3.3, §5.2 | ✅ | ✅ | ✅ | ✅ |
+| `Graph.did` (null until attached) | §3.3, §5.6 | ✅ | ✅ | ✅ | ✅ |
+| `Graph.displayName` | §3.3 | ✅ | ✅ | ✅ | ✅ |
+| `Graph.trustLevel` (`"local"` / `"external"`) | §3.3, §7.4 | ✅ | ✅ | ✅ | ✅ |
+
+### Data model (§3.1, §3.2, §3.7)
+
+| Interface | Spec | IDL | C++ | WPT | Status | Shape |
+|-----------|------|-----|-----|-----|--------|-------|
+| `Triple` (constructable) | §3.1 | ✅ | ✅ | ✅ | ✅ | `{ subject, predicate, object }` |
+| `LiteralValue` (constructable) | §3.1 | ✅ | ✅ | ✅ | ✅ | `{ lexicalValue, datatype, language }` — defaults `xsd:string` |
+| `Reifier` | §3.7 | ✅ | ✅ | ✅ | ✅ | `{ id, triple, author, timestamp, method, signature }` |
+| RDF 1.2 reifier model | §3.2 | — | ✅ | ✅ | ✅ | 6 triples/assertion: 1 data + `rdf:reifies` triple-term + 4 `prov://*` |
+
+### Creation & materialisation (§4.1, §5.5)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `navigator.graph.create(options?)` | §4.1 | ✅ | ✅ | ✅ | ✅ | Fresh `urn:graph:<UUIDv4>` id; empty-graph IRI; `did` null; `trustLevel "local"`. |
+| `navigator.graph.fromSnapshot(snapshot, options?)` | §5.5 | ✅ | ✅ | ✅ | ✅ | Verifies proofs + hash invariant before persisting; defaults `trustLevel "external"`. |
+| empty-graph IRI invariant | §3.3, §4.1 | — | ✅ | ✅ | ✅ | `graph://e3b0c442…7852b855` = graph:// + SHA-256(""); shared by every empty graph. |
+
+### Triple operations (§4.2)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `addTriple(triple)` → `Triple` | §4.2 | ✅ | ✅ | ✅ | ✅ | Sign → reify → atomic commit → advance IRI → fire `tripleadded`. No active credential → `InvalidStateError`. |
+| `addTriples(triples)` → `sequence<Triple>` | §4.2 | ✅ | ✅ | ✅ | ✅ | One atomic batch; IRI advances once; one `tripleadded` per triple, in input order. |
+| `removeTriple(triple)` → `boolean` | §4.2 | ✅ | ✅ | ✅ | ✅ | Drops the data triple + all 4 reifier triples atomically (SPARQL 1.2 `DELETE`). See Amendment (i). |
+| `queryTriples(query)` → `sequence<Triple>` | §4.2, §3.5 | ✅ | ✅ | ✅ | ✅ | Data triples only (never reifiers); ordered by reifier `timestamp` desc, subject asc; `subject`/`predicate`/`object`/`author`/`fromDate`/`untilDate`/`offset`/`limit` all AND-combine. |
+| `snapshot()` → `sequence<Triple>` | §4.2 | ✅ | ✅ | ✅ | ✅ | Data triples ordered by reifier `timestamp` ascending. |
+| `provenance(triple)` → `sequence<Reifier>` | §4.2, §3.2 | ✅ | ✅ | ✅ | ✅ | Reifiers whose `rdf:reifies` target matches the triple; signature verifies end-to-end against the §3.2.1 payload. |
+| `dissolve()` → `undefined` | §4.3 | ✅ | ✅ | ✅ | ✅ | Terminal + idempotent; every other op then rejects `InvalidStateError`. |
+| `ontripleadded` / `ontripleremoved` | §4.2 | ✅ | ✅ | ✅ | ✅ | `GraphTripleEvent` with a `Triple` payload; fired via `event_type_names::kTripleadded` / `kTripleremoved`. |
+
+### Snapshots (§5)
+
+| Capability | Spec | IDL | C++ | WPT | Status | Notes |
+|------------|------|-----|-----|-----|--------|-------|
+| Content-hash (`rdfc-1.0` ‖ SHA-256 ‖ lowercase hex) | §5.2 | — | ✅ | ✅ | ✅ | Deterministic; delegated to Oxigraph. |
+| `getAsSnapshot(options?)` → `GraphSnapshot` | §5.4 | ✅ | ✅ | ✅ | ✅ | `proofPayload = SHA-256(graphIri ‖ "\|" ‖ timestamp)`; `signBy` `"agent"`/`"graph"`/`"both"`. |
+| `"nquads-canonical"` (default) | §5.3.1 | ✅ | ✅ | ✅ | ✅ | Invariant `graphIri == "graph://" + hex(SHA-256(data))` — verifiable with no re-parse. |
+| `"nquads"`, `"turtle"` | §5.3.2 | ✅ | ✅ | — | ✅ | Round-trip through `fromSnapshot()`; re-canonicalised on verify. |
+| `"jsonld"` | §5.3.2 | ✅ | ✅ | — | ✅ | OPTIONAL producer-side; not advertised — `getAsSnapshot`/`fromSnapshot` reject with `NotSupportedError`. See Amendment (ii). |
+| `signBy: "graph"` requires `graph.did == active.did` | §5.4 | — | ✅ | — | ✅ | Otherwise `NotAllowedError`. |
+| `fromSnapshot` proof + hash checks | §5.5, §9.2 | — | ✅ | ✅ | ✅ | Empty `proofs` or tampered data → `DataError`; §9.7 size bound (100 MB) → `QuotaExceededError`. |
+| `GraphSnapshot` / `SnapshotProof` | §5.3 | ✅ | ✅ | ✅ | ✅ | `{ graphIri, graphDid, format, timestamp, data, proofs }` · `{ role, author, method, signature }` |
+
+### Holonic composition & SPARQL (§7)
+
+| Capability | Spec | IDL | C++ | WPT | Status | Notes |
+|------------|------|-----|-----|-----|--------|-------|
+| `querySparql(sparql, options?)` → `SparqlResult` | §4.2, §7.2 | ✅ | ✅ | — | ✅ | SPARQL 1.2 (Oxigraph); result surfaced as `any` (SPARQL 1.1 Results JSON / N-Triples). |
+| Dataset construction | §7.2 | — | ✅ | — | ✅ | Default graph = the callee; `options.namedGraphs` keyed by each graph's current IRI; `GRAPH <iri> { … }` bridges them. |
+| Holonic query across graphs | §7.3 | — | ✅ | — | ✅ | Verified: community graph + channel named-graph resolved in one request. |
+| Trust levels | §7.4 | ✅ | ✅ | ✅ | ✅ | `"local"` (create) / `"external"` (fromSnapshot); enum extensible by other specs. |
+
+### Substrate (normative)
+
+- **RDF 1.2 + rdfc-1.0 + SPARQL 1.2** (§5.2, §7): provided by **Oxigraph** (`oxigraph 0.5`,
+  `features = ["rdf-12"]`) through the `oxigraph_ffi` static archive. RDF 1.2 triple terms
+  (`<<( s p o )>>`), `rdfc-1.0` canonicalisation, and SPARQL 1.2 query/update are all
+  Oxigraph functionality, wrapped by `content/browser/graph/oxigraph_store.*`. SHA-256 is
+  the Spec 01 crypto core.
+- **Reifier model** (§3.2): every `addTriple` writes **6 triples** — the data triple, an
+  `rdf:reifies` triple whose object is the RDF 1.2 triple term of the data triple, and the
+  four `prov://{author,timestamp,method,signature}` triples on the reifier blank node.
+- **Signature payload** (§3.2.1): `SHA-256( canonical(triple) ‖ "|" ‖ timestamp ‖ "|" ‖
+  graphIdentifier )`, signed with the active credential's `signRaw()`; `graphIdentifier` is
+  `Graph.did` if set, else `Graph.id` (never the volatile `iri`).
+- Authoritative reference impl: `standalone/graph_provider.h` over
+  `content/browser/graph/{oxigraph_store,rdf_serialization,sparql_results}.*`, verified by
+  the 22 `Graph_*` tests in `standalone/living_web_tests.cc`.
+
+### Amendments
+
+Four under-specified areas surfaced while implementing Spec 02 have been **folded
+into draft 02 as normative detail** on `w3c-living-web-proposals` `main` (the same
+practice used for Spec 01's `signRaw` §6.5), so the spec mandates exactly one
+interoperable behaviour rather than leaving it to the implementer. None weakens the
+implementation; two pin determinism, two reflect genuine limits of current stable
+RDF 1.2 tooling:
+
+- **(i) `removeTriple` on a blank-node data-triple subject is a no-op** — draft §4.2
+  ("Blank-node subjects"). RDF Dataset Canonicalization relabels blank nodes, so a
+  `_:label` a caller holds is not a durable name for a stored triple; such a triple cannot
+  be uniquely targeted by subject/predicate/object match, and `removeTriple()` MUST resolve
+  `false`. Removable blank-node-subject triples are deferred to removal by durable reifier
+  identity (a §8.2 amendment point).
+- **(ii) JSON-LD is OPTIONAL and the advertised-format set is discoverable** — draft §5.3.4
+  ("Advertised Formats") + the new `static readonly attribute
+  GraphManager.supportedSnapshotFormats` (§3.4). `nquads-canonical`, `nquads`, and `turtle`
+  are REQUIRED; `"jsonld"` is OPTIONAL because RDF 1.2 triple terms (carried by every
+  reifier) have no stable JSON-LD 1.2 `@triple` form in current tooling (verified against
+  `oxjsonld 0.2.5`, which recognises no `@triple` keyword and cannot construct a triple-term
+  object). This user agent advertises the three REQUIRED formats; `getAsSnapshot` /
+  `fromSnapshot` of any unadvertised format reject with `NotSupportedError`.
+- **(iii) `canonical(triple)` byte form is pinned** — draft §3.2.1.1 ("Canonical Triple
+  Serialisation"). The exact one-line N-Triples 1.2 pre-image is fixed (term spacing, IRI
+  `UCHAR`/literal `ECHAR` escaping, `^^`/`@lang` suffix rules, triple-term `<<( s p o )>>`
+  spacing, blank-node handling) so independent implementations produce identical signatures.
+- **(iv) `rdfc-1.0` + RDF 1.2 triple-term canonicalization profile is pinned** — draft §5.2
+  ("Canonicalisation profile"). The March 2025 [[RDF-CANON]] Recommendation with SHA-256 is
+  mandated, and triple-term canonicalisation is pinned to RDF-1.2 N-Quads term equality so
+  the content hash is a pure function of the abstract dataset. This impl delegates both to a
+  single pinned canonicaliser (Oxigraph 0.5, `rdf-12`).
 
 ---
 

@@ -1,0 +1,51 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Spec 02 — Personal Linked Data Graphs: the browser-process graph service.
+#
+# navigator.graph in the renderer is backed by these interfaces. The source_set
+# holds the Chromium-independent cores (the Oxigraph FFI wrapper, RDF 1.2 term
+# serialisation, SPARQL 1.1 Results decode) — shared verbatim with the standalone
+# conformance harness so the signed/hashed/queried bytes never diverge — plus the
+# GraphBackend/GraphBackendManager port of the §4/§5/§7 algorithms and the Mojo
+# hosts (PersonalGraphManager/PersonalGraphHost) that adapt graph.mojom to them.
+#
+# Two third_party components are linked in and are NOT listed in deps here: the
+# Oxigraph static library (third_party/oxigraph_ffi, whose C ABI oxigraph_store.*
+# wraps) and the Ed25519 verify primitive (third_party/ed25519, used by
+# fromSnapshot proof checking). Both are pulled in through their own third_party
+# targets by the //content build; //third_party/boringssl supplies the SHA-256
+# backing crypto::SHA256HashString and the Ed25519 implementation.
+
+source_set("graph") {
+  sources = [
+    # Chromium-independent cores (namespace living_web), shared with the
+    # standalone harness.
+    "oxigraph_store.cc",
+    "oxigraph_store.h",
+    "rdf_serialization.cc",
+    "rdf_serialization.h",
+    "sparql_results.cc",
+    "sparql_results.h",
+
+    # Spec 02 §4/§5/§7 port + Mojo hosts (namespace content).
+    "graph_backend.cc",
+    "graph_backend.h",
+    "graph_backend_manager.cc",
+    "graph_backend_manager.h",
+    "personal_graph_host.cc",
+    "personal_graph_host.h",
+    "personal_graph_manager.cc",
+    "personal_graph_manager.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/browser/did",
+    "//crypto",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+    "//third_party/boringssl",
+  ]
+}

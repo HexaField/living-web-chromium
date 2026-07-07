@@ -1,0 +1,19 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// LiteralValue — an RDF 1.2 literal term. Personal Linked Data Graphs spec
+// §3.1.
+
+[Exposed=(Window,Worker)]
+interface LiteralValue {
+  constructor(DOMString lexicalValue, optional LiteralValueInit init = {});
+  readonly attribute DOMString lexicalValue;
+  readonly attribute USVString datatype;     // XSD URI; defaults to xsd:string
+  readonly attribute USVString? language;    // BCP 47; only for rdf:langString
+};
+
+dictionary LiteralValueInit {
+  USVString datatype = "http://www.w3.org/2001/XMLSchema#string";
+  USVString? language;
+};

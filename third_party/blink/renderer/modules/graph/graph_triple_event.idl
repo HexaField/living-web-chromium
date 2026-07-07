@@ -1,0 +1,16 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GraphTripleEvent — dispatched for Graph.ontripleadded / Graph.ontripleremoved.
+// Personal Linked Data Graphs spec §4.2.
+
+[Exposed=(Window,Worker)]
+interface GraphTripleEvent : Event {
+  constructor(DOMString type, optional GraphTripleEventInit eventInitDict = {});
+  readonly attribute Triple triple;
+};
+
+dictionary GraphTripleEventInit : EventInit {
+  Triple triple;
+};

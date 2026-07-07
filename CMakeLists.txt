@@ -17,23 +17,62 @@ target_include_directories(ed25519 PUBLIC third_party/ed25519)
 target_compile_definitions(ed25519 PRIVATE USE_OPENSSL)
 target_link_libraries(ed25519 PRIVATE OpenSSL::Crypto)
 
-# Spec 01 — Decentralised Identity.
+# Spec 02 — the Oxigraph FFI static library.
 #
-# The Chromium-independent core of the did:key implementation: the multibase /
-# multicodec did:key codec (§3, §4.1) and the JSON Canonicalisation Scheme
-# (RFC 8785) used to produce a stable signing payload (§6.4). These compile
-# outside a Chromium tree and back the DIDKeyProvider header consumed by the
-# tests.
+# Spec 02 mandates an RDF 1.2 quad store, RDF Dataset Canonicalization (rdfc-1.0)
+# and SPARQL 1.2; none of these is hand-rolled. They are provided by Oxigraph
+# through a thin Rust cdylib/staticlib in third_party/oxigraph_ffi, built with
+# cargo. The archive is produced by a custom command that reruns cargo whenever
+# the crate sources change, and linked into the final binary together with the
+# system libraries the Rust std + RocksDB C++ backend require.
+find_program(CARGO cargo HINTS "$ENV{HOME}/.cargo/bin" REQUIRED)
+
+set(OXIGRAPH_FFI_DIR ${CMAKE_SOURCE_DIR}/third_party/oxigraph_ffi)
+set(OXIGRAPH_FFI_LIB ${OXIGRAPH_FFI_DIR}/target/release/liboxigraph_ffi.a)
+
+file(GLOB OXIGRAPH_FFI_SRC ${OXIGRAPH_FFI_DIR}/src/*.rs)
+list(APPEND OXIGRAPH_FFI_SRC ${OXIGRAPH_FFI_DIR}/Cargo.toml)
+
+add_custom_command(
+    OUTPUT ${OXIGRAPH_FFI_LIB}
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=$ENV{HOME}/.cargo/bin:$ENV{PATH}"
+            ${CARGO} build --release --manifest-path ${OXIGRAPH_FFI_DIR}/Cargo.toml
+    DEPENDS ${OXIGRAPH_FFI_SRC}
+    WORKING_DIRECTORY ${OXIGRAPH_FFI_DIR}
+    COMMENT "Building Oxigraph FFI static library (cargo build --release)"
+    VERBATIM
+)
+add_custom_target(oxigraph_ffi_build DEPENDS ${OXIGRAPH_FFI_LIB})
+
+# The Rust staticlib pulls in the Rust standard library and the RocksDB C++
+# backend, so the final link needs libstdc++ and these system libraries.
+set(OXIGRAPH_FFI_SYSTEM_LIBS stdc++ gcc_s util rt pthread m dl c)
+
+# Spec 01 — Decentralised Identity + Spec 02 — Personal Linked Data Graphs.
+#
+# The Chromium-independent cores shared by the browser-process services and the
+# standalone harness: the did:key codec + JCS (Spec 01), and the RDF 1.2 term
+# serialisation, Oxigraph RAII wrapper, and SPARQL Results decoder (Spec 02).
 add_library(living_web STATIC
     content/browser/did/did_key_codec.cc
     content/browser/did/jcs.cc
+    content/browser/graph/rdf_serialization.cc
+    content/browser/graph/oxigraph_store.cc
+    content/browser/graph/sparql_results.cc
 )
+add_dependencies(living_web oxigraph_ffi_build)
 target_include_directories(living_web PUBLIC
     standalone
     ${CMAKE_SOURCE_DIR}
+    ${OXIGRAPH_FFI_DIR}/include
 )
 target_compile_definitions(living_web PRIVATE USE_OPENSSL)
-target_link_libraries(living_web PUBLIC ed25519 OpenSSL::Crypto)
+target_link_libraries(living_web PUBLIC
+    ed25519
+    OpenSSL::Crypto
+    ${OXIGRAPH_FFI_LIB}
+    ${OXIGRAPH_FFI_SYSTEM_LIBS}
+)
 
 # Standalone test harness.
 #

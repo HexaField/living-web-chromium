@@ -1,0 +1,19 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GraphManager — the navigator.graph entry point for creating and materialising
+// graphs. Personal Linked Data Graphs spec §3.4.
+
+[Exposed=(Window,Worker), SecureContext]
+interface GraphManager {
+  // Create a fresh, empty graph owned by the calling agent.
+  [CallWith=ScriptState, NewObject] Promise<Graph> create(optional GraphCreationOptions options = {});
+  // Materialise a graph from a previously-serialised snapshot.
+  [CallWith=ScriptState, NewObject] Promise<Graph> fromSnapshot(GraphSnapshot snapshot, optional GraphFromSnapshotOptions options = {});
+  // The snapshot formats this user agent can both produce and consume (spec
+  // §5.3.4). Always contains "nquads-canonical", "nquads", "turtle"; "jsonld" is
+  // OPTIONAL and omitted here. getAsSnapshot()/fromSnapshot() of a format absent
+  // from this list reject with "NotSupportedError".
+  static readonly attribute FrozenArray<SnapshotFormat> supportedSnapshotFormats;
+};

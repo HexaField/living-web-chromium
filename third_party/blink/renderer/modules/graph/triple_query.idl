@@ -1,0 +1,17 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// TripleQuery — the filter accepted by Graph.queryTriples(). Personal Linked
+// Data Graphs spec §3.5. All supplied fields combine with logical AND.
+
+dictionary TripleQuery {
+  USVString? subject;
+  USVString? predicate;
+  USVString? object;
+  USVString? author;        // matches reifier prov://author
+  DOMString? fromDate;      // RFC 3339; matches prov://timestamp >= fromDate
+  DOMString? untilDate;     // RFC 3339; matches prov://timestamp <  untilDate
+  unsigned long? offset;
+  unsigned long? limit;
+};
