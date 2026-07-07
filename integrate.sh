@@ -1,0 +1,473 @@
+#!/bin/bash
+# ==========================================================================
+# Living Web Chromium Integration Script
+# ==========================================================================
+# This script integrates the Living Web APIs into a Chromium source checkout.
+# Run from the Chromium src/ directory after `fetch chromium` and `gclient sync`.
+#
+# Usage:
+#   cd ~/workspaces/chromium/src
+#   bash ~/workspaces/hexafield/living-web-chromium/integrate.sh
+#
+# What it does:
+#   1. Copies Living Web source files into the Chromium tree
+#   2. Patches existing BUILD.gn files to include Living Web modules
+#   3. Registers Mojo interfaces
+#   4. Registers Blink IDL files
+#   5. Registers the browser-side service factory
+# ==========================================================================
+
+set -euo pipefail
+
+CHROMIUM_SRC="${1:-$(pwd)}"
+LIVING_WEB="${2:-$HOME/workspaces/hexafield/living-web-chromium}"
+
+if [ ! -f "$CHROMIUM_SRC/BUILD.gn" ]; then
+  echo "ERROR: Run from Chromium src/ directory, or pass it as first arg"
+  echo "Usage: $0 [chromium_src_dir] [living_web_dir]"
+  exit 1
+fi
+
+echo "=== Living Web Chromium Integration ==="
+echo "Chromium: $CHROMIUM_SRC"
+echo "Living Web: $LIVING_WEB"
+echo ""
+
+# ------------------------------------------------------------------
+# Step 1: Copy source files
+# ------------------------------------------------------------------
+echo "[1/6] Copying source files..."
+
+# Mojo interfaces
+mkdir -p "$CHROMIUM_SRC/mojo/public/mojom/graph"
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph.mojom" \
+      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph_sync.mojom" \
+      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph_governance.mojom" \
+      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
+cp -fv "$LIVING_WEB/mojo/public/mojom/graph/BUILD.gn" \
+      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
+
+# Browser-process graph store
+mkdir -p "$CHROMIUM_SRC/content/browser/graph"
+cp -fv "$LIVING_WEB/content/browser/graph/"*.{cc,h} \
+      "$CHROMIUM_SRC/content/browser/graph/"
+cp -fv "$LIVING_WEB/content/browser/graph/BUILD.gn" \
+      "$CHROMIUM_SRC/content/browser/graph/"
+
+# Browser-process DID provider
+mkdir -p "$CHROMIUM_SRC/content/browser/did"
+cp -fv "$LIVING_WEB/content/browser/did/"*.{cc,h} \
+      "$CHROMIUM_SRC/content/browser/did/"
+cp -fv "$LIVING_WEB/content/browser/did/BUILD.gn" \
+      "$CHROMIUM_SRC/content/browser/did/"
+
+# Browser-process graph sync
+mkdir -p "$CHROMIUM_SRC/content/browser/graph_sync"
+cp -fv "$LIVING_WEB/content/browser/graph_sync/"*.{cc,h} \
+      "$CHROMIUM_SRC/content/browser/graph_sync/"
+cp -fv "$LIVING_WEB/content/browser/graph_sync/BUILD.gn" \
+      "$CHROMIUM_SRC/content/browser/graph_sync/"
+
+# Browser-process governance
+mkdir -p "$CHROMIUM_SRC/content/browser/graph_governance"
+cp -fv "$LIVING_WEB/content/browser/graph_governance/"*.{cc,h} \
+      "$CHROMIUM_SRC/content/browser/graph_governance/"
+cp -fv "$LIVING_WEB/content/browser/graph_governance/BUILD.gn" \
+      "$CHROMIUM_SRC/content/browser/graph_governance/"
+
+# Blink renderer modules
+mkdir -p "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph"
+cp -fv "$LIVING_WEB/third_party/blink/renderer/modules/graph/"*.{cc,h,idl} \
+      "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph/"
+cp -fv "$LIVING_WEB/third_party/blink/renderer/modules/graph/BUILD.gn" \
+      "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph/"
+
+echo ""
+
+# ------------------------------------------------------------------
+# Step 1b: Patch event_type_names.json5 with Living Web event types
+# ------------------------------------------------------------------
+echo "[1b/6] Patching event_type_names.json5..."
+
+EVENT_NAMES="$CHROMIUM_SRC/third_party/blink/renderer/core/events/event_type_names.json5"
+if [ -f "$EVENT_NAMES" ] && ! grep -q '"tripleadded"' "$EVENT_NAMES"; then
+  python3 -c "
+import re
+
+with open('$EVENT_NAMES', 'r') as f:
+    content = f.read()
+
+# These need to be inserted alphabetically into the data array
+new_events = ['peerjoined', 'peerleft', 'signal', 'syncstatechange', 'tripleadded', 'tripleremoved']
+
+# Parse out existing entries
+entries = re.findall(r'\"([^\"]+)\"', content.split('data: [')[1].split(']')[0])
+
+# Add new events
+for evt in new_events:
+    if evt not in entries:
+        entries.append(evt)
+
+entries.sort()
+
+# Rebuild the data array
+data_str = ',\n'.join(f'    \"{e}\"' for e in entries)
+content = re.sub(
+    r'(data:\s*\[)\s*\n.*?\n(\s*\])',
+    r'\1\n' + data_str + ',\n  ]',
+    content,
+    flags=re.DOTALL
+)
+
+with open('$EVENT_NAMES', 'w') as f:
+    f.write(content)
+print('  Patched event_type_names.json5 with Living Web events')
+"
+else
+  echo "  Already patched or file not found"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------
+# ------------------------------------------------------------------
+echo "[2/6] Patching content/browser/BUILD.gn..."
+
+CONTENT_BROWSER_GN="$CHROMIUM_SRC/content/browser/BUILD.gn"
+if ! grep -q "content/browser/graph" "$CONTENT_BROWSER_GN"; then
+  # Find the deps = [ section in the main "browser" source_set and add our deps
+  # We add after the last existing dep in the main browser target
+  python3 -c "
+import re
+
+with open('$CONTENT_BROWSER_GN', 'r') as f:
+    content = f.read()
+
+# Add our source_sets as deps in the main browser target
+# Look for the 'deps = [' block and add our entries
+living_web_deps = '''
+    # Living Web APIs
+    \"//content/browser/graph\",
+    \"//content/browser/did\",
+    \"//content/browser/graph_sync\",
+    \"//content/browser/graph_governance\",'''
+
+# Find the first 'deps = [' in a source_set(\"browser\") context
+# We'll add our deps right after 'deps = ['
+if '# Living Web APIs' not in content:
+    # Find the 'browser' source_set's deps
+    # Strategy: find 'source_set(\"browser\")' then its 'deps = [' 
+    pattern = r'(source_set\(\"browser\"\).*?deps\s*=\s*\[)'
+    match = re.search(pattern, content, re.DOTALL)
+    if match:
+        insert_pos = match.end()
+        content = content[:insert_pos] + living_web_deps + content[insert_pos:]
+        with open('$CONTENT_BROWSER_GN', 'w') as f:
+            f.write(content)
+        print('  Patched content/browser/BUILD.gn')
+    else:
+        print('  WARNING: Could not find browser source_set deps. Manual patching needed.')
+else:
+    print('  Already patched')
+"
+else
+  echo "  Already patched"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------
+# Step 3: Register Blink IDL files in modules
+# ------------------------------------------------------------------
+echo "[3/6] Registering Blink modules..."
+
+# Add 'graph' to the list of blink modules
+MODULES_GN="$CHROMIUM_SRC/third_party/blink/renderer/modules/BUILD.gn"
+if ! grep -q '"graph"' "$MODULES_GN" 2>/dev/null; then
+  python3 -c "
+with open('$MODULES_GN', 'r') as f:
+    content = f.read()
+
+# The modules BUILD.gn has a list of module subdirectories as deps
+# Add our 'graph' module
+if '\"//third_party/blink/renderer/modules/graph\"' not in content:
+    # Find the deps section and add our module
+    # Usually looks like: deps = [ ... \"//third_party/blink/renderer/modules/foo\", ... ]
+    import re
+    # Find last module dep and add after it
+    pattern = r'(\"//third_party/blink/renderer/modules/\w+\",)'
+    matches = list(re.finditer(pattern, content))
+    if matches:
+        last = matches[-1]
+        insert = last.end()
+        content = content[:insert] + '\n    \"//third_party/blink/renderer/modules/graph\",' + content[insert:]
+        with open('$MODULES_GN', 'w') as f:
+            f.write(content)
+        print('  Added graph module to modules/BUILD.gn')
+    else:
+        print('  WARNING: Could not find module deps pattern')
+else:
+    print('  Already registered')
+"
+else
+  echo "  Already registered"
+fi
+
+# Register IDL files in idl_in_modules.gni (the central list of all module IDL files)
+IDL_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/idl_in_modules.gni"
+if [ -f "$IDL_LIST" ]; then
+  python3 -c "
+with open('$IDL_LIST', 'r') as f:
+    content = f.read()
+
+idl_entries = '''  \"//third_party/blink/renderer/modules/graph/content_proof.idl\",
+  \"//third_party/blink/renderer/modules/graph/did_credential.idl\",
+  \"//third_party/blink/renderer/modules/graph/graph_diff.idl\",
+  \"//third_party/blink/renderer/modules/graph/navigator_graph.idl\",
+  \"//third_party/blink/renderer/modules/graph/peer_event.idl\",
+  \"//third_party/blink/renderer/modules/graph/personal_graph.idl\",
+  \"//third_party/blink/renderer/modules/graph/personal_graph_manager.idl\",
+  \"//third_party/blink/renderer/modules/graph/semantic_triple.idl\",
+  \"//third_party/blink/renderer/modules/graph/shared_graph.idl\",
+  \"//third_party/blink/renderer/modules/graph/signal_event.idl\",
+  \"//third_party/blink/renderer/modules/graph/signed_triple.idl\",
+  \"//third_party/blink/renderer/modules/graph/sync_state_event.idl\",
+  \"//third_party/blink/renderer/modules/graph/triple_event.idl\",'''
+
+if 'graph/did_credential.idl' not in content:
+    import re
+    # First remove any existing graph IDL entries to re-add the complete set
+    import re as re2
+    content = re2.sub(r'  \"//third_party/blink/renderer/modules/graph/[^\"]+\.idl\",\n', '', content)
+    # Find last entry before closing ] in static_idl_files_in_modules
+    pattern = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)\s*\]'
+    match = re.search(pattern, content)
+    if match:
+        insert = match.start(1) + len(match.group(1))
+        content = content[:insert] + '\n' + idl_entries + content[insert:]
+        with open('$IDL_LIST', 'w') as f:
+            f.write(content)
+        print('  Added IDL files to idl_in_modules.gni')
+    else:
+        # Fallback: find last .idl entry anywhere
+        pattern2 = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)'
+        matches = list(re.finditer(pattern2, content))
+        if matches:
+            last = matches[-1]
+            insert = last.end()
+            content = content[:insert] + '\n' + idl_entries + content[insert:]
+            with open('$IDL_LIST', 'w') as f:
+                f.write(content)
+            print('  Added IDL files to idl_in_modules.gni (fallback)')
+        else:
+            print('  WARNING: Could not find IDL entries in idl_in_modules.gni')
+else:
+    print('  Already added')
+"
+elif [ ! -f "$IDL_LIST" ]; then
+  echo "  WARNING: idl_in_modules.gni not found — IDL registration may need manual patching"
+fi
+
+# Register generated V8 binding files in generated_in_modules.gni
+GENERATED_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/generated_in_modules.gni"
+if [ -f "$GENERATED_LIST" ]; then
+  python3 -c "
+with open('$GENERATED_LIST', 'r') as f:
+    content = f.read()
+
+import re
+
+# Add enumeration entries (GraphSyncState, SyncState)
+RGD = chr(36) + 'root_gen_dir'
+
+# Remove old graph entries first to be idempotent
+content = re.sub(r'  \"[^\"]*v8_graph_sync_state[^\"]*\",\n', '', content)
+content = re.sub(r'  \"[^\"]*v8_sync_state\.[ch][^\"]*\",\n', '', content)
+content = re.sub(r'  \"[^\"]*v8_(content_proof|did_credential|graph_diff|navigator_graph|peer_event|personal_graph|personal_graph_manager|semantic_triple|shared_graph|signal_event|signed_triple|sync_state_event|triple_event)[^\"]*\",\n', '', content)
+
+enum_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h\",'''
+
+# Find last entry in generated_enumeration_sources_in_modules
+pattern = r'(generated_enumeration_sources_in_modules\s*=\s*\[.*?)(^\])'
+match = re.search(pattern, content, re.DOTALL | re.MULTILINE)
+if match:
+    insert = match.start(2)
+    content = content[:insert] + enum_entries + '\n' + content[insert:]
+
+# Add interface entries
+iface_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signal_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signal_event.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state_event.h\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_triple_event.cc\",
+  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_triple_event.h\",'''
+
+# Find last entry in generated_interface_sources_in_modules
+pattern2 = r'(generated_interface_sources_in_modules\s*=\s*\[.*?)(^\])'
+match2 = re.search(pattern2, content, re.DOTALL | re.MULTILINE)
+if match2:
+    insert2 = match2.start(2)
+    content = content[:insert2] + iface_entries + '\n' + content[insert2:]
+
+with open('$GENERATED_LIST', 'w') as f:
+    f.write(content)
+print('  Added generated V8 bindings to generated_in_modules.gni')
+"
+else
+  echo "  Generated bindings already registered or file not found"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------
+# Step 4: Register Mojo graph mojom in mojo's BUILD.gn
+# ------------------------------------------------------------------
+echo "[4/6] Registering Mojo interfaces..."
+
+MOJO_PARENT_GN="$CHROMIUM_SRC/mojo/public/mojom/BUILD.gn"
+if [ -f "$MOJO_PARENT_GN" ] && ! grep -q "graph" "$MOJO_PARENT_GN"; then
+  python3 -c "
+with open('$MOJO_PARENT_GN', 'r') as f:
+    content = f.read()
+
+if '\"//mojo/public/mojom/graph\"' not in content:
+    import re
+    # Find a deps or public_deps list and add our module
+    pattern = r'(\"//mojo/public/mojom/\w+\",)'
+    matches = list(re.finditer(pattern, content))
+    if matches:
+        last = matches[-1]
+        insert = last.end()
+        content = content[:insert] + '\n    \"//mojo/public/mojom/graph\",' + content[insert:]
+        with open('$MOJO_PARENT_GN', 'w') as f:
+            f.write(content)
+        print('  Registered graph mojom')
+    else:
+        print('  WARNING: Could not find mojom deps pattern — may need manual registration')
+else:
+    print('  Already registered')
+"
+else
+  echo "  Already registered (or parent BUILD.gn not found — will work anyway via direct deps)"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------
+# Step 5: Register browser interface binder for PersonalGraphService
+# ------------------------------------------------------------------
+echo "[5/6] Registering browser interface binder..."
+
+# The browser process needs to know how to create PersonalGraphService
+# when a renderer requests it via Mojo. This is done in
+# content/browser/browser_interface_binders.cc
+
+BINDERS_CC="$CHROMIUM_SRC/content/browser/browser_interface_binders.cc"
+if [ -f "$BINDERS_CC" ] && ! grep -q "PersonalGraphService" "$BINDERS_CC"; then
+  python3 -c "
+import re
+
+with open('$BINDERS_CC', 'r') as f:
+    content = f.read()
+
+# --- Add includes ---
+# Place Living Web includes just before 'namespace blink {' (which is always
+# outside any #if guards), so they are unconditionally compiled on all platforms.
+include_block = '''// Living Web: Personal Graph
+#include \"content/browser/graph/graph_manager.h\"
+#include \"mojo/public/mojom/graph/graph.mojom.h\"
+'''
+
+if '#include \"content/browser/graph/graph_manager.h\"' not in content:
+    anchor = 'namespace blink {'
+    idx = content.find(anchor)
+    if idx != -1:
+        content = content[:idx] + include_block + '\n' + content[idx:]
+    else:
+        # Fallback: add after last top-level #endif before first namespace
+        m = list(re.finditer(r'^#endif', content, re.MULTILINE))
+        if m:
+            pos = m[-1].end()
+            content = content[:pos] + '\n\n' + include_block + content[pos:]
+
+# --- Add binder registrations ---
+# Insert just before the '// This should be last to allow overrides' comment
+# inside PopulateBinderMapWithContext(RenderFrameHost*).
+binder_code = '''
+  // Living Web: Personal Graph Service
+  map->Add<graph::mojom::PersonalGraphService>(
+      base::BindRepeating(
+          [](RenderFrameHost* host,
+             mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
+            content::GraphManager::GetInstance().BindReceiver(std::move(receiver));
+          }));
+
+  // Living Web: DID Credential Service
+  map->Add<graph::mojom::DIDCredentialService>(
+      base::BindRepeating(
+          [](RenderFrameHost* host,
+             mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
+            content::GraphManager::GetInstance().BindDIDReceiver(std::move(receiver));
+          }));
+'''
+
+if 'PersonalGraphService' not in content:
+    anchor = '  // This should be last to allow overrides of any interface.'
+    idx = content.find(anchor)
+    if idx != -1:
+        content = content[:idx] + binder_code + '\n' + content[idx:]
+    else:
+        print('WARNING: Could not find insertion anchor for binder registration')
+
+with open('$BINDERS_CC', 'w') as f:
+    f.write(content)
+print('  Registered PersonalGraphService binder')
+"
+else
+  echo "  Already registered or file not yet available (will patch after gclient sync)"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------
+# Step 6: Summary
+# ------------------------------------------------------------------
+echo "[6/6] Integration complete!"
+echo ""
+echo "Files copied:"
+find "$CHROMIUM_SRC/mojo/public/mojom/graph" -type f 2>/dev/null | wc -l | xargs echo "  Mojo interfaces:"
+find "$CHROMIUM_SRC/content/browser/graph" "$CHROMIUM_SRC/content/browser/did" \
+     "$CHROMIUM_SRC/content/browser/graph_sync" "$CHROMIUM_SRC/content/browser/graph_governance" \
+     -type f 2>/dev/null | wc -l | xargs echo "  Browser-process files:"
+find "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph" -type f 2>/dev/null | wc -l | xargs echo "  Blink renderer files:"
+echo ""
+echo "Next steps:"
+echo "  1. cd $CHROMIUM_SRC"
+echo "  2. gn gen out/LivingWeb --args='is_debug=false target_cpu=\"arm64\" is_component_build=true symbol_level=0 blink_symbol_level=0 enable_nacl=false'"
+echo "  3. autoninja -C out/LivingWeb chrome"
+echo ""
+echo "Build will take 2-4 hours on first run. Use -j flag to control parallelism."
+echo "With 14 CPUs and 48GB RAM: autoninja -C out/LivingWeb chrome"
