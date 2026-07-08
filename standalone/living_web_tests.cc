@@ -33,6 +33,10 @@
 #include "capability_provider.h"
 #include "content/browser/governance/zcap.h"
 
+// Spec 05 — Graph Synchronisation Protocol.
+#include "sync_provider.h"
+#include "content/browser/graph_sync/graph_diff.h"
+
 using namespace living_web;
 
 // ============================================================
@@ -1920,6 +1924,548 @@ TEST(Cap_ConstraintsForListsCapabilityConstraint) {
     if (c.kind == "capability" && c.id == cid)
       found = true;
   EXPECT_TRUE(found);
+}
+
+// ============================================================
+// Spec 05 — Graph Synchronisation Protocol
+// ============================================================
+
+namespace {
+
+// A sync harness: an open-governance group graph W (bearing a did:graph) plus two
+// SyncEngines standing in for a committing peer and a receiving peer. They share
+// the graph, identity provider, and governance engine, but keep independent diff
+// chains — so a receiver genuinely re-validates what a sender emits rather than
+// short-circuiting on its own commit record.
+struct SyncFixture {
+  GovFixture gov_fixture;
+  SyncEngine sender{&gov_fixture.provider, &gov_fixture.gov};
+  SyncEngine receiver{&gov_fixture.provider, &gov_fixture.gov};
+
+  DIDKeyProvider& provider() { return gov_fixture.provider; }
+  GovernanceEngine& gov() { return gov_fixture.gov; }
+  Graph* W() { return gov_fixture.W(); }
+  const std::string& Wdid() { return gov_fixture.Wdid(); }
+};
+
+// Builds a fully-signed GraphDiff for |wdid| whose additions' reifiers are
+// authored by |reifier_agent| while the bundle (commitId + signature) is authored
+// by |bundle_agent|. With the two equal this reproduces the CommitDiff
+// construction byte-for-byte; with them distinct it is the author-smuggling diff
+// that §9.2.1 step 4 (the reifier↔bundle author binding) must reject — every
+// content address still recomputes correctly, so only the binding stands in the
+// way.
+GraphDiff ForgeDiff(DIDKeyProvider& p,
+                    const std::string& wdid,
+                    const DIDKeyPair* reifier_agent,
+                    const DIDKeyPair* bundle_agent,
+                    const std::vector<Triple>& additions,
+                    const std::string& timestamp,
+                    const std::vector<std::string>& deps = {}) {
+  GraphDiff d;
+  d.graph_did = wdid;
+  d.author = bundle_agent->did;
+  d.timestamp = timestamp;
+  d.dependencies = SortDependencies(deps);
+  for (const Triple& t : additions) {
+    std::string payload =
+        crypto::SHA256HashString(BuildSignaturePreimage(t, timestamp, wdid));
+    auto sig = p.SignRaw(reifier_agent->id,
+                         std::vector<uint8_t>(payload.begin(), payload.end()));
+    DiffTriple dt;
+    dt.triple = t;
+    dt.author = reifier_agent->did;
+    dt.timestamp = timestamp;
+    dt.method = reifier_agent->method_id;
+    dt.signature = did_key::MultibaseEncode(*sig);
+    d.additions.push_back(std::move(dt));
+  }
+  std::string block;
+  for (size_t i = 0; i < d.additions.size(); ++i) {
+    const DiffTriple& dt = d.additions[i];
+    block += BuildTripleWithReifierNquads(dt.triple, "_:r" + std::to_string(i),
+                                          dt.author, dt.timestamp, dt.method,
+                                          dt.signature);
+  }
+  std::string canon_add, err;
+  OxigraphStore::Canonicalize(block, CanonHash::kSha256, &canon_add, &err);
+  d.revision = ToLowerHex(crypto::SHA256HashString(
+      BuildRevisionPreimage(wdid, canon_add, std::string(), d.dependencies)));
+  d.commit_id = ToLowerHex(crypto::SHA256HashString(
+      BuildCommitIdPreimage(d.revision, d.author, d.timestamp, std::string())));
+  std::string msg = BuildSignatureMessage(d.commit_id);
+  auto bsig = p.SignRaw(bundle_agent->id,
+                        std::vector<uint8_t>(msg.begin(), msg.end()));
+  d.signature = did_key::MultibaseEncode(*bsig);
+  return d;
+}
+
+}  // namespace
+
+// ---- GraphDiff identity core (graph_diff.{h,cc}, §5.2) ----
+
+TEST(Sync_RevisionPreimageExactBytes) {
+  // §5.2.2.1: length-framed, domain-separated, dependency-sorted+deduped.
+  std::vector<std::string> deps = {"revB", "revA", "revA"};
+  const std::string expected =
+      "living-web/sync/revision/v1\n"
+      "did:graph:zW\n"
+      "3\n"
+      "ADD"
+      "2\n"
+      "RM"
+      "2\n"
+      "revA\n"
+      "revB\n";
+  EXPECT_EQ(BuildRevisionPreimage("did:graph:zW", "ADD", "RM",
+                                  SortDependencies(deps)),
+            expected);
+}
+
+TEST(Sync_CommitIdPreimageExactBytes) {
+  const std::string expected =
+      "living-web/sync/commit/v1\n"
+      "abc123\n"
+      "did:key:zAuthor\n"
+      "2026-07-08T00:00:00Z\n"
+      "urn:zcap:leaf";
+  EXPECT_EQ(BuildCommitIdPreimage("abc123", "did:key:zAuthor",
+                                  "2026-07-08T00:00:00Z", "urn:zcap:leaf"),
+            expected);
+}
+
+TEST(Sync_SignatureMessageIsCommitIdDirect) {
+  // Amendment 05/§5.2.2.1: the commitId hex is signed directly, not re-hashed.
+  EXPECT_EQ(BuildSignatureMessage("deadbeef"), "deadbeef");
+}
+
+TEST(Sync_SortDependenciesOrdersAndDedups) {
+  auto out = SortDependencies({"c", "a", "b", "a", "c"});
+  EXPECT_EQ(out.size(), 3u);
+  EXPECT_EQ(out[0], "a");
+  EXPECT_EQ(out[1], "b");
+  EXPECT_EQ(out[2], "c");
+}
+
+// ---- sync-space derivation (§7) ----
+
+TEST(Sync_SpaceDerivationInputPerTopology) {
+  EXPECT_EQ(
+      BuildSpaceDerivationInput(SpaceTopology::kUnified, false, "ns", "did", ""),
+      "lwsync:unified:ns");
+  EXPECT_EQ(BuildSpaceDerivationInput(SpaceTopology::kPrivacyTiered, false, "ns",
+                                      "did", ""),
+            "lwsync:public:ns");
+  EXPECT_EQ(BuildSpaceDerivationInput(SpaceTopology::kPrivacyTiered, true, "ns",
+                                      "did", ""),
+            "lwsync:dedicated:did");
+  EXPECT_EQ(BuildSpaceDerivationInput(SpaceTopology::kFullyPartitioned, false,
+                                      "ns", "did", ""),
+            "lwsync:dedicated:did");
+  EXPECT_EQ(BuildSpaceDerivationInput(SpaceTopology::kCustom, false, "ns", "did",
+                                      "myspace"),
+            "lwsync:named:myspace");
+}
+
+TEST(Sync_TopologyTokenRoundTrip) {
+  EXPECT_EQ(std::string(SpaceTopologyToken(SpaceTopology::kUnified)), "unified");
+  EXPECT_EQ(std::string(SpaceTopologyToken(SpaceTopology::kPrivacyTiered)),
+            "privacy-tiered");
+  EXPECT_EQ(std::string(SpaceTopologyToken(SpaceTopology::kFullyPartitioned)),
+            "fully-partitioned");
+  EXPECT_EQ(std::string(SpaceTopologyToken(SpaceTopology::kCustom)), "custom");
+  EXPECT_TRUE(SpaceTopologyFromToken("privacy-tiered") ==
+              SpaceTopology::kPrivacyTiered);
+  EXPECT_TRUE(SpaceTopologyFromToken("fully-partitioned") ==
+              SpaceTopology::kFullyPartitioned);
+  EXPECT_TRUE(SpaceTopologyFromToken("custom") == SpaceTopology::kCustom);
+  EXPECT_TRUE(SpaceTopologyFromToken("nonsense") == SpaceTopology::kUnified);
+}
+
+TEST(Sync_DeriveSpaceProducesStableSpaceUri) {
+  SyncFixture f;
+  auto s1 = f.sender.DeriveSpace(f.W(), SpaceTopology::kUnified);
+  EXPECT_TRUE(s1.has_value());
+  EXPECT_TRUE(s1->rfind("space://", 0) == 0);
+  EXPECT_EQ(s1->size(), std::string("space://").size() + 64);  // sha256 hex
+  auto s2 = f.sender.DeriveSpace(f.W(), SpaceTopology::kUnified);
+  EXPECT_EQ(*s1, *s2);  // deterministic
+  // Unified keys off the participates-in namespace, fully-partitioned off the
+  // graph DID — distinct derivation inputs → distinct spaces (§7.3).
+  auto s3 = f.sender.DeriveSpace(f.W(), SpaceTopology::kFullyPartitioned);
+  EXPECT_TRUE(s3.has_value());
+  EXPECT_NE(*s1, *s3);
+}
+
+TEST(Sync_IsRestrictedTracksCapabilityConstraint) {
+  GovFixture f;
+  SyncEngine se(&f.provider, &f.gov);
+  EXPECT_FALSE(se.IsRestricted(f.W()));  // no capability constraint → public
+  std::string root, cid;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  EXPECT_TRUE(
+      f.gov.InstallCapabilityConstraint(f.W(), f.gcred, std::nullopt, &cid));
+  EXPECT_TRUE(se.IsRestricted(f.W()));  // capability constraint → restricted
+}
+
+// ---- validateReadAccess (§9.2.2) ----
+
+TEST(Sync_ReadAccessOpenGraphAccepts) {
+  SyncFixture f;
+  auto reader = f.provider().CreateKey("Reader");
+  EXPECT_TRUE(
+      f.receiver.ValidateReadAccess(f.W(), reader->did, std::nullopt).accepted);
+}
+
+TEST(Sync_ReadAccessRestrictedGraphRejectsStranger) {
+  GovFixture f;
+  BootstrapEnforced(f);
+  SyncEngine se(&f.provider, &f.gov);
+  auto stranger = f.provider.CreateKey("Stranger");
+  EXPECT_FALSE(
+      se.ValidateReadAccess(f.W(), stranger->did, std::nullopt).accepted);
+}
+
+// ---- commit → validate round trip (§5.2.2, §9.2.1) ----
+
+TEST(Sync_CommitDiffRoundTripAccepts) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  std::vector<Triple> adds = {
+      MakeLit("urn:note:1", "https://schema.org/name", "Hello"),
+      MakeIri("urn:note:1", "https://schema.org/about", "urn:topic:sync")};
+  CommitOptions opts;
+  opts.timestamp = "2026-07-01T00:00:00Z";
+  GraphDiff diff;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id, adds, {}, opts, &diff));
+  EXPECT_FALSE(diff.revision.empty());
+  EXPECT_FALSE(diff.commit_id.empty());
+  EXPECT_FALSE(diff.signature.empty());
+  EXPECT_EQ(diff.author, alice->did);
+  EXPECT_EQ(diff.additions.size(), 2u);
+
+  // A fresh receiving peer validates it against its own (empty) chain.
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), diff).accepted);
+  EXPECT_TRUE(f.receiver.HasChain(f.Wdid()));
+  // §14.4: replaying an already-applied revision is an idempotent accept.
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), diff).accepted);
+}
+
+TEST(Sync_RemovalsRoundTripAccepts) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions opts;
+  opts.timestamp = "2026-07-01T00:00:00Z";
+  GraphDiff diff;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:a", "urn:p", "keep")},
+                                  {MakeLit("urn:b", "urn:p", "drop")}, opts,
+                                  &diff));
+  EXPECT_EQ(diff.additions.size(), 1u);
+  EXPECT_EQ(diff.removals.size(), 1u);
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), diff).accepted);
+}
+
+TEST(Sync_BundleSignatureTamperRejected) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  auto bob = f.provider().CreateKey("Bob");
+  CommitOptions opts;
+  opts.timestamp = "2026-07-01T00:00:00Z";
+  GraphDiff diff;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:s", "urn:p", "v")}, {}, opts,
+                                  &diff));
+  // Replace the bundle signature with Bob's signature over the same commitId: it
+  // decodes to 64 bytes, but fails to verify against the author (Alice) key.
+  std::string msg = BuildSignatureMessage(diff.commit_id);
+  auto bobsig = f.provider().SignRaw(
+      bob->id, std::vector<uint8_t>(msg.begin(), msg.end()));
+  GraphDiff tampered = diff;
+  tampered.signature = did_key::MultibaseEncode(*bobsig);
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), tampered);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "signature_invalid");
+}
+
+TEST(Sync_RevisionTamperRejected) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions opts;
+  opts.timestamp = "2026-07-01T00:00:00Z";
+  GraphDiff diff;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:s", "urn:p", "original")}, {},
+                                  opts, &diff));
+  // Mutate the payload triple without recomputing the revision: the receiver's
+  // recomputed content address no longer matches the claimed one (step 0).
+  GraphDiff tampered = diff;
+  tampered.additions[0].triple = MakeLit("urn:s", "urn:p", "tampered");
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), tampered);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "revision_invalid");
+}
+
+TEST(Sync_ForgeDiffFidelity) {
+  // The forge helper reproduces the real CommitDiff construction: a diff whose
+  // reifiers and bundle are the same agent validates cleanly.
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  GraphDiff honest =
+      ForgeDiff(f.provider(), f.Wdid(), alice.get(), alice.get(),
+                {MakeLit("urn:claim", "urn:p", "x")}, "2026-07-01T00:00:00Z");
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), honest).accepted);
+}
+
+TEST(Sync_ReifierAuthorSmuggleRejected) {
+  // Regression: Alice authored the reifiers, but Mallory wraps + signs the
+  // bundle. revision (over Alice's reifiers), commitId (over Mallory), and the
+  // bundle signature (Mallory's) all recompute correctly — so ONLY the §9.2.1
+  // step-4 author binding prevents Mallory from committing triples misattributed
+  // to Alice. Removing that binding makes this diff wrongly accepted.
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  auto mallory = f.provider().CreateKey("Mallory");
+  GraphDiff smuggled =
+      ForgeDiff(f.provider(), f.Wdid(), alice.get(), mallory.get(),
+                {MakeLit("urn:claim", "urn:p", "x")}, "2026-07-01T00:00:00Z");
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), smuggled);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "reifier_signature_invalid");
+}
+
+// ---- dependency validation (§5.2.1) ----
+
+TEST(Sync_ChainRootAndSnapshotPromotion) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions o0;
+  o0.timestamp = "2026-07-01T00:00:00Z";
+  GraphDiff first;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:a", "urn:p", "1")}, {}, o0,
+                                  &first));
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), first).accepted);
+
+  // A second chain-root (no dependencies) on a non-empty chain is rejected...
+  CommitOptions o1;
+  o1.timestamp = "2026-07-01T00:01:00Z";
+  GraphDiff orphan;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:b", "urn:p", "2")}, {}, o1,
+                                  &orphan));
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), orphan);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "chain_root_conflict");
+
+  // ...unless it advertises a snapshot promotion (§5.2.1).
+  CommitOptions o2;
+  o2.timestamp = "2026-07-01T00:02:00Z";
+  o2.snapshot_promotion = true;
+  GraphDiff promo;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:c", "urn:p", "3")}, {}, o2,
+                                  &promo));
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), promo).accepted);
+}
+
+TEST(Sync_MissingDependencyRejected) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions opts;
+  opts.timestamp = "2026-07-01T00:00:00Z";
+  opts.dependencies = {"a-revision-the-receiver-never-saw"};
+  GraphDiff diff;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:a", "urn:p", "1")}, {}, opts,
+                                  &diff));
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), diff);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "missing_dependency");
+}
+
+// ---- timestamp plausibility (§14.5) ----
+
+TEST(Sync_TimestampFutureRejected) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions opts;
+  opts.timestamp = "2099-01-01T00:00:00Z";  // well beyond now + 300 s
+  GraphDiff diff;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:a", "urn:p", "1")}, {}, opts,
+                                  &diff));
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), diff);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "timestamp_future");
+  EXPECT_EQ(r.constraint_kind, "temporal");
+}
+
+TEST(Sync_TimestampCausalRejected) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions p;
+  p.timestamp = "2026-07-01T02:00:00Z";
+  GraphDiff parent;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:a", "urn:p", "1")}, {}, p,
+                                  &parent));
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), parent).accepted);
+
+  // A child that depends on the parent but is dated before it violates causal
+  // monotonicity.
+  CommitOptions c;
+  c.timestamp = "2026-07-01T01:00:00Z";
+  c.dependencies = {parent.revision};
+  GraphDiff child;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:b", "urn:p", "2")}, {}, c,
+                                  &child));
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), child);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "timestamp_causal");
+}
+
+TEST(Sync_TimestampMonotonicRejected) {
+  SyncFixture f;
+  auto alice = f.provider().CreateKey("Alice");
+  CommitOptions o0;
+  o0.timestamp = "2026-07-01T00:00:00Z";
+  GraphDiff d0;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:a", "urn:p", "1")}, {}, o0,
+                                  &d0));
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), d0).accepted);
+
+  CommitOptions o2;
+  o2.timestamp = "2026-07-01T02:00:00Z";
+  o2.dependencies = {d0.revision};
+  GraphDiff d2;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:b", "urn:p", "2")}, {}, o2,
+                                  &d2));
+  EXPECT_TRUE(f.receiver.ValidateDiff(f.W(), d2).accepted);
+
+  // A later commit dated before the author's max applied timestamp, depending
+  // only on the root (so no dependency is newer than it — causal is satisfied),
+  // still violates per-author monotonicity (§14.5).
+  CommitOptions o1;
+  o1.timestamp = "2026-07-01T01:00:00Z";
+  o1.dependencies = {d0.revision};
+  GraphDiff d1;
+  EXPECT_TRUE(f.sender.CommitDiff(f.W(), alice->id,
+                                  {MakeLit("urn:c", "urn:p", "3")}, {}, o1,
+                                  &d1));
+  SyncValidationResult r = f.receiver.ValidateDiff(f.W(), d1);
+  EXPECT_FALSE(r.accepted);
+  EXPECT_EQ(r.reason, "timestamp_monotonic");
+}
+
+TEST(Sync_Rfc3339EpochParsing) {
+  int64_t e = 0;
+  EXPECT_TRUE(sync_detail::Rfc3339ToEpoch("1970-01-01T00:00:00Z", &e));
+  EXPECT_EQ(e, int64_t(0));
+  int64_t earlier = 0, later = 0;
+  EXPECT_TRUE(sync_detail::Rfc3339ToEpoch("2026-07-01T00:00:00Z", &earlier));
+  EXPECT_TRUE(sync_detail::Rfc3339ToEpoch("2026-07-01T00:00:01Z", &later));
+  EXPECT_EQ(later - earlier, int64_t(1));
+  // Offset designators normalise to UTC: 12:00+02:00 == 10:00Z == 08:00-02:00.
+  int64_t z = 0, plus = 0, minus = 0;
+  EXPECT_TRUE(sync_detail::Rfc3339ToEpoch("2026-07-08T10:00:00Z", &z));
+  EXPECT_TRUE(sync_detail::Rfc3339ToEpoch("2026-07-08T12:00:00+02:00", &plus));
+  EXPECT_TRUE(sync_detail::Rfc3339ToEpoch("2026-07-08T08:00:00-02:00", &minus));
+  EXPECT_EQ(z, plus);
+  EXPECT_EQ(z, minus);
+  EXPECT_FALSE(sync_detail::Rfc3339ToEpoch("not-a-timestamp", &e));
+}
+
+// ---- invitation links (§12) ----
+
+TEST(Sync_InvitationFormatParseRoundTrip) {
+  const std::string relay = "relay.example.com:8443";
+  const std::string space = "space://abc123";  // arbitrary bytes → base64url
+  const std::string did = "did:graph:z6MkExample";
+  const std::string module = "sha256:deadbeef";
+  const std::string name = "Alice & Bob's Space";  // spaces + reserved chars
+  std::string uri = SyncEngine::FormatInvitation(relay, space, did, module, name);
+  EXPECT_TRUE(uri.rfind("web+graph://", 0) == 0);
+
+  SyncEngine::Invitation inv;
+  EXPECT_TRUE(SyncEngine::ParseInvitation(uri, &inv));
+  EXPECT_EQ(inv.relay_host, relay);
+  EXPECT_EQ(inv.space_uri, space);
+  EXPECT_EQ(inv.graph_did, did);
+  EXPECT_EQ(inv.module_hash, module);
+  EXPECT_EQ(inv.name, name);
+}
+
+TEST(Sync_InvitationOptionalFieldsAbsent) {
+  std::string uri =
+      SyncEngine::FormatInvitation("relay", "space://x", "did:graph:zX");
+  SyncEngine::Invitation inv;
+  EXPECT_TRUE(SyncEngine::ParseInvitation(uri, &inv));
+  EXPECT_EQ(inv.graph_did, "did:graph:zX");
+  EXPECT_TRUE(inv.module_hash.empty());
+  EXPECT_TRUE(inv.name.empty());
+}
+
+TEST(Sync_InvitationRequiresDid) {
+  // A well-formed URI missing the required did= parameter is rejected (§12.2).
+  std::string uri = "web+graph://relay.example.com/" +
+                    sync_detail::Base64UrlEncode("space://x") + "?name=NoDid";
+  SyncEngine::Invitation inv;
+  EXPECT_FALSE(SyncEngine::ParseInvitation(uri, &inv));
+}
+
+TEST(Sync_InvitationRejectsWrongScheme) {
+  SyncEngine::Invitation inv;
+  EXPECT_FALSE(SyncEngine::ParseInvitation("https://relay/x?did=y", &inv));
+}
+
+// ---- reconnection primitives (§13) ----
+
+TEST(Sync_DiffQueueDedupesByCommitId) {
+  DiffQueue q;
+  GraphDiff a;
+  a.commit_id = "c1";
+  GraphDiff b;
+  b.commit_id = "c2";
+  EXPECT_TRUE(q.Enqueue(a));
+  EXPECT_FALSE(q.Enqueue(a));  // same commitId → not re-enqueued
+  EXPECT_TRUE(q.Enqueue(b));
+  EXPECT_EQ(q.Size(), 2u);
+  EXPECT_TRUE(q.Contains("c1"));
+  EXPECT_TRUE(q.Acknowledge("c1"));
+  EXPECT_FALSE(q.Contains("c1"));
+  EXPECT_EQ(q.Size(), 1u);
+  EXPECT_FALSE(q.Acknowledge("c1"));  // already acknowledged
+}
+
+TEST(Sync_DiffQueueBatchCapsAndOrders) {
+  DiffQueue q;
+  for (int i = 0; i < 150; ++i) {
+    GraphDiff d;
+    d.commit_id = "c" + std::to_string(i);
+    EXPECT_TRUE(q.Enqueue(d));
+  }
+  EXPECT_EQ(q.Size(), 150u);
+  EXPECT_EQ(q.NextBatch().size(), kBatchMaxDiffs);  // default cap = 100 (§13.4)
+  EXPECT_EQ(q.NextBatch(10).size(), 10u);
+  auto batch = q.NextBatch(3);  // commit order preserved
+  EXPECT_EQ(batch[0].commit_id, "c0");
+  EXPECT_EQ(batch[1].commit_id, "c1");
+  EXPECT_EQ(batch[2].commit_id, "c2");
+}
+
+TEST(Sync_ReconnectBackoffDoublesAndCaps) {
+  EXPECT_EQ(ReconnectBackoffMs(0), uint64_t(5000));
+  EXPECT_EQ(ReconnectBackoffMs(1), uint64_t(10000));
+  EXPECT_EQ(ReconnectBackoffMs(2), uint64_t(20000));
+  EXPECT_EQ(ReconnectBackoffMs(3), uint64_t(40000));
+  EXPECT_EQ(ReconnectBackoffMs(4), uint64_t(80000));
+  EXPECT_EQ(ReconnectBackoffMs(5), uint64_t(160000));
+  EXPECT_EQ(ReconnectBackoffMs(6), uint64_t(300000));    // 320000 capped
+  EXPECT_EQ(ReconnectBackoffMs(100), uint64_t(300000));  // stays capped
 }
 
 // ============================================================

@@ -1,0 +1,17 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GraphSyncState — the lifecycle of a graph's sync session. Graph
+// Synchronisation Protocol spec §5.5. Surfaced by Graph.syncState(),
+// MountedGraphInfo.syncState, and the SyncStateEvent dispatched for
+// Graph.onsyncstatechange.
+
+enum GraphSyncState {
+  "idle",
+  "resolving",   // resolving graph IRI + space + module
+  "connecting",  // establishing connections in the space
+  "syncing",     // active diff exchange
+  "synced",      // converged with all known peers
+  "error"
+};

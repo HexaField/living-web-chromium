@@ -6,8 +6,11 @@ import("//mojo/public/tools/bindings/mojom.gni")
 
 # Spec 01 — Decentralised Identity. The identity types (ContentProof,
 # DIDCredentialInfo, SignedContent) and the DIDCredentialService interface.
-# Later specs add sibling mojom() targets (graph_sync, graph_governance) that
-# depend on this one.
+# Every later spec folds its IPC contract into the single graph.mojom module
+# rather than adding sibling targets: Spec 02 the PersonalGraph* interfaces,
+# Spec 03 the Group* interfaces, Spec 04 the §11 governance methods (onto
+# PersonalGraphHost) + capability structs, and Spec 05 the sync surface (onto
+# PersonalGraphHost / PersonalGraphManager) + GraphDiff/Peer/space structs.
 mojom("graph") {
   sources = [
     "graph.mojom",

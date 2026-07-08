@@ -1,0 +1,19 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// PublishedGraph — the addressing a published graph is shared by, resolved by
+// Graph.publish() (Graph Synchronisation Protocol spec §6.1).
+//
+// AMENDED (05/§6.1): the spec annotates this interface `[Exposed=Window]`, but
+// Graph.publish() is exposed on both Window and DedicatedWorker (the Graph
+// interface is [Exposed=(Window,Worker)]), so its resolution type must be too.
+// Exposed on (Window,Worker); the members are unchanged. See SPEC_COMPLIANCE.md.
+
+[Exposed=(Window,Worker)]
+interface PublishedGraph {
+  readonly attribute USVString graphDid;
+  readonly attribute USVString spaceUri;
+  readonly attribute USVString moduleHash;
+  readonly attribute FrozenArray<USVString> relays;
+};

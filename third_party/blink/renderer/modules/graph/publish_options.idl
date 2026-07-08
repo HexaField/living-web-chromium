@@ -1,0 +1,23 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// PublishOptions — options for Graph.publish() (Graph Synchronisation Protocol
+// spec §6.1). Every member is optional: an already-groupified graph reads its
+// authoritative module hash from `<graphDid> group://syncModule`, and the space
+// topology defaults to the module's policy.
+
+dictionary PublishOptions {
+  // Sync module content hash. An override only for a not-yet-groupified graph
+  // published as a one-shot artefact; groupification ([[GROUP-IDENTITY]] §4.2)
+  // binds the authoritative module hash into the DID seed. A value that
+  // disagrees with the groupified graph's `group://syncModule` triple is
+  // rejected with "InvalidStateError".
+  USVString moduleHash;
+  // Initial relay endpoints (default-module-specific).
+  sequence<USVString> relays;
+  // "unified" | "privacy-tiered" | "fully-partitioned" | "custom".
+  USVString spaceTopology;
+  // The specific space:// URI, when spaceTopology = "custom".
+  USVString customSpace;
+};

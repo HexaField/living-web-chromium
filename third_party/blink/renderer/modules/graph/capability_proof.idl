@@ -1,0 +1,22 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// CapabilityProof — the ordered ZCAP delegation chain (leaf -> root) that
+// authorised a diff (Graph Synchronisation Protocol spec §5.3). Surfaced by
+// GraphDiff.capabilityProof.
+//
+// `presentations` carries [[VC-DATA-MODEL-2.0]] VerifiablePresentation objects
+// consumed by `credential` caveats; the browser strips them once validation
+// succeeds, so it is almost always empty. It is annotated [CallWith=ScriptState]
+// (a binding detail, not a semantic amendment) because a GraphDiff can be
+// delivered during event dispatch — outside any promise-resolver scope — so the
+// verbatim presentation JSON is parsed lazily on first access.
+
+[Exposed=(Window,Worker)]
+interface CapabilityProof {
+  readonly attribute FrozenArray<USVString> chain;
+  readonly attribute FrozenArray<USVString> caveatsSatisfied;
+  readonly attribute boolean hasContentCaveats;
+  [CallWith=ScriptState] readonly attribute FrozenArray<object> presentations;
+};

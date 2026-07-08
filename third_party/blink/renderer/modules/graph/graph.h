@@ -17,6 +17,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_enforcement_mode.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_trust_level.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/modules/event_target_modules.h"
@@ -30,6 +31,7 @@
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -38,20 +40,29 @@ class CapabilityProofInput;
 class ExecutionContext;
 class GovernanceValidationResult;
 class GraphConstraint;
+class GraphDiff;
 class GraphSnapshotOptions;
+class Peer;
+class PublishedGraph;
+class PublishOptions;
 class ScriptPromiseResolverBase;
 class ScriptState;
 class SparqlQueryOptions;
 class TripleQuery;
+class V8BufferSource;
 
 class Graph final : public EventTarget,
                     public graph::mojom::blink::PersonalGraphClient {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
+  // |read_only| gates the mutating operations synchronously (§6.3): only
+  // GraphManager::mount() with MountOptions.mode = "read" passes true. Every
+  // other construction path (create / fromSnapshot / groupify) leaves it false.
   Graph(ExecutionContext*,
         const graph::mojom::blink::GraphInfoPtr& info,
-        mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host);
+        mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host,
+        bool read_only = false);
 
   // §3.3 attributes, cached from the GraphInfo at construction. The IRI is
   // refreshed after each mutation by GetIri() on the host.
@@ -99,6 +110,27 @@ class Graph final : public EventTarget,
   ScriptPromise<IDLUndefined> setEnforcementMode(ScriptState*,
                                                  const V8EnforcementMode& mode);
 
+  // §6 synchronisation API — added by the Graph Synchronisation Protocol
+  // (Spec 05). Each round-trips to the graph's own host, which owns the sync
+  // backend, diff queue, and peer/session table.
+  ScriptPromise<PublishedGraph> publish(ScriptState*,
+                                        const PublishOptions* options);
+  ScriptPromise<IDLUndefined> unpublish(ScriptState*);
+  ScriptPromise<V8GraphSyncState> syncState(ScriptState*);
+  ScriptPromise<IDLSequence<Peer>> peers(ScriptState*);
+  ScriptPromise<IDLSequence<Peer>> onlinePeers(ScriptState*);
+  ScriptPromise<IDLUSVString> currentRevision(ScriptState*);
+  ScriptPromise<IDLSequence<GraphDiff>> pendingDiffs(ScriptState*);
+  ScriptPromise<IDLUndefined> sendSignal(ScriptState*,
+                                         const String& remote_did,
+                                         const V8BufferSource* payload);
+  ScriptPromise<IDLUndefined> sendSignalToSession(ScriptState*,
+                                                  const String& remote_did,
+                                                  const String& session_id,
+                                                  const V8BufferSource* payload);
+  ScriptPromise<IDLUndefined> broadcast(ScriptState*,
+                                        const V8BufferSource* payload);
+
   // EventTarget overrides.
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
@@ -107,10 +139,25 @@ class Graph final : public EventTarget,
   DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleadded, kTripleadded)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(tripleremoved, kTripleremoved)
 
+  // §6.3 sync event handlers.
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerjoined, kPeerjoined)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(peerleft, kPeerleft)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(syncstatechange, kSyncstatechange)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(diff, kDiff)
+
   // graph::mojom::blink::PersonalGraphClient — pushed by the browser in commit
   // order (§4.2, §4.4).
   void OnTripleAdded(graph::mojom::blink::TriplePtr triple) override;
   void OnTripleRemoved(graph::mojom::blink::TriplePtr triple) override;
+
+  // §6.3 sync events, pushed in the browser's observation order.
+  void OnPeerJoined(graph::mojom::blink::PeerPtr peer) override;
+  void OnPeerLeft(graph::mojom::blink::PeerPtr peer) override;
+  void OnSyncStateChange(graph::mojom::blink::GraphSyncState state) override;
+  void OnSignal(graph::mojom::blink::PeerPtr from,
+                const Vector<uint8_t>& payload) override;
+  void OnDiff(graph::mojom::blink::GraphDiffPtr diff) override;
 
   // Maps a browser-returned DOMException name to the matching code and rejects
   // |resolver|. Empty/unknown names reject with a generic error. Shared with
@@ -134,6 +181,9 @@ class Graph final : public EventTarget,
   String display_name_;
   String trust_level_;
   bool dissolved_ = false;
+  // §6.3: set when mounted with MountOptions.mode = "read"; gates addTriple /
+  // addTriples / removeTriple with a synchronous InvalidStateError.
+  bool read_only_ = false;
 
   Member<ExecutionContext> execution_context_;
   HeapMojoRemote<graph::mojom::blink::PersonalGraphHost> host_;

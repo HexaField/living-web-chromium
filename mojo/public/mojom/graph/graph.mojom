@@ -261,6 +261,45 @@ interface PersonalGraphHost {
   // §11.4 setEnforcementMode: requires an updateGovernance capability (§5.2);
   // "NotAllowedError" otherwise.
   SetEnforcementMode(EnforcementMode mode) => (string? error);
+
+  // ---- Spec 05 §6 sync surface (folded into this host; see the Spec 05 section
+  // below). The single per-realm SyncBackend the browser shares across all graphs
+  // owns diff construction/validation (§5.2.2/§9.2.1), space derivation (§7.3),
+  // and the durable diff queue (§13.1); live peer transport is supplied by the
+  // graph's active sync module ([[SYNC-MODULE-ARCHITECTURE]]). Sync events
+  // (peerjoined/peerleft/syncstatechange/signal/diff) are pushed to the
+  // PersonalGraphClient bound via Subscribe above. ----
+
+  // §6.1 publish: make this locally-created graph shareable. Resolves the
+  // authoritative module hash from <graphDid> group://syncModule (§6.1 step 1),
+  // derives the sync space (§7.3), and subscribes. |error| is "InvalidStateError"
+  // if options.module_hash disagrees with the groupified value, "NotAllowedError"
+  // if module installation is denied.
+  Publish(PublishOptions options)
+      => (PublishedGraphInfo? published, string? error);
+  // §6.1 unpublish: stop gossiping this graph and release its subscription.
+  Unpublish() => (string? error);
+  // §6.1 syncState: the graph's current GraphSyncState (§5.5).
+  SyncState() => (GraphSyncState state);
+
+  // §6.3 peers / onlinePeers: the peer sessions the active module has discovered
+  // in this graph's space (§5.4). Empty until a module attaches peers.
+  Peers() => (array<Peer> peers);
+  OnlinePeers() => (array<Peer> peers);
+  // §6.3 currentRevision: the local DAG head this peer has converged to (§5.2.1).
+  CurrentRevision() => (string? revision, string? error);
+  // §6.3 pendingDiffs: locally-committed diffs not yet acknowledged by a remote
+  // peer (§13.1 durable queue).
+  PendingDiffs() => (array<GraphDiff> diffs);
+
+  // §6.3 signalling: opaque module-negotiation payloads (e.g. WebRTC SDP, §11.2)
+  // relayed to a peer DID, a specific peer session, or every peer in the space.
+  // |error| is "InvalidStateError" when the graph is not published/mounted.
+  SendSignal(string remote_did, array<uint8> payload) => (string? error);
+  SendSignalToSession(string remote_did,
+                      string session_id,
+                      array<uint8> payload) => (string? error);
+  Broadcast(array<uint8> payload) => (string? error);
 };
 
 // PersonalGraphClient — the renderer sink for graph events (§4.2, §4.4). The
@@ -268,6 +307,17 @@ interface PersonalGraphHost {
 interface PersonalGraphClient {
   OnTripleAdded(Triple triple);
   OnTripleRemoved(Triple triple);
+
+  // ---- Spec 05 §6.3 sync events (pushed in the browser's observation order) ----
+  // §6.3 onpeerjoined / onpeerleft.
+  OnPeerJoined(Peer peer);
+  OnPeerLeft(Peer peer);
+  // §6.3 onsyncstatechange: the graph's GraphSyncState advanced.
+  OnSyncStateChange(GraphSyncState state);
+  // §6.3 / §11.2 onsignal: a module-negotiation payload from |from|.
+  OnSignal(Peer from, array<uint8> payload);
+  // §6.3 ondiff: a validated remote diff was applied to local state.
+  OnDiff(GraphDiff diff);
 };
 
 // PersonalGraphManager — the browser-process host for navigator.graph (§3.4,
@@ -284,6 +334,38 @@ interface PersonalGraphManager {
                GraphTrustLevel trust,
                pending_receiver<PersonalGraphHost> receiver)
       => (GraphInfo? info, string? error);
+
+  // ---- Spec 05 §6.2/§6.4 sync surface (folded into this manager) ----
+
+  // §6.2 mount: open a remote graph by DID into this realm. Authorises the mount
+  // against the graph's governance (§6.2 step 2: "mountContext" for read,
+  // "createLink" for write/governance), materialises from |options.snapshot_uri|
+  // when supplied, resolves the authoritative sync module, and binds a
+  // PersonalGraphHost for the graph. |error| is "InvalidStateError" if already
+  // mounted, "NotAllowedError" on an authorisation failure.
+  Mount(string graph_did,
+        MountOptions options,
+        pending_receiver<PersonalGraphHost> receiver)
+      => (GraphInfo? info, string? error);
+  // §6.2 unmount: release the mount and stop gossiping; keeps the per-graph store.
+  Unmount(string graph_did) => (string? error);
+
+  // §6.4 listMounted / listModules / listSpaces: the realm's sync inventory.
+  ListMounted() => (array<MountedGraphInfo> mounted);
+  ListModules() => (array<SyncModuleInfo> modules);
+  ListSpaces() => (array<SyncSpaceInfo> spaces);
+
+  // §6.4 subscription events: the renderer binds one client to receive
+  // onsubscriptiongained / onsubscriptionlost for the realm.
+  SubscribeManager(pending_remote<PersonalGraphManagerClient> client);
+};
+
+// PersonalGraphManagerClient — the renderer sink for realm-level subscription
+// events (§6.4). A subscription is gained when a mount begins receiving diffs in
+// a space, and lost when the space drops the graph (|reason| carries the cause).
+interface PersonalGraphManagerClient {
+  OnSubscriptionGained(string graph_did, MountMode mode);
+  OnSubscriptionLost(string graph_did, MountMode previous_mode, string? reason);
 };
 
 // ============================================================
@@ -595,4 +677,161 @@ struct DelegateOptions {
   string resource;
   array<string> caveats;
   string? expires_at;
+};
+
+// ============================================================
+// Spec 05 — Graph Synchronisation Protocol
+//
+// Peers gossip content-addressed GraphDiffs and converge a Spec 02 graph's local
+// state under the Spec 04 authority: §9.2.1 validateDiff delegates every
+// capability check to the per-realm GovernanceBackend. The browser owns one
+// SyncBackend (the C++ port of living_web::SyncEngine) shared across all graphs;
+// it constructs and validates diffs, derives sync spaces (§7.3), holds the
+// durable diff queue (§13.1), and gates read-mounts (§9.2.2). Live peer transport
+// (WebRTC/relays, peer discovery, signalling delivery) is supplied by each
+// graph's active sync module ([[SYNC-MODULE-ARCHITECTURE]]); the §6 surface is
+// folded into PersonalGraphHost / PersonalGraphManager above because both already
+// own the browser-side host over the graph being synced. All diff signing uses
+// the Spec 01 identity in the browser, never the renderer.
+// ============================================================
+
+// §5.5 GraphSyncState — the lifecycle of a graph's sync session.
+enum GraphSyncState {
+  kIdle,
+  kResolving,   // resolving graph IRI + space + module
+  kConnecting,  // establishing connections in the space
+  kSyncing,     // active diff exchange
+  kSynced,      // converged with all known peers
+  kError,
+};
+
+// §6.2 MountMode — the authority a mount is opened with.
+enum MountMode {
+  kRead,
+  kWrite,
+  kGovernance,
+};
+
+// §6.4 ModuleState — the runtime state of a sync module.
+enum ModuleState {
+  kRunning,
+  kSuspended,
+  kError,
+};
+
+// §5.1 a triple together with its committer-authored reifier (§3.2.1). The
+// reifier fields are exactly those living_web::BuildTripleWithReifierNquads
+// serialises, so the wire bytes a diff is canonicalised over reproduce on any
+// peer. Mirrors content::DiffTriple.
+struct DiffTriple {
+  Triple triple;
+  string author;     // did:key / did:graph of the committer
+  string timestamp;  // RFC 3339
+  string method;     // verification-method id (author '#' multibase key)
+  string signature;  // multibase Ed25519 over SHA-256(§3.2.1 pre-image)
+};
+
+// §5.3 CapabilityProof — the ordered ZCAP chain (leaf→root) authorising a diff.
+// |presentations| are verbatim [[VC-DATA-MODEL-2.0]] VerifiablePresentation JSON
+// consumed by `credential` caveats; empty when none apply.
+struct CapabilityProof {
+  array<string> chain;
+  array<string> caveats_satisfied;
+  bool has_content_caveats;
+  array<string> presentations;
+};
+
+// §5.1 GraphDiff — the unit of gossip. |revision| is the triple-set identity and
+// |commit_id| the full commit identity (§5.2.2); |signature| is the bundle-level
+// Ed25519 over the UTF-8 lowercase-hex commit_id. Mirrors content::GraphDiff.
+struct GraphDiff {
+  string graph_did;
+  string revision;
+  string commit_id;
+  array<DiffTriple> additions;
+  array<DiffTriple> removals;
+  array<string> dependencies;         // DAG heads = revisions (§5.2.1)
+  CapabilityProof? capability_proof;
+  string author;
+  string timestamp;                   // RFC 3339, authoritative commit time
+  uint32 diffs_since_snapshot;        // §5.2.3
+  bool snapshot_promotion;            // advertises a snapshot promotion (§5.2.1)
+  string signature;
+};
+
+// §5.4 Peer — a single agent session in a sync space. Peers are equal iff
+// (did, session_id) match. |public_key| is null for a did:key peer (the DID
+// already embeds the key); |last_seen| is a DOMTimeStamp (ms since epoch).
+//
+// (§5.6 SyncValidationResult is intentionally absent: it is a browser-internal
+// §9.2 validate contract — SyncBackend.ValidateDiff / ValidateReadAccess return
+// content::SyncValidationResult and the folded host converts a rejection into
+// the DOMException name it already returns in |error|. It never crosses the
+// renderer boundary, so it has no mojo or blink representation.)
+struct Peer {
+  string did;
+  string session_id;
+  string? public_key;
+  string? device_label;
+  uint64? last_seen;
+  bool online;
+};
+
+// §6.1 PublishOptions. |module_hash| is an override only for a not-yet-groupified
+// graph; the authoritative value is read from <graphDid> group://syncModule.
+// |space_topology| is "unified" | "privacy-tiered" | "fully-partitioned" |
+// "custom"; |custom_space| carries the space:// URI when topology = "custom".
+struct PublishOptions {
+  string module_hash;
+  array<string> relays;
+  string space_topology;
+  string custom_space;
+};
+
+// §6.1 PublishedGraph — the addressing a published graph is shared by.
+struct PublishedGraphInfo {
+  string graph_did;
+  string space_uri;
+  string module_hash;
+  array<string> relays;
+};
+
+// §6.2 MountOptions. |capability_proof| is REQUIRED for write/governance mounts
+// and for a read mount of a graph that binds a mountContext capability
+// constraint. |module_hash| is a bootstrap hint; the authoritative value is read
+// from <graphDid> group://syncModule after the DID document resolves.
+struct MountOptions {
+  MountMode mode;
+  CapabilityProofInput? capability_proof;
+  string snapshot_uri;
+  string space_uri;
+  string module_hash;
+  array<string> relays;
+};
+
+// §6.4 MountedGraphInfo — one entry of the realm's mount inventory.
+struct MountedGraphInfo {
+  string graph_did;
+  MountMode mode;
+  GraphSyncState sync_state;
+  string space_uri;
+  string module_hash;
+  uint32 peer_count;
+};
+
+// §6.4 SyncSpaceInfo — one entry of the realm's active-space inventory.
+struct SyncSpaceInfo {
+  string space_uri;
+  string module_hash;
+  uint32 graph_count;
+  uint32 peer_count;
+};
+
+// §6.4 SyncModuleInfo — one entry of the realm's installed-module inventory.
+struct SyncModuleInfo {
+  string content_hash;
+  string? name;
+  uint32 space_count;
+  ModuleState state;
+  uint64 storage_bytes;
 };

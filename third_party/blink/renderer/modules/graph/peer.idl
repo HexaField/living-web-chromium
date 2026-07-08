@@ -1,0 +1,26 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Peer — a single agent session discovered in a graph's sync space (Graph
+// Synchronisation Protocol spec §5.4). Two peers are equal iff their
+// (did, sessionId) pair matches.
+//
+// AMENDED (05/§5.4): the spec defines Peer as a `dictionary`, but it is surfaced
+// as the `peer` / `from` attribute of PeerEvent and SignalEvent, and WebIDL
+// forbids dictionary-typed attributes. Peer is therefore an [Exposed] interface;
+// its members are unchanged. See SPEC_COMPLIANCE.md.
+
+[Exposed=(Window,Worker)]
+interface Peer {
+  // did:key / did:graph identifying the remote agent.
+  readonly attribute USVString did;
+  // Distinguishes concurrent sessions of the same agent.
+  readonly attribute USVString sessionId;
+  // Multibase public key; null for a did:key peer (the DID embeds the key).
+  readonly attribute USVString? publicKey;
+  readonly attribute USVString? deviceLabel;
+  // Milliseconds since the Unix epoch; null when the peer has not been seen.
+  readonly attribute DOMTimeStamp? lastSeen;
+  readonly attribute boolean online;
+};

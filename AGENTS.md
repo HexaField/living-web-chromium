@@ -172,7 +172,7 @@ Spec numbering (current, 10 specs):
 | 02 | Personal Linked Data Graphs | `.../graph/{graph,graph_manager,triple,literal_value,reifier,graph_snapshot,graph_triple_event}.*`, `content/browser/graph/` |
 | 03 | Decentralised Group Identity | `content/browser/did/{did_graph,group_backend,group_backend_manager,group_host,group_service}.*`, `.../graph/group.*` |
 | 04 | Graph Capability Framework | `content/browser/governance/{governance_backend,zcap}.*` (ZCAP-LD + enforcement), `standalone/capability_provider.h`, `.../graph/graph.*` (§11 surface) + `group.*` (`delegateCapability`) |
-| 05 | Context Sync Protocol | `.../graph/shared_graph*`, `content/browser/graph_sync/` |
+| 05 | Context Sync Protocol | `content/browser/graph_sync/{graph_diff,sync_backend}.*`, `.../graph/{personal_graph_host,personal_graph_manager}.*` (§6 folded), `standalone/sync_provider.h` |
 | 06 | Sync Module Architecture | — (planned) |
 | 07 | Dynamic Graph Shape Validation | `.../graph/personal_graph*` (shape methods) |
 | 08 | Governance Constraint Vocabulary | `content/browser/governance/` (constraint-kind handlers) |
@@ -318,6 +318,74 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   `content/browser/did/did_graph.*`, verified by 15 `Group_*` tests in
   `standalone/living_web_tests.cc`; browser port = `content/browser/did/{group_backend,
   group_backend_manager,group_host,group_service}.*`, renderer = `.../graph/group.*`.
+
+## Spec 05 specifics (landed)
+
+- **Sync folds onto the existing graph hosts — no new service.** The §6 renderer surface is
+  a `partial interface Graph` (`publish`/`unpublish`/`syncState`, `peers`/`onlinePeers`,
+  `currentRevision`, `pendingDiffs`, `sendSignal`/`sendSignalToSession`/`broadcast`, and the
+  `onpeerjoined`/`onpeerleft`/`onsyncstatechange`/`onsignal`/`ondiff` events) plus a
+  `partial interface GraphManager` (`mount`/`unmount`, `listMounted`/`listModules`/
+  `listSpaces`, `onsubscriptiongained`/`onsubscriptionlost`). The Mojo folds into the single
+  `graph.mojom`. Backend: `PersonalGraphManager` owns **one** per-realm `SyncBackend` and
+  shares it with every `PersonalGraphHost`; the host carries the per-graph session state
+  (`published_`/`session_writable_`, the durable queue, `current_revision_`).
+- **Shared identity core** = `content/browser/graph_sync/graph_diff.*` (namespace
+  `living_web`, pure-std, **no Chromium deps** — like `did_graph`/`zcap`). It defines the
+  `revision`/`commitId` pre-images, `sort(dependencies)`, and the four-topology
+  space-derivation input, and is compiled by **both** build worlds so a diff's content
+  address never diverges. It performs no hashing itself (the SHA-256 header differs per
+  world); the caller applies `crypto::SHA256HashString` + `ToLowerHex`.
+- **Diff identity** (§5.2.2, amendment §5.2.2.1): `revision =
+  SHA-256(BuildRevisionPreimage)` — a domain tag, `graphDid`, the **byte-length-framed**
+  `rdfc-1.0` canonical N-Quads of the additions then removals, then the sorted dependency
+  revisions (length-framed because N-Quads embed LF). `commitId =
+  SHA-256(BuildCommitIdPreimage)` — tag, `revision`, `author`, `timestamp`, leaf-capability
+  id, LF-joined, no trailer. The bundle `signature` is Ed25519 over the UTF-8 lowercase-hex
+  `commitId` **directly** (Ed25519 hashes internally — no second SHA-256). Both digests are
+  lowercase hex.
+- **validateDiff** (§9.2.1) steps 0–6: recompute `revision`+`commitId` and verify the bundle
+  signature against the resolved author key; capability chain + caveats **delegated to the
+  Spec 04 `GovernanceEngine`** (enforcement-mode-aware, §9.4); per-reifier signatures with an
+  **author-binding** guard (a reifier attributed to an agent ≠ the diff's committer →
+  `reifier_signature_invalid`, closing the smuggle hole); dependency validation (chain-root
+  rule → `chain_root_conflict`, unknown revision → `missing_dependency`); §14.5 timestamp
+  plausibility. An accepted revision enters the local chain; a replay is an idempotent no-op
+  (§14.4). Rejection reasons carry `constraint_kind` `capability` (identity/signature/chain)
+  or `temporal` (timestamp).
+- **authorKey resolution** (§5.2.2): a `did:key` author resolves to its own key; a
+  `did:graph` author resolves to the **current `capabilityDelegation` delegate keys**
+  projected from that DID's document in the target graph — so a diff signed by a rotated
+  group delegate still verifies.
+- **Read access & topology** (§7, §9.2.2): `validateReadAccess` is the `mountContext` gate; a
+  graph is *restricted* iff it binds a `capability` constraint (keyed off the constraint's
+  presence, **not** `enforcement_mode`). `DeriveSpace` → `space://` + SHA-256 over the
+  topology input; tokens `lwsync:{unified,public,dedicated,named}:`; namespace id =
+  `context://participates_in` root, fallback the graph DID.
+- **The session layer is browser-only glue** (publish/mount/peers/signalling/currentRevision/
+  pendingDiffs); it has **no standalone counterpart**. Live peer transport, real peer lists,
+  and module installation are **Spec 06** — until a module attaches, peer lists are empty,
+  `peerCount` is 0, signalling is a validated no-op, and `listModules` is empty. `syncState`
+  goes `idle` → `synced` on publish/mount.
+- **Reconnection** (§13, amendment): the durable `DiffQueue` keys and de-dupes by `commitId`
+  in commit order; `ReconnectBackoffMs` is 5 s initial, ×2, cap 300 s; the batch policy is
+  100 diffs / 3000 ms. **Invitations** (§12, amendment):
+  `web+graph://<relay>/<space-uri-base64url>?did=&module=&name=` — `did` REQUIRED,
+  `module`/`name` OPTIONAL and percent-encoded.
+- **Errors** map to DOMException names: DID-less publish/commit, an `options.moduleHash`
+  disagreeing with `group://syncModule`, and a double-mount → `InvalidStateError`; a mount an
+  agent may not read/write → `NotAllowedError`; `unmount` of an unmounted DID →
+  `NotFoundError`.
+- **Normative detail folded into draft 05** (on `main`, see `SPEC_COMPLIANCE.md`): (i)
+  §5.2.2.1 the exact `revision`/`commitId` pre-image bytes and the commit-id-direct signature
+  message; (ii) §12 invitation-link format + processing model; (iii) §14.5 received-timestamp
+  plausibility (future 300 s + causal + per-author monotonic); (iv) §13 reconnection / offline
+  handling (durable queue, backoff, batching).
+- Authoritative reference impl: `standalone/sync_provider.h` (`SyncEngine` + `DiffQueue`) over
+  the shared `graph_diff.*` and the browser `content/browser/graph_sync/sync_backend.*`,
+  verified by 29 `Sync_*` tests in `standalone/living_web_tests.cc`; browser port =
+  `content/browser/graph/{personal_graph_host,personal_graph_manager}.*` (session + mount /
+  inventory), renderer = `.../graph/{graph,graph_manager}.*` (§6 surface).
 
 ## Gotchas
 

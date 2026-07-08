@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SignalEvent — dispatched for Graph.onsignal (Graph Synchronisation Protocol
+// spec §6.3, §11.2). Its `from` attribute is the peer session that sent the
+// signal; `payload` is the raw application bytes (§11.3). Signals are ephemeral:
+// not diffed, not signed beyond transport authentication, not stored.
+
+[Exposed=(Window,Worker)]
+interface SignalEvent : Event {
+  readonly attribute Peer from;
+  readonly attribute Uint8Array payload;
+};

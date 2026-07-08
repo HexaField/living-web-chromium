@@ -12,6 +12,7 @@
 #ifndef CONTENT_BROWSER_GRAPH_PERSONAL_GRAPH_MANAGER_H_
 #define CONTENT_BROWSER_GRAPH_PERSONAL_GRAPH_MANAGER_H_
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,8 +24,11 @@
 #include "content/browser/graph/graph_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph/personal_graph_host.h"
+#include "content/browser/graph_sync/sync_backend.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
 
 namespace content {
@@ -51,6 +55,13 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // renderer §11 API run against one registry. Must not outlive this manager.
   GovernanceBackend* governance() { return &governance_; }
 
+  // The realm's Spec 05 sync backend (diff construction/validation, space
+  // derivation, read gating, the durable diff queue). Shared with every
+  // PersonalGraphHost and with the Spec 03 GroupService so the §6/§9 sync surface
+  // and the §9.3 sync-blocking rule run against a single chain view. Must not
+  // outlive this manager.
+  SyncBackend* sync() { return &sync_; }
+
   // graph::mojom::PersonalGraphManager:
   void Create(const std::optional<std::string>& display_name,
               mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver,
@@ -61,7 +72,32 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
       mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver,
       FromSnapshotCallback callback) override;
 
+  // ---- Spec 05 §6.2/§6.4 sync surface (folded into this manager) ----
+  void Mount(const std::string& graph_did,
+             graph::mojom::MountOptionsPtr options,
+             mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver,
+             MountCallback callback) override;
+  void Unmount(const std::string& graph_did, UnmountCallback callback) override;
+  void ListMounted(ListMountedCallback callback) override;
+  void ListModules(ListModulesCallback callback) override;
+  void ListSpaces(ListSpacesCallback callback) override;
+  void SubscribeManager(
+      mojo::PendingRemote<graph::mojom::PersonalGraphManagerClient> client)
+      override;
+
  private:
+  // One entry of the realm's mount table (§6.2), keyed by the mounted graph DID.
+  // |host| and the backend named by |backend_id| are owned via |hosts_| /
+  // |backends_|; the rest is the §6.4 inventory the renderer reads back.
+  struct MountEntry {
+    raw_ptr<PersonalGraphHost> host;
+    std::string backend_id;
+    graph::mojom::MountMode mode;
+    std::string space_uri;
+    std::string module_hash;
+    graph::mojom::GraphSyncState sync_state;
+  };
+
   static graph::mojom::GraphTrustLevel TrustToMojo(GraphTrustLevel t);
   static GraphTrustLevel TrustFromMojo(graph::mojom::GraphTrustLevel t);
   static graph::mojom::GraphInfoPtr BuildInfo(GraphBackend* backend);
@@ -77,8 +113,16 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
 
   GraphBackendManager backends_;
   GovernanceBackend governance_;
+  // Declared after |governance_|: SyncBackend borrows &governance_ at
+  // construction, so it must be initialised later (and destroyed earlier).
+  SyncBackend sync_;
   std::vector<std::unique_ptr<PersonalGraphHost>> hosts_;
+  // §6.2 mount table, keyed by mounted graph DID.
+  std::map<std::string, MountEntry> mounts_;
   mojo::ReceiverSet<graph::mojom::PersonalGraphManager> receivers_;
+  // §6.4: bound by SubscribeManager; the browser pushes onsubscriptiongained /
+  // onsubscriptionlost through it as mounts gain and lose diff delivery.
+  mojo::Remote<graph::mojom::PersonalGraphManagerClient> manager_client_;
   base::WeakPtrFactory<PersonalGraphManager> weak_factory_{this};
 };
 

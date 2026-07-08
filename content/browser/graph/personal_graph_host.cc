@@ -63,10 +63,12 @@ PersonalGraphHost::PersonalGraphHost(
     GraphBackend* backend,
     GraphBackendManager* manager,
     GovernanceBackend* governance,
+    SyncBackend* sync,
     mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver)
     : backend_(backend),
       manager_(manager),
       governance_(governance),
+      sync_(sync),
       receiver_(this, std::move(receiver)) {}
 
 PersonalGraphHost::~PersonalGraphHost() = default;
@@ -270,6 +272,7 @@ void PersonalGraphHost::AddTriple(graph::mojom::TriplePtr triple,
     std::move(callback).Run(nullptr, std::nullopt, backend_->last_error());
     return;
   }
+  EmitDiff({added}, {});
   std::move(callback).Run(ToMojo(added), CurrentIri(backend_), std::nullopt);
 }
 
@@ -288,6 +291,7 @@ void PersonalGraphHost::AddTriples(std::vector<graph::mojom::TriplePtr> triples,
     std::move(callback).Run(std::nullopt, std::nullopt, backend_->last_error());
     return;
   }
+  EmitDiff(added, {});
   std::vector<graph::mojom::TriplePtr> out;
   out.reserve(added.size());
   for (const auto& t : added)
@@ -297,11 +301,14 @@ void PersonalGraphHost::AddTriples(std::vector<graph::mojom::TriplePtr> triples,
 
 void PersonalGraphHost::RemoveTriple(graph::mojom::TriplePtr triple,
                                      RemoveTripleCallback callback) {
+  living_web::Triple in = FromMojo(triple);
   bool removed = false;
-  if (!backend_->RemoveTriple(FromMojo(triple), &removed)) {
+  if (!backend_->RemoveTriple(in, &removed)) {
     std::move(callback).Run(false, std::nullopt, backend_->last_error());
     return;
   }
+  if (removed)
+    EmitDiff({}, {in});
   std::move(callback).Run(removed, CurrentIri(backend_), std::nullopt);
 }
 
@@ -544,6 +551,246 @@ void PersonalGraphHost::SetEnforcementMode(graph::mojom::EnforcementMode mode,
     return;
   }
   std::move(callback).Run(std::nullopt);
+}
+
+// ---- Spec 05 §6 sync converters -------------------------------------------
+
+// static
+graph::mojom::DiffTriplePtr PersonalGraphHost::ToMojo(const DiffTriple& dt) {
+  auto out = graph::mojom::DiffTriple::New();
+  out->triple = ToMojo(dt.triple);
+  out->author = dt.author;
+  out->timestamp = dt.timestamp;
+  out->method = dt.method;
+  out->signature = dt.signature;
+  return out;
+}
+
+// static
+graph::mojom::CapabilityProofPtr PersonalGraphHost::ToMojo(
+    const CapabilityProof& p) {
+  auto out = graph::mojom::CapabilityProof::New();
+  out->chain = p.chain;
+  out->caveats_satisfied = p.caveats_satisfied;
+  out->has_content_caveats = p.has_content_caveats;
+  // content::CapabilityProof carries no VerifiablePresentations (§5.3); the mojo
+  // |presentations| array stays empty here.
+  return out;
+}
+
+// static
+graph::mojom::GraphDiffPtr PersonalGraphHost::ToMojo(const GraphDiff& d) {
+  auto out = graph::mojom::GraphDiff::New();
+  out->graph_did = d.graph_did;
+  out->revision = d.revision;
+  out->commit_id = d.commit_id;
+  out->additions.reserve(d.additions.size());
+  for (const DiffTriple& dt : d.additions)
+    out->additions.push_back(ToMojo(dt));
+  out->removals.reserve(d.removals.size());
+  for (const DiffTriple& dt : d.removals)
+    out->removals.push_back(ToMojo(dt));
+  out->dependencies = d.dependencies;
+  if (d.capability_proof)
+    out->capability_proof = ToMojo(*d.capability_proof);
+  out->author = d.author;
+  out->timestamp = d.timestamp;
+  out->diffs_since_snapshot = d.diffs_since_snapshot;
+  out->snapshot_promotion = d.snapshot_promotion;
+  out->signature = d.signature;
+  return out;
+}
+
+// ---- Spec 05 §6 sync helpers ----------------------------------------------
+
+void PersonalGraphHost::SetSyncState(graph::mojom::GraphSyncState state) {
+  sync_state_ = state;
+  if (client_)
+    client_->OnSyncStateChange(state);
+}
+
+std::optional<std::string> PersonalGraphHost::SignalGate() const {
+  if (!session_active_)
+    return std::string("InvalidStateError");
+  // Published/mounted but no sync module attached: signalling is a no-op success
+  // (the payload is dropped until Spec 06 supplies live transport).
+  return std::nullopt;
+}
+
+std::string PersonalGraphHost::ResolveGroupSyncModule() {
+  const std::optional<std::string>& did = backend_->did();
+  if (!did)
+    return std::string();
+  TripleQuery q;
+  q.subject = *did;
+  q.predicate = living_web::kGroupSyncModule;
+  std::vector<living_web::Triple> hits;
+  if (!backend_->QueryTriples(q, &hits) || hits.empty())
+    return std::string();
+  const living_web::ObjectTerm& o = hits.front().object;
+  if (o.is_literal() && o.literal)
+    return o.literal->lexical;
+  return o.iri_or_bnode;
+}
+
+void PersonalGraphHost::EmitDiff(
+    const std::vector<living_web::Triple>& additions,
+    const std::vector<living_web::Triple>& removals) {
+  // Only a writable sync session (published, or write/governance-mounted) turns a
+  // local write into a §5.2.2 commit. Outside a session these are ordinary Spec
+  // 02 mutations. The commit needs the sync identity (a groupified DID) and an
+  // unlocked active credential to sign; Publish/Mount guarantee the former, and
+  // the latter is re-checked defensively — a missing prerequisite means the write
+  // simply is not gossiped (local state stays authoritative).
+  if (!session_writable_ || !backend_->did())
+    return;
+  const std::string author_cred = governance_->ActiveCredentialId();
+  if (author_cred.empty())
+    return;
+  CommitOptions opts;
+  if (!current_revision_.empty())
+    opts.dependencies = {current_revision_};
+  opts.diffs_since_snapshot = diffs_since_snapshot_;
+  GraphDiff diff;
+  if (!sync_->CommitDiff(backend_, author_cred, additions, removals, opts, &diff))
+    return;
+  current_revision_ = diff.revision;
+  ++diffs_since_snapshot_;
+  diff_queue_.Enqueue(diff);
+}
+
+// ---- Spec 05 §6 sync surface ----------------------------------------------
+
+void PersonalGraphHost::Publish(graph::mojom::PublishOptionsPtr options,
+                                PublishCallback callback) {
+  if (backend_->dissolved()) {
+    std::move(callback).Run(nullptr, "InvalidStateError");
+    return;
+  }
+  // §6.1: publishing addresses the graph by its sync identity. A plain local
+  // graph (no DID) has no did:graph to derive a space from — it must be
+  // groupified (Spec 03) to gain a sync identity first.
+  const std::optional<std::string>& did = backend_->did();
+  if (!did) {
+    std::move(callback).Run(nullptr, "InvalidStateError");
+    return;
+  }
+  // §6.1 step 1: the authoritative module hash is the groupified value bound by
+  // <graphDid> group://syncModule; options.module_hash is only an override for a
+  // not-yet-groupified graph and MUST agree with the groupified value when both
+  // are present.
+  std::string authoritative = ResolveGroupSyncModule();
+  std::string module_hash = options->module_hash;
+  if (!authoritative.empty()) {
+    if (!module_hash.empty() && module_hash != authoritative) {
+      std::move(callback).Run(nullptr, "InvalidStateError");
+      return;
+    }
+    module_hash = authoritative;
+  }
+  // §7.3 derive the sync space for the requested topology.
+  living_web::SpaceTopology topology =
+      living_web::SpaceTopologyFromToken(options->space_topology);
+  std::optional<std::string> space =
+      sync_->DeriveSpace(backend_, topology, options->custom_space);
+  if (!space) {
+    const std::string& err = sync_->last_error();
+    std::move(callback).Run(nullptr, err.empty() ? "InvalidStateError" : err);
+    return;
+  }
+  space_uri_ = *space;
+  module_hash_ = module_hash;
+  relays_ = options->relays;
+  published_ = true;
+  session_active_ = true;
+  session_writable_ = true;
+  // No module/peers attached (Spec 06 supplies transport), so the session is
+  // trivially converged: move straight to synced and announce it.
+  SetSyncState(graph::mojom::GraphSyncState::kSynced);
+
+  auto info = graph::mojom::PublishedGraphInfo::New();
+  info->graph_did = *did;
+  info->space_uri = space_uri_;
+  info->module_hash = module_hash_;
+  info->relays = relays_;
+  std::move(callback).Run(std::move(info), std::nullopt);
+}
+
+void PersonalGraphHost::Unpublish(UnpublishCallback callback) {
+  if (!published_) {
+    std::move(callback).Run("InvalidStateError");
+    return;
+  }
+  // Release the session addressing; the durable diff queue and local DAG head are
+  // kept (§13.1) so a re-publish resumes the same chain.
+  published_ = false;
+  session_active_ = false;
+  session_writable_ = false;
+  space_uri_.clear();
+  module_hash_.clear();
+  relays_.clear();
+  SetSyncState(graph::mojom::GraphSyncState::kIdle);
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::SyncState(SyncStateCallback callback) {
+  std::move(callback).Run(sync_state_);
+}
+
+void PersonalGraphHost::Peers(PeersCallback callback) {
+  // §6.3: peer sessions are discovered by the active sync module
+  // ([[SYNC-MODULE-ARCHITECTURE]], Spec 06); with no module attached the set is
+  // empty.
+  std::move(callback).Run({});
+}
+
+void PersonalGraphHost::OnlinePeers(OnlinePeersCallback callback) {
+  std::move(callback).Run({});
+}
+
+void PersonalGraphHost::CurrentRevision(CurrentRevisionCallback callback) {
+  if (current_revision_.empty()) {
+    std::move(callback).Run(std::nullopt, std::nullopt);
+    return;
+  }
+  std::move(callback).Run(current_revision_, std::nullopt);
+}
+
+void PersonalGraphHost::PendingDiffs(PendingDiffsCallback callback) {
+  std::vector<graph::mojom::GraphDiffPtr> out;
+  // The whole durable queue (§13.1), in commit order.
+  for (const GraphDiff& d : diff_queue_.NextBatch(diff_queue_.Size()))
+    out.push_back(ToMojo(d));
+  std::move(callback).Run(std::move(out));
+}
+
+void PersonalGraphHost::SendSignal(const std::string& remote_did,
+                                   const std::vector<uint8_t>& payload,
+                                   SendSignalCallback callback) {
+  std::move(callback).Run(SignalGate());
+}
+
+void PersonalGraphHost::SendSignalToSession(
+    const std::string& remote_did,
+    const std::string& session_id,
+    const std::vector<uint8_t>& payload,
+    SendSignalToSessionCallback callback) {
+  std::move(callback).Run(SignalGate());
+}
+
+void PersonalGraphHost::Broadcast(const std::vector<uint8_t>& payload,
+                                  BroadcastCallback callback) {
+  std::move(callback).Run(SignalGate());
+}
+
+void PersonalGraphHost::InitAsMount(const std::string& space_uri,
+                                    const std::string& module_hash,
+                                    bool writable) {
+  space_uri_ = space_uri;
+  module_hash_ = module_hash;
+  session_active_ = true;
+  session_writable_ = writable;
+  SetSyncState(graph::mojom::GraphSyncState::kSynced);
 }
 
 }  // namespace content

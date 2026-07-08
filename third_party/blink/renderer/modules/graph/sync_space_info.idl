@@ -1,0 +1,13 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SyncSpaceInfo — one entry of the realm's active-space inventory, returned by
+// GraphManager.listSpaces() (Graph Synchronisation Protocol spec §6.4).
+
+dictionary SyncSpaceInfo {
+  USVString spaceUri;
+  USVString moduleHash;
+  unsigned long graphCount;
+  unsigned long peerCount;
+};

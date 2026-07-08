@@ -476,6 +476,175 @@ interoperability hazard the draft left open:
 
 ---
 
+## Spec 05 — Graph Synchronisation Protocol ✅
+
+Fully implemented and tested. The protocol layers a peer-to-peer diff-gossip
+session onto a groupified graph (Spec 03) governed by the capability framework
+(Spec 04): a local mutation becomes a signed `GraphDiff`, gossiped to peers who
+independently `validateDiff` it against the graph's own governance so every
+honest peer reaches the same verdict (§9.2.1) and the DAG converges (§9.3). The
+diff-identity and sync-space-derivation core
+(`content/browser/graph_sync/graph_diff.*`, namespace `living_web`) has **no
+Chromium dependencies** and is shared byte-for-byte by the browser sync backend
+(`content/browser/graph_sync/sync_backend.*`) and the standalone harness
+(`standalone/sync_provider.h`), so the bytes a diff is content-addressed and
+signed over never diverge between build worlds. The §6 renderer surface is
+**folded** onto `Graph` (a `partial interface Graph`: publish/unpublish +
+syncState, peer inspection, pending-diff retrieval, ephemeral signalling) and
+onto `GraphManager` (a `partial interface GraphManager`: mount/unmount + the
+realm's listMounted / listModules / listSpaces inventory and the subscription
+events) — not a separate service — because a realm keeps a single
+`PersonalGraphManager`, which owns one shared `SyncBackend` and the mount table.
+Normative behaviour is exercised by the 29 `Sync_*` blocks of the C++ harness
+(`living_web_tests`, 120 tests total, all green), 29 browser gtests (6
+`SyncGraphDiffCoreTest` + 23 `SyncBackendTest`,
+`tests/sync_backend_unittest.cc`), and the 18-test WPT
+(`tests/web_platform_tests/graph/graph-sync.html`).
+
+The **live peer transport** — real peer lists, wire delivery of diffs and
+signals, and sync-module installation — is [[SYNC-MODULE-ARCHITECTURE]] (Spec
+06). Until a module is attached the session layer is trivially converged: peer
+lists are empty, `peerCount` is 0, signalling is a validated no-op, and the
+module inventory is empty. Everything the protocol layer itself owns — diff
+construction, validation, space derivation, invitations, and the durable queue —
+is complete here.
+
+### §6 renderer sync surface (partial interface `Graph`)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `publish(options)` → `PublishedGraph` | §6.1 | ✅ | ✅ | ✅ | ✅ | Derives the `space://` URI (§7.3), marks the graph published + writable, advances to `synced`. A DID-less graph → `InvalidStateError`; an `options.moduleHash` disagreeing with the graph's `group://syncModule` binding → `InvalidStateError`. Returns `{graphDid, spaceUri, moduleHash, relays}`. |
+| `unpublish()` | §6.1 | ✅ | ✅ | ✅ | ✅ | Tears the subscription down and returns to `idle`; idempotent (a never-published graph resolves). |
+| `syncState()` → `GraphSyncState` | §5.5, §6.3 | ✅ | ✅ | ✅ | ✅ | `"idle"` until published or mounted, then `"synced"`; `onsyncstatechange` fires on transitions. |
+| `peers()` / `onlinePeers()` → `sequence<Peer>` | §6.3 | ✅ | ✅ | ✅ | ✅ | Empty until a sync module supplies transport (Spec 06). |
+| `currentRevision()` → `USVString` | §5.2.1, §6.3 | ✅ | ✅ | ✅ | ✅ | The local DAG head; `""` until the first local commit. |
+| `pendingDiffs()` → `sequence<GraphDiff>` | §6.3, §13.1 | ✅ | ✅ | ✅ | ✅ | Readout of the durable local diff queue; empty when converged. |
+| `sendSignal` / `sendSignalToSession` / `broadcast` | §6.3, §11 | ✅ | ✅ | ✅ | ✅ | `InvalidStateError` before publish/mount; after, a validated no-op success (the payload is dropped until a sync module supplies transport). |
+| events `onpeerjoined` / `onpeerleft` / `onsyncstatechange` / `onsignal` / `ondiff` | §6.3 | ✅ | ✅ | ✅ | ✅ | Assignable `EventHandler`s dispatched off the host's subscribed client. |
+
+### §6.2 / §6.4 realm sync inventory (partial interface `GraphManager`)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `mount(graphDid, options)` → `Graph` | §6.2 | ✅ | ✅ | ✅ | ✅ | One mount per DID per realm — a second → `InvalidStateError`. A read mount is authorised by the §9.2.2 `mountContext` gate, a write/governance mount by the `createLink` authority; an unauthorised mount → `NotAllowedError`. Materialises an external-trust backend the sync module fills. |
+| `unmount(graphDid)` | §6.2 | ✅ | ✅ | ✅ | ✅ | `NotFoundError` when not mounted; drops the entry and announces `onsubscriptionlost`. A renderer dropping the mounted `Graph` is an implicit unmount. |
+| `listMounted()` → `sequence<MountedGraphInfo>` | §6.4 | ✅ | ✅ | ✅ | ✅ | `{graphDid, mode, syncState, spaceUri, moduleHash, peerCount}`. |
+| `listModules()` → `sequence<SyncModuleInfo>` | §6.4 | ✅ | ✅ | ✅ | ✅ | Inventory owned by the module runtime (Spec 06); empty at the protocol layer. |
+| `listSpaces()` → `sequence<SyncSpaceInfo>` | §6.4, §7.2 | ✅ | ✅ | ✅ | ✅ | Aggregates the realm's active spaces from **both** the mount table and the local graphs its hosts have published; `graph_count` sums a unified topology, and a mount-backing host reports `published()==false` so the two sources never double-count. |
+| events `onsubscriptiongained` / `onsubscriptionlost` | §6.4 | ✅ | ✅ | ✅ | ✅ | Fire as a mount gains or loses diff delivery in a space; a host disconnect emits a single `lost`. |
+
+### §5 diff identity & construction (`graph_diff` core)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| `revision` pre-image (exact bytes) | §5.2.2, §5.2.2.1 | ✅ | ✅ | ✅ | Length-framed: version tag, `graphDid`, then the byte-length-framed `rdfc-1.0` canonical N-Quads of the additions and removals, then the sorted dependency revisions; SHA-256 → lowercase hex. Framing is length-prefixed because N-Quads contain LF. Amendment (i); `Sync_RevisionPreimageExactBytes`. |
+| `commitId` pre-image (exact bytes) | §5.2.2, §5.2.2.1 | ✅ | ✅ | ✅ | `tag ⧺ revision ⧺ author ⧺ timestamp ⧺ leafZcapId`, LF-joined, no trailer; SHA-256 → lowercase hex. `Sync_CommitIdPreimageExactBytes`. |
+| `signature` over the commitId directly | §5.2.2, §5.2.2.1 | ✅ | ✅ | ✅ | Ed25519 over the UTF-8 bytes of the lowercase-hex `commitId` — signed directly, **not** re-hashed (Ed25519 hashes internally). Amendment (i); `Sync_SignatureMessageIsCommitIdDirect`. |
+| Committer-authored reifiers | §5.1, §5.2.2 | ✅ | ✅ | ✅ | Every diff triple carries a reifier the committer signs over the Spec 02 §3.2.1 pre-image; canonicalised together with the triple, so a receiver reproduces the exact wire bytes. |
+| `sort(dependencies)` | §5.2.1 | ✅ | ✅ | ✅ | Ascending lexicographic over the lowercase-hex revisions, de-duplicated. `Sync_SortDependenciesOrdersAndDedups`. |
+
+### §9 validation (`validateDiff` steps 0–6, `validateReadAccess`)
+
+| Step | Spec | C++ | Test | Status | Notes |
+|------|------|-----|------|--------|-------|
+| 0 — bundle signature | §9.2.1 | ✅ | ✅ | ✅ | Recomputes `revision` + `commitId` and verifies the Ed25519 bundle signature against the resolved author key; a tamper of any bound field → `revision_invalid` / `commit_invalid` / `signature_invalid` (kind `capability`). `Sync_BundleSignatureTamperRejected`, `…RevisionTamperRejected`. |
+| authorKey resolution | §5.2.2 | ✅ | ✅ | ✅ | The author's `did:key`, or — for a graph-DID author — the current `capabilityDelegation` delegate keys projected from that DID's document in the target graph. |
+| 1–3 — capability chain + caveats | §9.2.1, §9.4 | ✅ | ✅ | ✅ | Delegated to the Spec 04 `GovernanceEngine`: constraint collection (§6.2), chain-walk to `BootstrapRoot` (§7), content-caveat re-evaluation (§9), deny-wins (§6.3), enforcement-mode awareness (§9.4). |
+| 4 — reifier signatures + author binding | §9.2.1, §5.2.2 | ✅ | ✅ | ✅ | Each reifier signature is verified; a reifier attributed to an agent other than the diff's committer is rejected before any key work → `reifier_signature_invalid`, closing the author-smuggle hole. `Sync_ReifierAuthorSmuggleRejected`. |
+| 5 — dependencies | §5.2.1 | ✅ | ✅ | ✅ | The chain-root rule: a `deps=0` diff is valid only as the graph's first diff or when it advertises a snapshot promotion (else `chain_root_conflict`); an unknown named revision → `missing_dependency`. `Sync_ChainRootAndSnapshotPromotion`, `…MissingDependencyRejected`. |
+| §14.5 timestamp plausibility | §14.5 | ✅ | ✅ | ✅ | Future bound (>300 s ahead → `timestamp_future`), causal monotonicity (≥ max dependency timestamp → `timestamp_causal`), and per-author monotonicity (`timestamp_monotonic`); malformed → `timestamp_malformed` (kind `temporal`). Amendment (iii); `Sync_TimestampFutureRejected`, `…CausalRejected`, `…MonotonicRejected`. |
+| 6 — accept & record; §14.4 replay | §9.2.1, §14.4 | ✅ | ✅ | ✅ | An accepted revision enters the local chain; a re-delivered already-applied revision is an idempotent no-op accept. |
+| `validateReadAccess` — the `mountContext` gate | §9.2.2 | ✅ | ✅ | ✅ | Accepts an unrestricted read; a graph bearing a capability constraint rejects a stranger. `Sync_ReadAccessOpenGraphAccepts`, `…ReadAccessRestrictedGraphRejectsStranger`. |
+
+### §7 topology & sync-space derivation
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| Restricted classification | §7.2 | ✅ | ✅ | ✅ | A graph is *restricted* for read iff it binds a `capability` constraint (which covers the non-triple `mountContext` action) — keyed off the constraint's presence, **not** `enforcement_mode`. `Sync_IsRestrictedTracksCapabilityConstraint`. |
+| Space derivation → `space://<sha256-hex>` | §7.3 | ✅ | ✅ | ✅ | Hashes `BuildSpaceDerivationInput` for the four topologies (unified `lwsync:unified:`, privacy-tiered → `public:`/`dedicated:` by restriction, fully-partitioned `dedicated:`, custom `named:`); the namespace id is the graph's `context://participates_in` root, falling back to the graph DID. `Sync_SpaceDerivationInputPerTopology`, `…DeriveSpaceProducesStableSpaceUri`, `…TopologyTokenRoundTrip`. |
+
+### §12 invitations & §13 reconnection
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| Invitation link format + parse | §12.1, §12.2 | ✅ | ✅ | ✅ | `web+graph://<relay>/<space-uri-base64url>?did=&module=&name=`: `did` REQUIRED (missing → reject), `module`/`name` OPTIONAL and percent-encoded; a wrong scheme → reject. Amendment (ii); `Sync_InvitationFormatParseRoundTrip`, `…OptionalFieldsAbsent`, `…RequiresDid`, `…RejectsWrongScheme`. |
+| Durable local diff queue | §13.1 | ✅ | ✅ | ✅ | Locally-committed, not-yet-acknowledged diffs indexed and de-duplicated by `commitId`, preserving commit order for the flush. Amendment (iv); `Sync_DiffQueueDedupesByCommitId`. |
+| Batch policy | §13.4 | ✅ | ✅ | ✅ | Up to 100 diffs / 3000 ms per flush, commit-ordered. `Sync_DiffQueueBatchCapsAndOrders`. |
+| Reconnect backoff | §13.3 | ✅ | ✅ | ✅ | 5 s initial, ×2 per failed attempt, capped at 300 s. `Sync_ReconnectBackoffDoublesAndCaps`. |
+
+### Normative parameters
+
+- **Canonicalisation** (§5.2.2): `rdfc-1.0` canonical N-Quads over the
+  triples-with-reifiers block; the empty set canonicalises to the empty string.
+  Identical to the Spec 02 §5.2 profile, so a diff's content address is
+  reproducible on any peer.
+- **Timestamp plausibility** (§14.5): future bound 300 s; a diff's timestamp MUST
+  be ≥ every dependency's timestamp and ≥ the author's last applied timestamp.
+- **Reconnection** (§13.3–§13.4): backoff 5000 ms initial, ×2, cap 300000 ms;
+  batch cap 100 diffs / 3000 ms.
+- **Session-layer scope**: publish/mount/syncState/peers/currentRevision/
+  pendingDiffs/signalling are browser-only session glue over the shared
+  validation core. Live peer transport, real peer lists, and module installation
+  are Spec 06 — until a module is attached peers are empty, signalling is a
+  no-op success, and the module inventory is empty. Everything the protocol layer
+  owns (diff identity, validation, space derivation, invitations, the durable
+  queue) is complete.
+- Authoritative reference impl: `standalone/sync_provider.h` (`SyncEngine` +
+  `DiffQueue`) over the shared `content/browser/graph_sync/graph_diff.*` and the
+  browser `content/browser/graph_sync/sync_backend.*`, verified by the 29
+  `Sync_*` tests in `standalone/living_web_tests.cc`; the browser port
+  (`content/browser/graph/personal_graph_host.*` session surface +
+  `personal_graph_manager.*` mount/inventory) and the renderer
+  (`third_party/blink/renderer/modules/graph/graph.*` §6 surface,
+  `graph_manager.*` mount/inventory) mirror it.
+
+### Amendments
+
+Four under-specified areas surfaced while implementing Spec 05 have been **folded
+into draft 05 as normative detail** on `w3c-living-web-proposals` `main`. None
+weakens the implementation; each removes an interoperability hazard the draft
+left open:
+
+- **(i) The `revision` / `commitId` pre-images and the signature message are
+  fixed byte-for-byte** — new draft §5.2.2.1. The draft named the fields a diff is
+  content-addressed and signed over but not the exact bytes, so two
+  implementations could compute different `revision`/`commitId` for the same diff
+  and never converge. The amendment pins: the `revision` pre-image (a
+  domain-separation tag, the `graphDid`, and the **byte-length-framed** `rdfc-1.0`
+  canonical N-Quads of the additions and removals, then the sorted dependency
+  revisions — length-framed because N-Quads embed LF); the `commitId` pre-image
+  (tag, `revision`, `author`, `timestamp`, leaf-capability id, LF-joined, no
+  trailer); both SHA-256 → lowercase hex; and that the bundle `signature` is
+  Ed25519 over the UTF-8 lowercase-hex `commitId` **directly** (no second
+  SHA-256). It mirrors the Spec 04 §4.5.3.1 delegation-proof amendment.
+  Implemented in `graph_diff.*` (`BuildRevisionPreimage` / `BuildCommitIdPreimage`
+  / `BuildSignatureMessage`); covered by `Sync_RevisionPreimageExactBytes`,
+  `…CommitIdPreimageExactBytes`, `…SignatureMessageIsCommitIdDirect`.
+- **(ii) Graph invitation links have a fixed format and processing model** —
+  draft §12. The draft described inviting a peer to a graph but left the link
+  syntax unspecified. The amendment pins the `web+graph://` form
+  (`<relay-host>/<space-uri-base64url>?did=&module=&name=`), makes `did` REQUIRED
+  and `module`/`name` OPTIONAL, fixes `moduleHash` precedence (an explicit link
+  module overrides the graph's `group://syncModule` default) and the
+  percent-encoding of `name`. Implemented as `FormatInvitation` /
+  `ParseInvitation`; covered by the four `Sync_Invitation*` tests.
+- **(iii) Received timestamps have a plausibility bound** — draft §14.5. The draft
+  trusted a diff's `timestamp` for causal ordering without bounding it, so a
+  malicious or skewed committer could poison the DAG order. The amendment makes a
+  future bound (300 s), causal monotonicity (≥ every dependency's timestamp), and
+  per-author monotonicity normative on every path that trusts the timestamp.
+  Implemented as `CheckTimestamp`; covered by `Sync_TimestampFutureRejected`,
+  `…CausalRejected`, `…MonotonicRejected`.
+- **(iv) Reconnection and offline handling are specified** — draft §13. The draft
+  assumed continuous connectivity. The amendment adds the durable local diff queue
+  (keyed by `commitId`), the exponential-backoff reconnection schedule (§13.3),
+  and the batching policy (§13.4) a peer uses to catch up after a partition.
+  Implemented as `DiffQueue` + `ReconnectBackoffMs` + the batch constants; covered
+  by `Sync_DiffQueueDedupesByCommitId`, `…DiffQueueBatchCapsAndOrders`,
+  `…ReconnectBackoffDoublesAndCaps`.
+
+---
+
 ## Build worlds
 
 This repository is an **overlay**, not a full Chromium checkout. Two build worlds

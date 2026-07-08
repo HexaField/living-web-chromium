@@ -6,17 +6,21 @@
 
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_capability_info.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_capability_proof_input.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_governance_validation_result.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_constraint.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_snapshot_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_publish_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_sparql_query_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_triple_query.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_usvstring_literalvalue.h"
@@ -24,8 +28,17 @@
 #include "third_party/blink/renderer/core/event_target_names.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
+#include "third_party/blink/renderer/modules/graph/diff_event.h"
+#include "third_party/blink/renderer/modules/graph/graph_diff.h"
 #include "third_party/blink/renderer/modules/graph/graph_triple_event.h"
 #include "third_party/blink/renderer/modules/graph/literal_value.h"
+#include "third_party/blink/renderer/modules/graph/peer.h"
+#include "third_party/blink/renderer/modules/graph/peer_event.h"
+#include "third_party/blink/renderer/modules/graph/published_graph.h"
+#include "third_party/blink/renderer/modules/graph/signal_event.h"
+#include "third_party/blink/renderer/modules/graph/sync_state_event.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -150,6 +163,25 @@ graph::mojom::blink::EnforcementMode EnforcementModeFromV8(
   NOTREACHED();
 }
 
+// §5.5 GraphSyncState: Mojo enum -> V8 enum.
+V8GraphSyncState SyncStateToV8(graph::mojom::blink::GraphSyncState state) {
+  switch (state) {
+    case graph::mojom::blink::GraphSyncState::kIdle:
+      return V8GraphSyncState(V8GraphSyncState::Enum::kIdle);
+    case graph::mojom::blink::GraphSyncState::kResolving:
+      return V8GraphSyncState(V8GraphSyncState::Enum::kResolving);
+    case graph::mojom::blink::GraphSyncState::kConnecting:
+      return V8GraphSyncState(V8GraphSyncState::Enum::kConnecting);
+    case graph::mojom::blink::GraphSyncState::kSyncing:
+      return V8GraphSyncState(V8GraphSyncState::Enum::kSyncing);
+    case graph::mojom::blink::GraphSyncState::kSynced:
+      return V8GraphSyncState(V8GraphSyncState::Enum::kSynced);
+    case graph::mojom::blink::GraphSyncState::kError:
+      return V8GraphSyncState(V8GraphSyncState::Enum::kError);
+  }
+  NOTREACHED();
+}
+
 // JSON-serialise a script object to its canonical string — the verbatim caveat /
 // presentation JSON the browser stores and round-trips. Returns false when the
 // value cannot be stringified (e.g. it contains a cycle).
@@ -249,7 +281,8 @@ CapabilityInfo* CapabilityInfoFromMojo(
 
 Graph::Graph(ExecutionContext* context,
              const graph::mojom::blink::GraphInfoPtr& info,
-             mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host)
+             mojo::PendingRemote<graph::mojom::blink::PersonalGraphHost> host,
+             bool read_only)
     : id_(info->id),
       iri_(info->iri),
       did_(info->did),
@@ -258,6 +291,7 @@ Graph::Graph(ExecutionContext* context,
                            graph::mojom::blink::GraphTrustLevel::kLocal
                        ? "local"
                        : "external"),
+      read_only_(read_only),
       execution_context_(context),
       host_(context),
       client_(this, context) {
@@ -310,6 +344,14 @@ ScriptPromise<Triple> Graph::addTriple(ScriptState* script_state,
     return promise;
   }
 
+  // §6.3/§9.2.2: a read-mounted graph rejects every mutating operation
+  // synchronously, before any diff is constructed.
+  if (read_only_) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph is mounted read-only");
+    return promise;
+  }
+
   host_->AddTriple(
       TripleToMojo(triple),
       WTF::BindOnce(
@@ -341,6 +383,14 @@ ScriptPromise<IDLSequence<Triple>> Graph::addTriples(
   if (dissolved_ || !host_.is_bound()) {
     resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
                                      "The graph has been dissolved");
+    return promise;
+  }
+
+  // §6.3/§9.2.2: a read-mounted graph rejects every mutating operation
+  // synchronously, before any diff is constructed.
+  if (read_only_) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph is mounted read-only");
     return promise;
   }
 
@@ -377,6 +427,14 @@ ScriptPromise<IDLBoolean> Graph::removeTriple(ScriptState* script_state,
   if (dissolved_ || !host_.is_bound()) {
     resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
                                      "The graph has been dissolved");
+    return promise;
+  }
+
+  // §6.3/§9.2.2: a read-mounted graph rejects every mutating operation
+  // synchronously, before any diff is constructed.
+  if (read_only_) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph is mounted read-only");
     return promise;
   }
 
@@ -816,6 +874,297 @@ ScriptPromise<IDLUndefined> Graph::setEnforcementMode(
   return promise;
 }
 
+ScriptPromise<PublishedGraph> Graph::publish(ScriptState* script_state,
+                                             const PublishOptions* options) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<PublishedGraph>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  // §6.1: absent optional members ride the wire as empty strings; the browser
+  // treats "" as unset and reads the authoritative module hash from the group.
+  auto mojo_options = graph::mojom::blink::PublishOptions::New();
+  mojo_options->module_hash =
+      options->hasModuleHash() ? options->moduleHash() : g_empty_string;
+  if (options->hasRelays())
+    mojo_options->relays = options->relays();
+  mojo_options->space_topology =
+      options->hasSpaceTopology() ? options->spaceTopology() : g_empty_string;
+  mojo_options->custom_space =
+      options->hasCustomSpace() ? options->customSpace() : g_empty_string;
+
+  host_->Publish(
+      std::move(mojo_options),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<PublishedGraph>* resolver,
+             graph::mojom::blink::PublishedGraphInfoPtr published,
+             const String& error) {
+            if (!published || !error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(PublishedGraph::FromMojo(published));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::unpublish(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->Unpublish(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLUndefined>* resolver, const String& error) {
+        if (!error.IsNull()) {
+          RejectWithName(resolver, error);
+          return;
+        }
+        resolver->Resolve();
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<V8GraphSyncState> Graph::syncState(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<V8GraphSyncState>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->SyncState(WTF::BindOnce(
+      [](ScriptPromiseResolver<V8GraphSyncState>* resolver,
+         graph::mojom::blink::GraphSyncState state) {
+        resolver->Resolve(SyncStateToV8(state));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<Peer>> Graph::peers(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<Peer>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->Peers(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLSequence<Peer>>* resolver,
+         Vector<graph::mojom::blink::PeerPtr> peers) {
+        HeapVector<Member<Peer>> out;
+        out.ReserveInitialCapacity(peers.size());
+        for (const auto& peer : peers)
+          out.push_back(Peer::FromMojo(peer));
+        resolver->Resolve(std::move(out));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<Peer>> Graph::onlinePeers(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<Peer>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->OnlinePeers(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLSequence<Peer>>* resolver,
+         Vector<graph::mojom::blink::PeerPtr> peers) {
+        HeapVector<Member<Peer>> out;
+        out.ReserveInitialCapacity(peers.size());
+        for (const auto& peer : peers)
+          out.push_back(Peer::FromMojo(peer));
+        resolver->Resolve(std::move(out));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUSVString> Graph::currentRevision(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUSVString>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->CurrentRevision(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLUSVString>* resolver, const String& revision,
+         const String& error) {
+        if (!error.IsNull()) {
+          RejectWithName(resolver, error);
+          return;
+        }
+        resolver->Resolve(revision);
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<GraphDiff>> Graph::pendingDiffs(
+    ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<GraphDiff>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->PendingDiffs(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLSequence<GraphDiff>>* resolver,
+         Vector<graph::mojom::blink::GraphDiffPtr> diffs) {
+        HeapVector<Member<GraphDiff>> out;
+        out.ReserveInitialCapacity(diffs.size());
+        for (const auto& diff : diffs)
+          out.push_back(GraphDiff::FromMojo(diff));
+        resolver->Resolve(std::move(out));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::sendSignal(ScriptState* script_state,
+                                              const String& remote_did,
+                                              const V8BufferSource* payload) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  DOMArrayPiece piece(payload);
+  Vector<uint8_t> bytes;
+  bytes.AppendSpan(base::span(piece.Bytes(), piece.ByteLength()));
+
+  host_->SendSignal(
+      remote_did, std::move(bytes),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::sendSignalToSession(
+    ScriptState* script_state,
+    const String& remote_did,
+    const String& session_id,
+    const V8BufferSource* payload) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  DOMArrayPiece piece(payload);
+  Vector<uint8_t> bytes;
+  bytes.AppendSpan(base::span(piece.Bytes(), piece.ByteLength()));
+
+  host_->SendSignalToSession(
+      remote_did, session_id, std::move(bytes),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::broadcast(ScriptState* script_state,
+                                             const V8BufferSource* payload) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  DOMArrayPiece piece(payload);
+  Vector<uint8_t> bytes;
+  bytes.AppendSpan(base::span(piece.Bytes(), piece.ByteLength()));
+
+  host_->Broadcast(
+      std::move(bytes),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
 void Graph::OnTripleAdded(graph::mojom::blink::TriplePtr triple) {
   // §5.2: the IRI advanced with this write; refresh the cached value.
   OnMutationSettled();
@@ -827,6 +1176,34 @@ void Graph::OnTripleRemoved(graph::mojom::blink::TriplePtr triple) {
   OnMutationSettled();
   DispatchEvent(*GraphTripleEvent::Create(event_type_names::kTripleremoved,
                                           TripleFromMojo(triple)));
+}
+
+void Graph::OnPeerJoined(graph::mojom::blink::PeerPtr peer) {
+  DispatchEvent(
+      *PeerEvent::Create(event_type_names::kPeerjoined, Peer::FromMojo(peer)));
+}
+
+void Graph::OnPeerLeft(graph::mojom::blink::PeerPtr peer) {
+  DispatchEvent(
+      *PeerEvent::Create(event_type_names::kPeerleft, Peer::FromMojo(peer)));
+}
+
+void Graph::OnSyncStateChange(graph::mojom::blink::GraphSyncState state) {
+  DispatchEvent(*SyncStateEvent::Create(event_type_names::kSyncstatechange,
+                                        SyncStateToV8(state)));
+}
+
+void Graph::OnSignal(graph::mojom::blink::PeerPtr from,
+                     const Vector<uint8_t>& payload) {
+  DOMUint8Array* bytes =
+      DOMUint8Array::Create(base::span(payload.data(), payload.size()));
+  DispatchEvent(*SignalEvent::Create(event_type_names::kSignal,
+                                     Peer::FromMojo(from), bytes));
+}
+
+void Graph::OnDiff(graph::mojom::blink::GraphDiffPtr diff) {
+  DispatchEvent(
+      *DiffEvent::Create(event_type_names::kDiff, GraphDiff::FromMojo(diff)));
 }
 
 void Graph::OnMutationSettled() {

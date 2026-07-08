@@ -1,0 +1,12 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// DiffEvent — dispatched for Graph.ondiff (Graph Synchronisation Protocol spec
+// §6.3, §16.3). Its `diff` attribute is the diff just applied to the local graph
+// (§5.1). Browser-dispatched only; not constructible from script.
+
+[Exposed=(Window,Worker)]
+interface DiffEvent : Event {
+  readonly attribute GraphDiff diff;
+};
