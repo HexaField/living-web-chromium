@@ -56,6 +56,10 @@
 #include "content/browser/graph_sync/default_sync_module.h"
 #include "content/browser/graph_sync/cbor.h"
 
+// Spec 10 — Graph Flows.
+#include "flow_provider.h"
+#include "content/browser/flows/flow_definition.h"
+
 #include <chrono>
 #include <openssl/rand.h>
 
@@ -5323,6 +5327,660 @@ TEST(Sync09_MlsGroupAddRemove) {
   std::string body;
   EXPECT_TRUE(default_sync::SignalFromCbor(opened.payload, &body));
   EXPECT_EQ(body, std::string("after-removal"));
+}
+
+// ============================================================
+// Spec 10 — Graph Flows
+// ============================================================
+
+namespace {
+
+// -- reusable §4 flow definitions -------------------------------------------
+
+// A minimal two-state flow with one unguarded transition into a terminal state.
+const char kTicketFlow[] = R"JSON({
+  "name": "Ticket",
+  "namespace": "https://example.org/flows/ticket",
+  "appliesTo": "https://example.org/Ticket",
+  "initialState": "open",
+  "states": [
+    {"name": "open"},
+    {"name": "closed", "isTerminal": true}
+  ],
+  "transitions": [
+    {"name": "close", "fromState": "open", "toState": "closed"}
+  ]
+})JSON";
+
+// A §7 SPARQL-ASK guard: the transition fires only once the instance is marked
+// ready. The IRIs carry no §7.4-forbidden keyword, so the guard is accepted.
+const char kReviewFlow[] = R"JSON({
+  "name": "Review",
+  "namespace": "https://example.org/flows/review",
+  "appliesTo": "https://example.org/Doc",
+  "initialState": "draft",
+  "states": [
+    {"name": "draft"},
+    {"name": "published"}
+  ],
+  "transitions": [
+    {"name": "publish", "fromState": "draft", "toState": "published",
+     "guard": "ASK { $this <https://example.org/ready> <https://example.org/yes> }",
+     "guardDescription": "the document must be marked ready"}
+  ]
+})JSON";
+
+// Two §8 minDelay transitions out of one state: PT0S is immediately eligible,
+// PT1H is not.
+const char kTimerFlow[] = R"JSON({
+  "name": "Timer",
+  "namespace": "https://example.org/flows/timer",
+  "appliesTo": "https://example.org/Timer",
+  "initialState": "waiting",
+  "states": [
+    {"name": "waiting"},
+    {"name": "elapsed"}
+  ],
+  "transitions": [
+    {"name": "advanceNow", "fromState": "waiting", "toState": "elapsed",
+     "temporal": {"minDelay": "PT0S"}},
+    {"name": "advanceLater", "fromState": "waiting", "toState": "elapsed",
+     "temporal": {"minDelay": "PT1H"}}
+  ]
+})JSON";
+
+// A §13.4 deadline transition: maxDelay PT0S with onDeadline auto-transition, so
+// the runtime should fire it the moment the instance enters the source state.
+const char kDeadlineFlow[] = R"JSON({
+  "name": "Deadline",
+  "namespace": "https://example.org/flows/deadline",
+  "appliesTo": "https://example.org/Task",
+  "initialState": "active",
+  "states": [
+    {"name": "active"},
+    {"name": "expired"}
+  ],
+  "transitions": [
+    {"name": "expire", "fromState": "active", "toState": "expired",
+     "temporal": {"maxDelay": "PT0S", "onDeadline": "auto-transition"}}
+  ]
+})JSON";
+
+// A transition carrying §4.4 setSingleTarget actions with the "now" and "agent"
+// object sentinels.
+const char kActionedFlow[] = R"JSON({
+  "name": "Actioned",
+  "namespace": "https://example.org/flows/actioned",
+  "appliesTo": "https://example.org/Item",
+  "initialState": "new",
+  "states": [
+    {"name": "new"},
+    {"name": "done"}
+  ],
+  "transitions": [
+    {"name": "finish", "fromState": "new", "toState": "done",
+     "actions": [
+       {"type": "flow://actions/setSingleTarget", "subject": "this",
+        "predicate": "https://example.org/updatedAt", "object": "now"},
+       {"type": "flow://actions/setSingleTarget", "subject": "this",
+        "predicate": "https://example.org/updatedBy", "object": "agent"}
+     ]}
+  ]
+})JSON";
+
+// A §10 composite: the parent's "begin" transition triggers the "Shipment"
+// sub-flow on the same instance.
+const char kParentFlow[] = R"JSON({
+  "name": "Parent",
+  "namespace": "https://example.org/flows/parent",
+  "appliesTo": "https://example.org/Order",
+  "initialState": "created",
+  "states": [
+    {"name": "created"},
+    {"name": "processing"}
+  ],
+  "transitions": [
+    {"name": "begin", "fromState": "created", "toState": "processing",
+     "triggersSubFlow": "Shipment"}
+  ]
+})JSON";
+
+const char kShipmentFlow[] = R"JSON({
+  "name": "Shipment",
+  "namespace": "https://example.org/flows/shipment",
+  "appliesTo": "https://example.org/Order",
+  "initialState": "packing",
+  "states": [
+    {"name": "packing"},
+    {"name": "delivered", "isTerminal": true}
+  ],
+  "transitions": [
+    {"name": "ship", "fromState": "packing", "toState": "delivered"}
+  ]
+})JSON";
+
+// A transition bearing a §9 role. In open mode the role requirement is inert.
+const char kRoleFlow[] = R"JSON({
+  "name": "Roled",
+  "namespace": "https://example.org/flows/roled",
+  "appliesTo": "https://example.org/Thing",
+  "initialState": "start",
+  "states": [
+    {"name": "start"},
+    {"name": "finish"}
+  ],
+  "transitions": [
+    {"name": "go", "fromState": "start", "toState": "finish",
+     "role": "approveThing"}
+  ]
+})JSON";
+
+}  // namespace
+
+// ---- §4/§8 flow-definition core (flow_definition.{h,cc}) ----
+
+TEST(Flow_ParseIso8601Duration) {
+  int64_t s = -1;
+  EXPECT_TRUE(flows::ParseIso8601Duration("PT1H", &s));
+  EXPECT_EQ(s, int64_t(3600));
+  EXPECT_TRUE(flows::ParseIso8601Duration("PT0S", &s));
+  EXPECT_EQ(s, int64_t(0));
+  EXPECT_TRUE(flows::ParseIso8601Duration("P1D", &s));
+  EXPECT_EQ(s, int64_t(86400));
+  EXPECT_TRUE(flows::ParseIso8601Duration("PT1M", &s));
+  EXPECT_EQ(s, int64_t(60));
+  EXPECT_TRUE(flows::ParseIso8601Duration("PT1H30M", &s));
+  EXPECT_EQ(s, int64_t(5400));
+  // Empty durations and malformations are rejected.
+  EXPECT_FALSE(flows::ParseIso8601Duration("P", &s));
+  EXPECT_FALSE(flows::ParseIso8601Duration("PT", &s));
+  EXPECT_FALSE(flows::ParseIso8601Duration("banana", &s));
+}
+
+TEST(Flow_NodeIriConvention) {
+  EXPECT_EQ(flows::FlowNodeIri("Ticket"), std::string("flow://Ticket"));
+  EXPECT_EQ(flows::FlowStateNodeIri("Ticket", "open"),
+            std::string("flow://Ticket/state/open"));
+  EXPECT_EQ(flows::FlowTransitionNodeIri("Ticket", "close"),
+            std::string("flow://Ticket/transition/close"));
+}
+
+TEST(Flow_OnDeadlineTokens) {
+  EXPECT_TRUE(flows::ParseOnDeadline("auto-transition") ==
+              flows::OnDeadline::kAutoTransition);
+  EXPECT_TRUE(flows::ParseOnDeadline("error-state") ==
+              flows::OnDeadline::kErrorState);
+  EXPECT_TRUE(flows::ParseOnDeadline("notify") == flows::OnDeadline::kNotify);
+  EXPECT_FALSE(flows::ParseOnDeadline("bogus").has_value());
+  EXPECT_EQ(flows::OnDeadlineToken(flows::OnDeadline::kAutoTransition),
+            std::string("auto-transition"));
+  EXPECT_EQ(flows::OnDeadlineToken(flows::OnDeadline::kNone), std::string());
+}
+
+TEST(Flow_ParseDefinitionValidatesGrammar) {
+  flows::FlowDefinition def;
+  std::string err;
+  EXPECT_TRUE(flows::ParseFlowDefinition(kTicketFlow, &def, &err));
+  EXPECT_EQ(def.name, std::string("Ticket"));
+  EXPECT_EQ(def.initial_state, std::string("open"));
+  EXPECT_EQ(def.states.size(), size_t(2));
+  EXPECT_EQ(def.transitions.size(), size_t(1));
+  EXPECT_TRUE(flows::FindState(def, "closed") != nullptr);
+  EXPECT_TRUE(flows::FindState(def, "closed")->is_terminal);
+  EXPECT_TRUE(flows::FindTransition(def, "close") != nullptr);
+
+  // initialState MUST name a defined state.
+  const char kBadInitial[] =
+      R"({"name":"F","namespace":"n","appliesTo":"a","initialState":"nope",
+          "states":[{"name":"s"}],"transitions":[]})";
+  EXPECT_FALSE(flows::ParseFlowDefinition(kBadInitial, &def, &err));
+  // No transition may leave a terminal state (§4.2/§6.4).
+  const char kLeavesTerminal[] =
+      R"({"name":"F","namespace":"n","appliesTo":"a","initialState":"s",
+          "states":[{"name":"s","isTerminal":true},{"name":"t"}],
+          "transitions":[{"name":"go","fromState":"s","toState":"t"}]})";
+  EXPECT_FALSE(flows::ParseFlowDefinition(kLeavesTerminal, &def, &err));
+  // Duplicate state names are rejected.
+  const char kDupState[] =
+      R"({"name":"F","namespace":"n","appliesTo":"a","initialState":"s",
+          "states":[{"name":"s"},{"name":"s"}],"transitions":[]})";
+  EXPECT_FALSE(flows::ParseFlowDefinition(kDupState, &def, &err));
+}
+
+TEST(Flow_ActionKeyAliases) {
+  // The §17 source/target aliases parse to the canonical subject/object fields.
+  const char kAlias[] =
+      R"({"name":"F","namespace":"n","appliesTo":"a","initialState":"s",
+          "states":[{"name":"s"},{"name":"t"}],
+          "transitions":[{"name":"go","fromState":"s","toState":"t",
+            "actions":[{"type":"flow://actions/setSingleTarget",
+              "source":"this","predicate":"p","target":"x"}]}]})";
+  flows::FlowDefinition def;
+  std::string err;
+  EXPECT_TRUE(flows::ParseFlowDefinition(kAlias, &def, &err));
+  EXPECT_EQ(def.transitions.size(), size_t(1));
+  EXPECT_EQ(def.transitions[0].actions.size(), size_t(1));
+  EXPECT_EQ(def.transitions[0].actions[0].subject, std::string("this"));
+  EXPECT_EQ(def.transitions[0].actions[0].object, std::string("x"));
+  EXPECT_TRUE(def.transitions[0].actions[0].kind ==
+              flows::FlowActionKind::kSetSingleTarget);
+}
+
+TEST(Flow_CanonicalizeStableAcrossKeyOrder) {
+  auto c1 = flows::CanonicalizeFlowJson(R"({"name":"F","namespace":"n"})");
+  auto c2 = flows::CanonicalizeFlowJson(R"({"namespace":"n","name":"F"})");
+  EXPECT_TRUE(c1.has_value());
+  EXPECT_TRUE(c2.has_value());
+  EXPECT_EQ(*c1, *c2);  // JCS sorts keys → order-independent
+  EXPECT_EQ(*c1, std::string(R"({"name":"F","namespace":"n"})"));
+  // Malformed JSON has no canonical form.
+  EXPECT_FALSE(flows::CanonicalizeFlowJson("{not json").has_value());
+}
+
+// ---- §5 service: registration, storage, listing ----
+
+TEST(Flow_AddFlowStoresAndLists) {
+  GovFixture f;  // open mode: no capability constraint installed
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+
+  auto flows_out = svc.GetFlows(f.W());
+  EXPECT_EQ(flows_out.size(), size_t(1));
+  EXPECT_EQ(flows_out[0].name, std::string("Ticket"));
+  EXPECT_EQ(flows_out[0].applies_to, std::string("https://example.org/Ticket"));
+  EXPECT_EQ(flows_out[0].initial_state, std::string("open"));
+  EXPECT_EQ(flows_out[0].states.size(), size_t(2));
+  EXPECT_EQ(flows_out[0].states[0], std::string("open"));
+  EXPECT_EQ(flows_out[0].transitions.size(), size_t(1));
+  EXPECT_EQ(flows_out[0].transitions[0], std::string("close"));
+}
+
+TEST(Flow_AddFlowNameMismatchConstraintError) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  // The registration name MUST equal the definition's own name (§4.1/§5.1).
+  EXPECT_FALSE(svc.AddFlow(f.W(), "Wrong", kTicketFlow, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("ConstraintError"));
+}
+
+TEST(Flow_AddFlowMalformedSyntaxError) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_FALSE(svc.AddFlow(f.W(), "Bad", "{not a flow", f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("SyntaxError"));
+}
+
+TEST(Flow_AddFlowDuplicateConstraintError) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  EXPECT_FALSE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("ConstraintError"));
+}
+
+TEST(Flow_AddFlowUnknownAuthorInvalidState) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_FALSE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, "urn:uuid:nope"));
+  EXPECT_EQ(svc.last_error(), std::string("InvalidStateError"));
+}
+
+TEST(Flow_GetFlowResolvesDefinition) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  flows::FlowDefinition def;
+  EXPECT_TRUE(svc.GetFlow(f.W(), "Ticket", &def));
+  EXPECT_EQ(def.name, std::string("Ticket"));
+  EXPECT_EQ(def.states.size(), size_t(2));
+  EXPECT_EQ(def.transitions.size(), size_t(1));
+  // An unregistered name is a NotFoundError.
+  EXPECT_FALSE(svc.GetFlow(f.W(), "Ghost", &def));
+  EXPECT_EQ(svc.last_error(), std::string("NotFoundError"));
+}
+
+TEST(Flow_RemoveFlow) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  EXPECT_EQ(svc.GetFlows(f.W()).size(), size_t(1));
+  EXPECT_TRUE(svc.RemoveFlow(f.W(), "Ticket", f.gcred));
+  EXPECT_EQ(svc.GetFlows(f.W()).size(), size_t(0));
+  // Removing a flow that was never registered is a no-op success.
+  EXPECT_TRUE(svc.RemoveFlow(f.W(), "Ghost", f.gcred));
+}
+
+// ---- §6 instance lifecycle ----
+
+TEST(Flow_InitializeAndGetState) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  const std::string inst = "urn:uuid:ticket-1";
+
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Ticket", inst, f.gcred));
+  std::string state;
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Ticket", inst, &state));
+  EXPECT_EQ(state, std::string("open"));
+
+  // Re-initialising the same instance for the same flow is an InvalidStateError.
+  EXPECT_FALSE(svc.InitializeInstance(f.W(), "Ticket", inst, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("InvalidStateError"));
+
+  // An instance never entered into the flow has no state.
+  EXPECT_FALSE(
+      svc.GetFlowState(f.W(), "Ticket", "urn:uuid:absent", &state));
+  EXPECT_EQ(svc.last_error(), std::string("NotFoundError"));
+
+  // Initialising against an unregistered flow is a NotFoundError.
+  EXPECT_FALSE(svc.InitializeInstance(f.W(), "Ghost", inst, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("NotFoundError"));
+}
+
+// ---- §6.2 / §11.3 executeFlowTransition ----
+
+TEST(Flow_ExecuteHappyPath) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  const std::string inst = "urn:uuid:ticket-happy";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Ticket", inst, f.gcred));
+
+  FlowTransitionResult r =
+      svc.ExecuteFlowTransition(f.W(), "Ticket", inst, "close", f.gcred);
+  EXPECT_TRUE(r.success);
+  EXPECT_TRUE(r.new_state.has_value());
+  EXPECT_EQ(*r.new_state, std::string("closed"));
+
+  std::string state;
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Ticket", inst, &state));
+  EXPECT_EQ(state, std::string("closed"));
+}
+
+TEST(Flow_ExecuteWrongStateAndUnknownTransition) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  const std::string inst = "urn:uuid:ticket-wrong";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Ticket", inst, f.gcred));
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Ticket", inst, "close", f.gcred)
+          .success);
+
+  // Firing "close" again: the instance is now in the terminal "closed" state,
+  // not the transition's "open" fromState.
+  FlowTransitionResult again =
+      svc.ExecuteFlowTransition(f.W(), "Ticket", inst, "close", f.gcred);
+  EXPECT_FALSE(again.success);
+  EXPECT_EQ(svc.last_error(), std::string("InvalidStateError"));
+
+  // An unknown transition name is a NotFoundError.
+  FlowTransitionResult unknown =
+      svc.ExecuteFlowTransition(f.W(), "Ticket", inst, "reopen", f.gcred);
+  EXPECT_FALSE(unknown.success);
+  EXPECT_EQ(svc.last_error(), std::string("NotFoundError"));
+}
+
+TEST(Flow_GuardBlocksThenAllows) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Review", kReviewFlow, f.gcred));
+  const std::string inst = "urn:uuid:doc-1";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Review", inst, f.gcred));
+
+  // The guard does not hold yet: the instance is not marked ready.
+  FlowTransitionResult blocked =
+      svc.ExecuteFlowTransition(f.W(), "Review", inst, "publish", f.gcred);
+  EXPECT_FALSE(blocked.success);
+  EXPECT_TRUE(blocked.reason.has_value());
+  EXPECT_TRUE(blocked.guard_description.has_value());
+
+  // Mark the instance ready (a governed write), then the guard holds.
+  {
+    group_detail::ScopedActive active(&f.provider, f.gcred);
+    EXPECT_TRUE(f.W()->AddTriple(group_detail::T_iri(
+        inst, "https://example.org/ready", "https://example.org/yes")));
+  }
+  FlowTransitionResult allowed =
+      svc.ExecuteFlowTransition(f.W(), "Review", inst, "publish", f.gcred);
+  EXPECT_TRUE(allowed.success);
+  EXPECT_EQ(*allowed.new_state, std::string("published"));
+}
+
+TEST(Flow_MinDelayGate) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Timer", kTimerFlow, f.gcred));
+
+  // A PT1H minDelay cannot have elapsed on a just-initialised instance.
+  const std::string slow = "urn:uuid:timer-slow";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Timer", slow, f.gcred));
+  FlowTransitionResult later =
+      svc.ExecuteFlowTransition(f.W(), "Timer", slow, "advanceLater", f.gcred);
+  EXPECT_FALSE(later.success);
+  EXPECT_TRUE(later.seconds_until_allowed.has_value());
+  EXPECT_TRUE(std::stoll(*later.seconds_until_allowed) > 0);
+
+  // A PT0S minDelay is satisfied immediately.
+  const std::string fast = "urn:uuid:timer-fast";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Timer", fast, f.gcred));
+  FlowTransitionResult now =
+      svc.ExecuteFlowTransition(f.W(), "Timer", fast, "advanceNow", f.gcred);
+  EXPECT_TRUE(now.success);
+  EXPECT_EQ(*now.new_state, std::string("elapsed"));
+}
+
+TEST(Flow_ActionsSetSingleTarget) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Actioned", kActionedFlow, f.gcred));
+  const std::string inst = "urn:uuid:item-1";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Actioned", inst, f.gcred));
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Actioned", inst, "finish", f.gcred)
+          .success);
+
+  // "now" resolves to an xsd:dateTime literal.
+  auto at = group_detail::QueryObjects(f.W(), inst,
+                                       "https://example.org/updatedAt");
+  EXPECT_EQ(at.size(), size_t(1));
+  EXPECT_TRUE(at[0].is_literal());
+  EXPECT_EQ(at[0].literal->datatype, std::string(kXsdDateTime));
+
+  // "agent" resolves to the firing agent's DID (an IRI term).
+  auto by = group_detail::QueryObjects(f.W(), inst,
+                                       "https://example.org/updatedBy");
+  EXPECT_EQ(by.size(), size_t(1));
+  EXPECT_FALSE(by[0].is_literal());
+  EXPECT_EQ(by[0].iri_or_bnode, f.Wdid());
+}
+
+TEST(Flow_AvailableTransitions) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Timer", kTimerFlow, f.gcred));
+  const std::string inst = "urn:uuid:timer-avail";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Timer", inst, f.gcred));
+
+  // Only the PT0S transition is currently firable.
+  std::vector<std::string> avail;
+  EXPECT_TRUE(svc.AvailableTransitions(f.W(), "Timer", inst, f.gcred, &avail));
+  EXPECT_EQ(avail.size(), size_t(1));
+  EXPECT_EQ(avail[0], std::string("advanceNow"));
+
+  // After advancing, the terminal-free "elapsed" state has no exits.
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Timer", inst, "advanceNow", f.gcred)
+          .success);
+  EXPECT_TRUE(svc.AvailableTransitions(f.W(), "Timer", inst, f.gcred, &avail));
+  EXPECT_EQ(avail.size(), size_t(0));
+}
+
+TEST(Flow_DueDeadlineTransition) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Deadline", kDeadlineFlow, f.gcred));
+  const std::string inst = "urn:uuid:task-1";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Deadline", inst, f.gcred));
+
+  // The PT0S maxDelay deadline is due immediately on entry.
+  auto due = svc.DueDeadlineTransition(f.W(), "Deadline", inst);
+  EXPECT_TRUE(due.has_value());
+  EXPECT_EQ(*due, std::string("expire"));
+
+  // The runtime fires it (system-authored); the instance advances.
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Deadline", inst, *due, f.gcred)
+          .success);
+  std::string state;
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Deadline", inst, &state));
+  EXPECT_EQ(state, std::string("expired"));
+
+  // No further deadline is due from the terminal-free "expired" state.
+  EXPECT_FALSE(
+      svc.DueDeadlineTransition(f.W(), "Deadline", inst).has_value());
+}
+
+TEST(Flow_SubFlowInstantiation) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Parent", kParentFlow, f.gcred));
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Shipment", kShipmentFlow, f.gcred));
+  const std::string inst = "urn:uuid:order-1";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Parent", inst, f.gcred));
+
+  // Firing "begin" advances the parent AND instantiates the sub-flow.
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Parent", inst, "begin", f.gcred)
+          .success);
+
+  // Parent and sub-flow states coexist on one instance via flow-scoped
+  // predicates (the composite-flow amendment) — they do not collide.
+  std::string parent_state;
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Parent", inst, &parent_state));
+  EXPECT_EQ(parent_state, std::string("processing"));
+  std::string sub_state;
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Shipment", inst, &sub_state));
+  EXPECT_EQ(sub_state, std::string("packing"));
+
+  // The sub-flow drives independently to its terminal state.
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Shipment", inst, "ship", f.gcred)
+          .success);
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Shipment", inst, &sub_state));
+  EXPECT_EQ(sub_state, std::string("delivered"));
+  // The parent state is untouched by the sub-flow's progress.
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Parent", inst, &parent_state));
+  EXPECT_EQ(parent_state, std::string("processing"));
+}
+
+// ---- §14.1 shape→flow auto-init (createShapeInstance) ----
+
+TEST(Flow_AutoInitForShapeClass) {
+  GovFixture f;
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  // Two flows bound to the SAME §4.1 target class, one bound to another class.
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Review", kReviewFlow, f.gcred));  // Doc class
+  const char kTicketSla[] = R"JSON({
+    "name": "TicketSla",
+    "namespace": "https://example.org/flows/ticket-sla",
+    "appliesTo": "https://example.org/Ticket",
+    "initialState": "green",
+    "states": [{"name": "green"}, {"name": "breached"}],
+    "transitions": [
+      {"name": "breach", "fromState": "green", "toState": "breached"}
+    ]
+  })JSON";
+  EXPECT_TRUE(svc.AddFlow(f.W(), "TicketSla", kTicketSla, f.gcred));
+
+  const std::string inst = "urn:uuid:ticket-instance-1";
+  // Auto-init for the Ticket class applies EVERY Ticket-class flow (§14.1) and
+  // leaves the Doc-class Review flow untouched.
+  std::vector<std::string> got = svc.AutoInitInstanceForClass(
+      f.W(), "https://example.org/Ticket", inst, f.gcred);
+  EXPECT_EQ(got.size(), size_t(2));
+  bool has_ticket = false, has_sla = false;
+  for (const std::string& n : got) {
+    if (n == "Ticket")
+      has_ticket = true;
+    if (n == "TicketSla")
+      has_sla = true;
+  }
+  EXPECT_TRUE(has_ticket);
+  EXPECT_TRUE(has_sla);
+
+  // Each initialised flow now carries its own §4.2 initialState on the instance,
+  // flow-scoped so the two states coexist (the composite-flow amendment).
+  std::string state;
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "Ticket", inst, &state));
+  EXPECT_EQ(state, std::string("open"));
+  EXPECT_TRUE(svc.GetFlowState(f.W(), "TicketSla", inst, &state));
+  EXPECT_EQ(state, std::string("green"));
+
+  // The Doc-class flow was filtered out — the instance never entered it.
+  EXPECT_FALSE(svc.GetFlowState(f.W(), "Review", inst, &state));
+
+  // Idempotent: a second auto-init initialises nothing (every matching flow
+  // already carries a state → InitializeInstance InvalidStateError, swallowed)
+  // and reports no error. This is what lets §14.1 coexist with a §10 sub-flow
+  // instantiated on the same instance.
+  std::vector<std::string> again = svc.AutoInitInstanceForClass(
+      f.W(), "https://example.org/Ticket", inst, f.gcred);
+  EXPECT_TRUE(again.empty());
+  EXPECT_TRUE(svc.last_error().empty());
+
+  // A class no flow targets initialises nothing, no error.
+  std::vector<std::string> none = svc.AutoInitInstanceForClass(
+      f.W(), "https://example.org/Unbound", inst, f.gcred);
+  EXPECT_TRUE(none.empty());
+  EXPECT_TRUE(svc.last_error().empty());
+}
+
+TEST(Flow_RoleIgnoredInOpenMode) {
+  GovFixture f;  // open mode: §9 role requirements are inert (§14.3)
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Roled", kRoleFlow, f.gcred));
+  const std::string inst = "urn:uuid:thing-1";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Roled", inst, f.gcred));
+  FlowTransitionResult r =
+      svc.ExecuteFlowTransition(f.W(), "Roled", inst, "go", f.gcred);
+  EXPECT_TRUE(r.success);
+  EXPECT_EQ(*r.new_state, std::string("finish"));
+}
+
+TEST(Flow_ConcurrentTransitionWinner) {
+  // §13.2 reuses the DEFAULT-SYNC-MODULE §8.4 tie-break: smaller reifier hash.
+  const std::string a = "00aa";
+  const std::string b = "00bb";
+  EXPECT_EQ(FlowService::ConcurrentTransitionWinner(a, b), a);
+  EXPECT_EQ(FlowService::ConcurrentTransitionWinner(b, a), a);
+}
+
+// ---- §11.2 updateFlow authorisation under enforcement ----
+
+TEST(Flow_UpdateFlowRequiredUnderEnforcement) {
+  GovFixture f;
+  BootstrapEnforced(f);  // root holds the 8 core actions, NOT updateFlow
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_FALSE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("NotAllowedError"));
+}
+
+TEST(Flow_UpdateFlowGrantedUnderEnforcement) {
+  GovFixture f;
+  // Grant updateFlow (+ the write actions initialise/execute need and the
+  // updateGovernance BootstrapEnforced's SetEnforcementMode requires).
+  BootstrapEnforced(f, std::vector<std::string>{"createLink", "removeLink",
+                                                "updateFlow",
+                                                "updateGovernance"});
+  FlowService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddFlow(f.W(), "Ticket", kTicketFlow, f.gcred));
+  const std::string inst = "urn:uuid:ticket-enforced";
+  EXPECT_TRUE(svc.InitializeInstance(f.W(), "Ticket", inst, f.gcred));
+  EXPECT_TRUE(
+      svc.ExecuteFlowTransition(f.W(), "Ticket", inst, "close", f.gcred)
+          .success);
 }
 
 // ============================================================

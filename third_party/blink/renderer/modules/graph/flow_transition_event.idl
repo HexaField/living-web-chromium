@@ -1,0 +1,18 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// FlowTransitionEvent — dispatched for Graph.ontransitionfired (Graph Flows spec
+// §6.2 step 8, §11) and Graph.ontransitiondeadline (§13.4). `flowName` is the
+// flow whose transition fired, `instanceUri` the FlowInstance it fired on,
+// `transitionName` the §4.3 transition, and `newState` the §6.2 state the
+// instance advanced to (null for a deadline notification that has not yet been
+// auto-transitioned). Browser-dispatched only; not constructible from script.
+
+[Exposed=(Window,Worker)]
+interface FlowTransitionEvent : Event {
+  readonly attribute DOMString flowName;
+  readonly attribute USVString instanceUri;
+  readonly attribute DOMString transitionName;
+  readonly attribute DOMString? newState;
+};

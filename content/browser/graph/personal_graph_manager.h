@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "content/browser/did/did_key_provider.h"
+#include "content/browser/flows/flow_service.h"
 #include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
@@ -71,6 +72,15 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // folded §5 `partial interface Graph` methods run against one view of the
   // realm's identity, governance, and graph store. Must not outlive this manager.
   ShapeService* shapes() { return &shapes_; }
+
+  // The realm's Spec 10 flow service (§5 registration, §6 lifecycle, §7 guards,
+  // §8 temporal rules, §9/§14.3 roles, §10 sub-flows, §13 races). A per-realm
+  // object operating on whichever GraphBackend each call targets; shared with
+  // every PersonalGraphHost so the folded §5–§11 `partial interface Graph` flow
+  // methods — and the §14.1 shape→flow auto-init in createShapeInstance — run
+  // against one view of the realm's identity, governance, and graph store. Must
+  // not outlive this manager.
+  FlowService* flows() { return &flows_; }
 
   // graph::mojom::PersonalGraphManager:
   void Create(const std::optional<std::string>& display_name,
@@ -132,6 +142,11 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // (the last for §7 participates_in parent resolution), so it is declared after
   // them and destroyed before them.
   ShapeService shapes_;
+  // Spec 10 §5–§11 flow service. Borrows |identity|, &governance_ (the §11.2
+  // updateFlow gate + §9/§14.3 role requirement), and &backends_ (accepted for
+  // parity / future cross-graph guard resolution), so it is declared after them
+  // and destroyed before them.
+  FlowService flows_;
   // §6 module runtime ([[SYNC-MODULE-ARCHITECTURE]], Spec 06): the capability-
   // scoped host that owns the realm's installed sync modules and answers §6.4
   // listModules(). Its host-graph / host-crypto backings are the adapters below

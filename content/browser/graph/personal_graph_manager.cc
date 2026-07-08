@@ -20,6 +20,10 @@ PersonalGraphManager::PersonalGraphManager(DIDKeyProvider* identity)
       // for §7 inheritance, the context://participates_in parent graphs via
       // |backends_|. Borrows all three, so it is initialised after them.
       shapes_(identity, &governance_, &backends_),
+      // Spec 10 §5–§11: resolves the target Graph's identity/governance/store per
+      // call; the §11.2 updateFlow gate and §9/§14.3 role requirement go through
+      // |governance_|. Borrows all three, so it is initialised after them.
+      flows_(identity, &governance_, &backends_),
       module_crypto_(identity),
       // §6.2: no host-network backing in this branch — module execution (and
       // thus any network import) awaits the Component Model engine. The runtime
@@ -140,7 +144,7 @@ void PersonalGraphManager::Create(
     CreateCallback callback) {
   GraphBackend* backend = backends_.Create(display_name);
   Retain(std::make_unique<PersonalGraphHost>(backend, &backends_, &governance_,
-                                             &sync_, &shapes_,
+                                             &sync_, &shapes_, &flows_,
                                              std::move(receiver)),
          backend->id());
   std::move(callback).Run(BuildInfo(backend));
@@ -159,7 +163,7 @@ void PersonalGraphManager::FromSnapshot(
     return;
   }
   Retain(std::make_unique<PersonalGraphHost>(backend, &backends_, &governance_,
-                                             &sync_, &shapes_,
+                                             &sync_, &shapes_, &flows_,
                                              std::move(receiver)),
          backend->id());
   std::move(callback).Run(BuildInfo(backend), std::nullopt);
@@ -211,7 +215,7 @@ void PersonalGraphManager::Mount(
 
   const bool writable = options->mode != graph::mojom::MountMode::kRead;
   auto host = std::make_unique<PersonalGraphHost>(
-      backend, &backends_, &governance_, &sync_, &shapes_,
+      backend, &backends_, &governance_, &sync_, &shapes_, &flows_,
       std::move(receiver));
   PersonalGraphHost* raw = host.get();
   Retain(std::move(host), backend->id());

@@ -28,10 +28,14 @@ graph::mojom::GraphTrustLevel TrustToMojo(GraphTrustLevel t) {
 GroupService::GroupService(DIDKeyProvider* identity,
                            GraphBackendManager* graphs,
                            GovernanceBackend* governance,
-                           SyncBackend* sync)
+                           SyncBackend* sync,
+                           ShapeService* shapes,
+                           FlowService* flows)
     : graphs_(graphs),
       governance_(governance),
       sync_(sync),
+      shapes_(shapes),
+      flows_(flows),
       groups_(identity, graphs) {}
 
 GroupService::~GroupService() = default;
@@ -114,7 +118,8 @@ graph::mojom::GroupInfoPtr GroupService::Attach(
   graph::mojom::GroupInfoPtr info = BuildGroupInfo(group.get());
   if (graph_receiver.is_valid()) {
     RetainGraphHost(std::make_unique<PersonalGraphHost>(
-        host, graphs_, governance_, sync_, std::move(graph_receiver)));
+        host, graphs_, governance_, sync_, shapes_, flows_,
+        std::move(graph_receiver)));
   }
   RetainGroupHost(std::make_unique<GroupHost>(
       std::move(group), governance_, std::move(group_receiver)));

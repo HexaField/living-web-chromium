@@ -118,6 +118,7 @@ add_library(living_web STATIC
     content/browser/governance/constraint_vocabulary.cc
     content/browser/graph_sync/cbor.cc
     content/browser/graph_sync/default_sync_module.cc
+    content/browser/flows/flow_definition.cc
 )
 add_dependencies(living_web oxigraph_ffi_build)
 target_include_directories(living_web PUBLIC

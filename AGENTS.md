@@ -177,7 +177,7 @@ Spec numbering (current, 10 specs):
 | 07 | Dynamic Graph Shape Validation | `content/browser/shapes/{shape_definition,shape_service}.*`, `standalone/shape_provider.h`; §5 folded onto `.../graph/personal_graph_host.*` + `.../graph/graph.*`; `graph_backend_manager.*` `LookupHost` (§7 parent resolution) |
 | 08 | Governance Constraint Vocabulary | `content/browser/governance/{constraint_vocabulary,constraint_vocabulary_backend}.*` (shared core + `RegisterConstraintVocabulary`), `standalone/constraint_vocabulary_provider.h`; `ValidationContext::zcap_id` seam in `governance_backend.*` / `capability_provider.h`; §7.8 bound to `shapes/shape_service.*` `Conforms`; installed in `.../graph/personal_graph_manager.*` ctor |
 | 09 | Default Sync Module | `content/browser/graph_sync/{cbor,default_sync_module}.*` (shared byte-critical cores) + `{default_sync_backend,default_sync_crypto,mls_engine}.*` (browser port), `standalone/{default_sync_provider,mls_engine}.h`, `third_party/mls_ffi/` (OpenMLS staticlib); folded into the Spec 05 publish path (no new mojom/blink) |
-| 10 | Graph Flows | — (planned) |
+| 10 | Graph Flows | `content/browser/flows/{flow_definition,flow_service}.*` (shared `living_web::flows` core + browser backend), `standalone/flow_provider.h`; the six §11.1 methods + two event handlers + §14.1 shape→flow auto-init folded onto `.../graph/personal_graph_host.*`; blink `flow_info.idl` / `flow_transition_result.idl` / `flow_transition_event.*`; `FlowInfo` / `FlowTransitionResult` + six methods in `mojo/.../graph/graph.mojom` |
 
 `SPEC_COMPLIANCE.md` tracks per-API status. Keep it current as branches land.
 
@@ -611,6 +611,63 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   `content/browser/graph_sync/{default_sync_backend,default_sync_crypto,mls_engine}.*` with 15
   gtests (`tests/default_sync_module_unittest.cc`); renderer projection pinned by
   `tests/web_platform_tests/graph/default-sync-module.html`.
+
+## Spec 10 specifics (landed)
+
+- **Spec 10 *is* a new renderer surface (unlike Spec 09).** It adds the six §11.1 flow
+  methods (`addFlow`, `removeFlow`, `getFlows`, `getFlowState`, `executeFlowTransition`,
+  `availableTransitions`) and two event handlers (`ontransitionfired`,
+  `ontransitiondeadline`) to `Graph` — folded onto the existing `Graph` interface, not a
+  new interface. **`addFlow` takes the definition as a JSON *string*** (`JSON.stringify(def)`),
+  unlike `addShape` which takes a live object. There is **no `updateFlow` and no
+  `initializeInstance` JS method** — the WebIDL is exactly those six methods.
+- **One shared byte-critical core, pure-std, no Chromium.**
+  `content/browser/flows/flow_definition.*` (namespace `living_web::flows`) owns the §4
+  definition grammar (`ParseFlowDefinition`, strict validation), the §5.1 JCS
+  canonicalisation + the `flow://definition` round-trip literal (`CanonicalizeFlowJson`),
+  the §4.4 action `source`/`target` ⇆ `subject`/`object` aliasing, `ParseIso8601Duration`,
+  the `flow://<name>` node-IRI convention, and the `onDeadline` token set. It is
+  `#include`d **verbatim** by the standalone provider and the browser backend.
+- **Engine = header-only reference + browser mirror.** `standalone/flow_provider.h`
+  (`FlowService`) is the reference engine over the shared core + the Oxigraph triple store
+  + the Spec 08 `GovernanceBackend`; `content/browser/flows/flow_service.*` (namespace
+  `content`, exception-free `bool` + out-params + `last_error()`, the `OxigraphStore`
+  pattern) mirrors it. No new mojo manager — `FlowService` is constructed in
+  `personal_graph_manager.*` and threaded through `GroupService` (`shapes_`/`flows_`), and
+  the six methods + two `ToMojo` converters + the §14.1 auto-init are folded onto
+  `.../graph/personal_graph_host.*`.
+- **`executeFlowTransition` always resolves, never rejects.** A business rejection (wrong
+  from-state, unmet guard, unelapsed `minDelay`, missing role) → `{ success:false, reason,
+  … }`; a programming error (unknown flow/transition/instance) → `{ success:false, reason:
+  <DOMException name> }`. The promise is reserved for genuine transport failure.
+  `secondsUntilAllowed`/`guardDescription` are decimal-string / text projections.
+- **§14.1 shape→flow auto-init is the sole JS-reachable instance-init path.**
+  `createShapeInstance()` applies the `initialState` of every flow whose §4.1 `appliesTo`
+  equals the new instance's shape `targetClass` (idempotent; non-matching class is a
+  no-op). The C++ `FlowService::InitializeInstance` is an **internal** helper called by
+  auto-init and the tests — it is not exposed to script.
+- **Current-state predicate is flow-scoped: `flow://<name>/state`.** A parent flow and a
+  triggered sub-flow coexist on one instance under disjoint predicates, so a transition in
+  one flow can never conflict with a concurrent transition in another (§13.1). The §13.2
+  concurrent tie-break reuses the Spec 09 §8.4 rule verbatim
+  (`default_sync::FlowStateWinner`).
+- **`transitionfired` / `transitiondeadline` are a core-file delta** (like Spec 02's
+  `tripleadded`/`tripleremoved`): a full-tree build needs both added to
+  `event_type_names.json5`; `integrate.sh` registers them in the blink event-names array.
+- **Three amendments (specs commit `3e02d6d`).** (a) §4.4 — `source`/`target` accepted as
+  aliases for `subject`/`object`, normalised to canonical keys before the §5.1 JCS
+  pre-image. (b) §5.1 — a single `flow://definition` canonical-JSON literal (JCS, RFC 8785)
+  as the normative round-trip source for `getFlows` and the §5.1 hash pre-image (RFC 8785
+  added to normative refs). (c) — the current-state predicate is scoped to
+  `flow://<name>/state` (was a single generic `flow://state`) so parent + sub-flow states
+  on one instance never collide; §8.3 elapsed-time query and §13 conflict-detection updated
+  to match.
+- Authoritative reference impl: `standalone/flow_provider.h` (`FlowService`) over
+  `content/browser/flows/flow_definition.*`, verified by **27 `Flow_*` tests (239 total,
+  green)**; browser backend = `content/browser/flows/flow_service.*` + the
+  `personal_graph_host.*` wiring, with **21 `FlowServiceTest.*` gtests**
+  (`tests/flow_service_unittest.cc`); renderer surface pinned by
+  `tests/web_platform_tests/graph/graph-flows.html`.
 
 ## Gotchas
 
