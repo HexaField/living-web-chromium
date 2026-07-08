@@ -1,0 +1,34 @@
+[package]
+name = "mls_ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "C-ABI wrapper over OpenMLS (RFC 9420) for the Living Web Default Sync Module (Spec 09)."
+
+# Spec 09 §6.3 runs a real MLS (RFC 9420) group per encrypted space. OpenMLS is
+# the reference implementation; the ceremony (group creation, Add/Remove/Update
+# Commits, Welcomes, the ratchet tree) and the epoch key schedule / §8.5
+# exporter are all provided by it, none hand-rolled. The one pinned cipher suite
+# is MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 (§6.3.2).
+[dependencies]
+openmls = "0.8.1"
+# RustCrypto-backed crypto + in-memory storage provider for OpenMLS.
+openmls_rust_crypto = "0.5.1"
+# Trait definitions (OpenMlsProvider, OpenMlsCrypto, Signer, StorageProvider).
+openmls_traits = "0.5.0"
+# SignatureKeyPair (the Ed25519 signer) lives here, not in the openmls crate.
+openmls_basic_credential = "0.5.0"
+# TLS presentation-language codec used to (de)serialise MLS messages across the
+# FFI boundary. The `mls` feature aligns the wire types with RFC 9420.
+tls_codec = { version = "0.4.2", features = ["derive", "serde", "mls"] }
+
+# A static archive so the CMake harness can link the whole OpenMLS world as one
+# `.a`; `cdylib` is also produced for hosts that prefer dynamic linking.
+[lib]
+name = "mls_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

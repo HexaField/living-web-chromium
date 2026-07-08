@@ -27,10 +27,25 @@
 # single //content/browser target the two co-compile and the host calls straight
 # into SyncBackend with no cross-target boundary.
 #
-# The Ed25519 verify primitive (third_party/ed25519, used by bundle- and
-# reifier-signature checking) is NOT listed in deps: it is pulled in through its
-# own third_party target by the //content build, and //third_party/boringssl
-# supplies the SHA-256 backing crypto::SHA256HashString.
+# Spec 09 — Default Sync Module (drafts/09_default-sync-module.md §6.3) is folded
+# into this same source_set: it is the sync module every group references by
+# default (urn:sync:module:default), and its browser-process runtime is a peer of
+# the Spec 05 service rather than a separate layer. Its shared byte-critical cores
+# (the §5 CBOR codec and the §6.3.9 key schedule / §6.3.10 AEAD envelope / §8
+# OR-Set merge) are compiled here alongside the content-namespace port: the
+# BoringSSL///crypto resolution of the module's eight-primitive SyncCrypto seam,
+# the exception-free RFC 9420 MLS engine, and the per-space encrypted-sync backend
+# that drives them. The renderer never sees this ceremony — Spec 09's script
+# surface is exactly the Spec 05 publish path — so no new mojom/blink is added.
+#
+# Two static libraries are linked in and are NOT listed in deps here: the Ed25519
+# verify/sign primitive (third_party/ed25519, used by Spec 05 bundle- and
+# reifier-signature checking and by the Spec 09 did:key→X25519 identity binding)
+# and the MLS static library (third_party/mls_ffi, whose C ABI mls_engine.* wraps
+# for the §6.3 group ceremony and the §6.3.9 exporter). Both are pulled in through
+# their own third_party targets by the //content build; //third_party/boringssl
+# supplies the SHA-256 backing crypto::SHA256HashString together with the SHA-512,
+# HMAC-SHA256, X25519 and AES-128-GCM primitives the Spec 09 seam binds.
 source_set("graph_sync") {
   sources = [
     # Chromium-independent byte-critical core (namespace living_web), shared
@@ -40,9 +55,31 @@ source_set("graph_sync") {
     "graph_diff.cc",
     "graph_diff.h",
 
+    # Spec 09 — Default Sync Module. Chromium-independent byte-critical cores
+    # (namespaces living_web::cbor and living_web::default_sync, pure-std, no
+    # Chromium and no OpenSSL), shared verbatim with the standalone conformance
+    # harness so the §5 CBOR wire frames, the §6.3.9 MLS-Exporter key schedule,
+    # the §6.3.10 AES-128-GCM frame envelope and the §8 OR-Set merge compute
+    # byte-identically in both build worlds.
+    "cbor.cc",
+    "cbor.h",
+    "default_sync_module.cc",
+    "default_sync_module.h",
+
     # Spec 05 §5/§7/§9/§12/§13/§14 port (namespace content).
     "sync_backend.cc",
     "sync_backend.h",
+
+    # Spec 09 §6.3 port (namespace content): the //crypto / BoringSSL resolution
+    # of the shared core's SyncCrypto seam, the exception-free RFC 9420 MLS engine
+    # wrapping the third_party/mls_ffi C ABI, and the per-space backend that owns
+    # each space's MLS group and drives the seal/open + OR-Set merge.
+    "default_sync_backend.cc",
+    "default_sync_backend.h",
+    "default_sync_crypto.cc",
+    "default_sync_crypto.h",
+    "mls_engine.cc",
+    "mls_engine.h",
   ]
 
   deps = [

@@ -50,6 +50,12 @@
 #include "constraint_vocabulary_provider.h"
 #include "content/browser/governance/constraint_vocabulary.h"
 
+// Spec 09 — Default Sync Module.
+#include "default_sync_provider.h"
+#include "mls_engine.h"
+#include "content/browser/graph_sync/default_sync_module.h"
+#include "content/browser/graph_sync/cbor.h"
+
 #include <chrono>
 #include <openssl/rand.h>
 
@@ -4520,6 +4526,806 @@ TEST(Gov_CredentialCaveatRequires) {
 }
 
 // ============================================================
+// Spec 09 — Default Sync Module
+// ============================================================
+//
+// The shared core is driven through the OpenSSL-backed SyncCrypto seam and the
+// in-process relay. Coverage: the deterministic CBOR codec (round-trip,
+// canonical map ordering, strict rejection); the §6.3.9 key schedule (RFC 5869
+// HKDF known-answer, exporter → frame keys); the §6.3.3 DID↔X25519 map cross-
+// checked against the injected scalar route; the §5 wire frames and payload
+// codecs; the §6.3.10 AEAD envelope (seal/open, tamper rejection, wire codec);
+// the §8 OR-Set merge; and the §9 promotion threshold.
+
+static std::string Sync09HexToBytes(const std::string& hex) {
+  std::string out;
+  out.reserve(hex.size() / 2);
+  auto nib = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+  };
+  for (size_t i = 0; i + 1 < hex.size(); i += 2)
+    out.push_back(static_cast<char>((nib(hex[i]) << 4) | nib(hex[i + 1])));
+  return out;
+}
+
+static std::string Sync09BytesToHex(const std::string& bytes) {
+  static const char* kHex = "0123456789abcdef";
+  std::string out;
+  out.reserve(bytes.size() * 2);
+  for (unsigned char c : bytes) {
+    out.push_back(kHex[c >> 4]);
+    out.push_back(kHex[c & 0x0f]);
+  }
+  return out;
+}
+
+static Triple Sync09IriTriple(const std::string& s,
+                              const std::string& p,
+                              const std::string& o) {
+  Triple t;
+  t.subject = s;
+  t.predicate = p;
+  t.object = ObjectTerm::Iri(o);
+  return t;
+}
+
+TEST(Sync09_CborRoundTrip) {
+  using namespace living_web::cbor;
+  Value v = Value::Map({
+      {Value::Text("z"), Value::Uint(1)},
+      {Value::Text("a"),
+       Value::Array({Value::Int(-5), Value::Bool(true), Value::Null()})},
+      {Value::Text("m"), Value::Bytes(Sync09HexToBytes("000102"))},
+      {Value::Text("t"), Value::Text("hello")},
+  });
+  std::string enc = Encode(v);
+  Value out;
+  EXPECT_TRUE(Decode(enc, &out));
+  // Re-encoding a decoded value yields the canonical form (a fixed point).
+  EXPECT_EQ(Encode(out), enc);
+}
+
+TEST(Sync09_CborDeterministicMapOrder) {
+  using namespace living_web::cbor;
+  // Text keys sort regardless of insertion order.
+  Value a =
+      Value::Map({{Value::Text("b"), Value::Uint(2)},
+                  {Value::Text("a"), Value::Uint(1)}});
+  Value b =
+      Value::Map({{Value::Text("a"), Value::Uint(1)},
+                  {Value::Text("b"), Value::Uint(2)}});
+  EXPECT_EQ(Encode(a), Encode(b));
+  // Integer keys sort by encoded-key bytes: 1 (0x01) precedes 1000 (0x1903e8).
+  Value m = Value::Map({{Value::Uint(1000), Value::Uint(0)},
+                        {Value::Uint(1), Value::Uint(0)}});
+  std::string enc = Encode(m);
+  EXPECT_EQ(static_cast<int>(static_cast<unsigned char>(enc[0])), 0xa2);
+  EXPECT_EQ(static_cast<int>(static_cast<unsigned char>(enc[1])), 0x01);
+}
+
+TEST(Sync09_CborStrictReject) {
+  using namespace living_web::cbor;
+  Value out;
+  EXPECT_FALSE(Decode(Sync09HexToBytes("0102"), &out));  // trailing byte
+  EXPECT_FALSE(Decode(Sync09HexToBytes("9fff"), &out));  // indefinite array
+  EXPECT_FALSE(Decode(Sync09HexToBytes("1c"), &out));    // reserved ai 28
+  EXPECT_FALSE(Decode(Sync09HexToBytes("c001"), &out));  // major 6 tag
+  EXPECT_FALSE(Decode(Sync09HexToBytes("1900"), &out));  // truncated uint16
+  EXPECT_FALSE(Decode(Sync09HexToBytes("fa00000000"), &out));  // float
+  // A minimally-encoded value still decodes.
+  EXPECT_TRUE(Decode(Sync09HexToBytes("01"), &out));
+}
+
+TEST(Sync09_HkdfExpandKnownAnswer) {
+  // RFC 5869 Appendix A.1 Test Case 1 (HKDF-Expand step).
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  const std::string prk = Sync09HexToBytes(
+      "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5");
+  const std::string info = Sync09HexToBytes("f0f1f2f3f4f5f6f7f8f9");
+  const std::string okm = default_sync::HkdfExpandSha256(prk, info, 42, crypto);
+  EXPECT_EQ(Sync09BytesToHex(okm),
+            std::string("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02"
+                        "d56ecc4c5bf34007208d5b887185865"));
+  // Over-long expansion is rejected (L > 255*HashLen).
+  EXPECT_TRUE(default_sync::HkdfExpandSha256(prk, info, 255 * 32 + 1, crypto)
+                  .empty());
+}
+
+TEST(Sync09_X25519MatchesEdwardsMap) {
+  // The §6.3.3 birational map (pure field arithmetic) must agree with the
+  // scalar route (clamp(SHA-512(seed)) then X25519(·,9) via OpenSSL) for a real
+  // Ed25519 keypair — and that equality is exactly the §6.3.4 check-4 binding.
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  for (int i = 0; i < 8; ++i) {
+    uint8_t pub[32], priv[64];
+    ed25519_create_keypair(pub, priv);
+    std::string seed(reinterpret_cast<char*>(priv), 32);
+    std::string ed_pub(reinterpret_cast<char*>(pub), 32);
+
+    std::string scalar = default_sync::DeriveX25519PrivateScalar(seed, crypto);
+    EXPECT_EQ(scalar.size(), 32u);
+    std::string x_from_scalar =
+        default_sync::DeriveX25519Public(scalar, crypto);
+    EXPECT_EQ(x_from_scalar.size(), 32u);
+
+    std::string x_from_edwards;
+    EXPECT_TRUE(default_sync::Ed25519PubToX25519Pub(ed_pub, &x_from_edwards));
+    EXPECT_EQ(x_from_scalar, x_from_edwards);
+    EXPECT_TRUE(
+        default_sync::VerifyEncryptionKeyBinding(ed_pub, x_from_scalar));
+    // A mismatched leaf key is rejected.
+    std::string wrong = x_from_scalar;
+    wrong[0] ^= 0x01;
+    EXPECT_FALSE(default_sync::VerifyEncryptionKeyBinding(ed_pub, wrong));
+  }
+}
+
+TEST(Sync09_GroupIdFromSpaceUri) {
+  const std::string hex(64, 'a');
+  const std::string uri = "space://" + hex;
+  std::string gid;
+  EXPECT_TRUE(default_sync::GroupIdFromSpaceUri(uri, &gid));
+  EXPECT_EQ(gid.size(), 32u);
+  EXPECT_EQ(Sync09BytesToHex(gid), hex);
+  // Rejections: wrong scheme, short authority, uppercase (non-lowercase-hex).
+  std::string bad;
+  EXPECT_FALSE(default_sync::GroupIdFromSpaceUri("https://" + hex, &bad));
+  EXPECT_FALSE(default_sync::GroupIdFromSpaceUri("space://abc", &bad));
+  EXPECT_FALSE(
+      default_sync::GroupIdFromSpaceUri("space://" + std::string(64, 'A'),
+                                        &bad));
+}
+
+TEST(Sync09_ModuleContentHash) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  // SHA-256("hello") is a well-known digest.
+  EXPECT_EQ(default_sync::DefaultModuleContentHash("hello", crypto.sha256),
+            std::string("sha256-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa742"
+                        "5e73043362938b9824"));
+}
+
+TEST(Sync09_FrameTypeTokens) {
+  using default_sync::FrameType;
+  const FrameType types[] = {
+      FrameType::kDiff,     FrameType::kPull,       FrameType::kPullDenied,
+      FrameType::kSnapshot, FrameType::kSignal,     FrameType::kModuleUpdate,
+      FrameType::kPeerHello, FrameType::kPeerBye};
+  for (FrameType t : types) {
+    const char* tok = default_sync::FrameTypeToToken(t);
+    FrameType back;
+    EXPECT_TRUE(default_sync::FrameTypeFromToken(tok, &back));
+    EXPECT_TRUE(back == t);
+  }
+  FrameType bad;
+  EXPECT_FALSE(default_sync::FrameTypeFromToken("NOPE", &bad));
+}
+
+TEST(Sync09_OpenFrameRoundTrip) {
+  default_sync::WireFrame f;
+  f.type = default_sync::FrameType::kSignal;
+  f.space_uri = "space://" + std::string(64, 'b');
+  f.from = {"did:key:zAlice", "sess-1"};
+  f.to = default_sync::PeerRef{"did:key:zBob", "sess-2"};
+  f.payload = default_sync::SignalToCbor("payload-bytes");
+
+  std::string enc = default_sync::EncodeOpenFrame(f);
+  default_sync::WireFrame out;
+  EXPECT_TRUE(default_sync::DecodeOpenFrame(enc, &out));
+  EXPECT_TRUE(out.type == f.type);
+  EXPECT_EQ(out.space_uri, f.space_uri);
+  EXPECT_EQ(out.from.did, f.from.did);
+  EXPECT_EQ(out.from.session_id, f.from.session_id);
+  EXPECT_TRUE(out.to.has_value());
+  EXPECT_EQ(out.to->did, std::string("did:key:zBob"));
+  std::string sig;
+  EXPECT_TRUE(default_sync::SignalFromCbor(out.payload, &sig));
+  EXPECT_EQ(sig, std::string("payload-bytes"));
+
+  // Broadcast (to == nullopt) round-trips, and re-encode is a fixed point.
+  f.to = std::nullopt;
+  std::string enc2 = default_sync::EncodeOpenFrame(f);
+  default_sync::WireFrame out2;
+  EXPECT_TRUE(default_sync::DecodeOpenFrame(enc2, &out2));
+  EXPECT_FALSE(out2.to.has_value());
+  EXPECT_EQ(default_sync::EncodeOpenFrame(out2), enc2);
+}
+
+TEST(Sync09_DiffPayloadRoundTrip) {
+  default_sync::DiffWire d;
+  d.graph_did = "did:graph:zG";
+  d.revision = "rev-abc";
+  d.dependencies = {"dep1", "dep2"};
+  d.author = "did:key:zA";
+  d.timestamp = "2026-07-08T00:00:00Z";
+
+  Triple lit;
+  lit.subject = "urn:s:1";
+  lit.predicate = "urn:p:1";
+  lit.object = ObjectTerm::Literal({"hello", kXsdString, std::nullopt});
+  d.additions = {lit};
+
+  Triple iri = Sync09IriTriple("urn:s:2", "urn:p:2", "urn:o:2");
+  default_sync::DiffRemoval rem;
+  rem.triple = iri;
+  rem.removed_tags = {"tagX", "tagY"};
+  d.removals = {rem};
+
+  cbor::Value v = default_sync::DiffToCbor(d);
+  default_sync::DiffWire out;
+  EXPECT_TRUE(default_sync::DiffFromCbor(v, &out));
+  EXPECT_EQ(out.graph_did, d.graph_did);
+  EXPECT_EQ(out.revision, d.revision);
+  EXPECT_EQ(out.dependencies.size(), 2u);
+  EXPECT_EQ(out.additions.size(), 1u);
+  EXPECT_TRUE(out.additions[0] == lit);
+  EXPECT_EQ(out.removals.size(), 1u);
+  EXPECT_TRUE(out.removals[0].triple == iri);
+  EXPECT_EQ(out.removals[0].removed_tags.size(), 2u);
+  EXPECT_EQ(out.author, d.author);
+  EXPECT_EQ(out.timestamp, d.timestamp);
+}
+
+TEST(Sync09_PayloadCodecs) {
+  // PULL with a from-revision and a capability proof.
+  default_sync::PullPayload p;
+  p.graph_did = "did:graph:zG";
+  p.from_revision = "rev-1";
+  p.author_did = "did:key:zA";
+  p.capability_proof = cbor::Value::Text("zcap-proof");
+  default_sync::PullPayload po;
+  EXPECT_TRUE(default_sync::PullFromCbor(default_sync::PullToCbor(p), &po));
+  EXPECT_EQ(po.graph_did, p.graph_did);
+  EXPECT_TRUE(po.from_revision.has_value());
+  EXPECT_EQ(*po.from_revision, std::string("rev-1"));
+  EXPECT_EQ(po.author_did, p.author_did);
+  EXPECT_TRUE(po.capability_proof.has_value());
+
+  // PULL wanting a SNAPSHOT (from_revision null, no proof).
+  default_sync::PullPayload p2;
+  p2.graph_did = "did:graph:zG";
+  p2.author_did = "did:key:zA";
+  default_sync::PullPayload po2;
+  EXPECT_TRUE(default_sync::PullFromCbor(default_sync::PullToCbor(p2), &po2));
+  EXPECT_FALSE(po2.from_revision.has_value());
+  EXPECT_FALSE(po2.capability_proof.has_value());
+
+  // PULL_DENIED with a constraint id.
+  default_sync::PullDeniedPayload denied;
+  denied.graph_did = "did:graph:zG";
+  denied.reason = default_sync::kReasonCredentialRequired;
+  denied.constraint_id = "urn:c:abc";
+  default_sync::PullDeniedPayload den;
+  EXPECT_TRUE(default_sync::PullDeniedFromCbor(
+      default_sync::PullDeniedToCbor(denied), &den));
+  EXPECT_EQ(den.reason, std::string(default_sync::kReasonCredentialRequired));
+  EXPECT_TRUE(den.constraint_id.has_value());
+  EXPECT_EQ(*den.constraint_id, std::string("urn:c:abc"));
+
+  // SNAPSHOT (opaque snapshot bytes).
+  default_sync::SnapshotPayload s;
+  s.graph_did = "did:graph:zG";
+  s.snapshot = "snapshot-bytes";
+  default_sync::SnapshotPayload so;
+  EXPECT_TRUE(
+      default_sync::SnapshotFromCbor(default_sync::SnapshotToCbor(s), &so));
+  EXPECT_EQ(so.snapshot, std::string("snapshot-bytes"));
+
+  // MODULE_UPDATE.
+  default_sync::ModuleUpdatePayload m;
+  m.new_hash = "sha256-abc";
+  m.space_uri = "space://" + std::string(64, 'c');
+  m.distribution_urls = {"https://a", "https://b"};
+  default_sync::ModuleUpdatePayload mo;
+  EXPECT_TRUE(default_sync::ModuleUpdateFromCbor(
+      default_sync::ModuleUpdateToCbor(m), &mo));
+  EXPECT_EQ(mo.new_hash, m.new_hash);
+  EXPECT_EQ(mo.distribution_urls.size(), 2u);
+
+  // PEER_HELLO / PEER_BYE announce.
+  default_sync::PeerRef peer{"did:key:zP", "sess-9"};
+  default_sync::PeerRef ao;
+  EXPECT_TRUE(default_sync::PeerAnnounceFromCbor(
+      default_sync::PeerAnnounceToCbor(peer), &ao));
+  EXPECT_TRUE(ao == peer);
+}
+
+TEST(Sync09_OrSetAddRemove) {
+  default_sync::OrSet s;
+  const std::string id = SerializeTripleNt(Sync09IriTriple("urn:s", "urn:p", "urn:o"));
+  EXPECT_FALSE(s.Contains(id));
+  s.Add(id, "tag1");
+  EXPECT_TRUE(s.Contains(id));
+  EXPECT_EQ(s.Size(), 1u);
+  // A second add-tag keeps it present.
+  s.Add(id, "tag2");
+  EXPECT_TRUE(s.Contains(id));
+  // Removing one observed tag leaves the other live.
+  s.Remove(id, "tag1");
+  EXPECT_TRUE(s.Contains(id));
+  // Removing the last live tag makes it absent.
+  s.Remove(id, "tag2");
+  EXPECT_FALSE(s.Contains(id));
+  EXPECT_EQ(s.Size(), 0u);
+}
+
+TEST(Sync09_OrSetConverges) {
+  Triple t = Sync09IriTriple("urn:s", "urn:p", "urn:o");
+  const std::string id = SerializeTripleNt(t);
+
+  default_sync::DiffWire add;
+  add.revision = "r1";
+  add.additions = {t};
+
+  default_sync::DiffWire rem;
+  rem.revision = "r2";
+  rem.dependencies = {"r1"};
+  default_sync::DiffRemoval dr;
+  dr.triple = t;
+  dr.removed_tags = {"r1"};
+  rem.removals = {dr};
+
+  // Applying add and remove in either order converges to the same membership.
+  default_sync::OrSet a, b;
+  a.ApplyDiff(add);
+  a.ApplyDiff(rem);
+  b.ApplyDiff(rem);
+  b.ApplyDiff(add);
+  EXPECT_EQ(a.Contains(id), b.Contains(id));
+  EXPECT_FALSE(a.Contains(id));  // the observed-remove of r1 wins
+  EXPECT_EQ(a.Members().size(), b.Members().size());
+}
+
+TEST(Sync09_ChainRoot) {
+  default_sync::DiffWire root;
+  root.revision = "r1";  // no dependencies
+  EXPECT_TRUE(default_sync::IsChainRoot(root));
+  default_sync::DiffWire child;
+  child.revision = "r2";
+  child.dependencies = {"r1"};
+  EXPECT_FALSE(default_sync::IsChainRoot(child));
+
+  // A chain-root is accepted only when the graph has no unrelated diffs.
+  EXPECT_TRUE(default_sync::AcceptChainRoot(root, false));
+  EXPECT_FALSE(default_sync::AcceptChainRoot(root, true));
+  // A non-root is never an acceptable chain-root.
+  EXPECT_FALSE(default_sync::AcceptChainRoot(child, false));
+  EXPECT_FALSE(default_sync::AcceptChainRoot(child, true));
+}
+
+TEST(Sync09_FlowTieBreak) {
+  const std::string a = "aaaa";
+  const std::string b = "bbbb";
+  EXPECT_TRUE(default_sync::CompareReifierHash(a, b) < 0);
+  EXPECT_TRUE(default_sync::CompareReifierHash(b, a) > 0);
+  EXPECT_EQ(default_sync::CompareReifierHash(a, a), 0);
+  // The lexicographically smaller reifier hash wins.
+  EXPECT_EQ(default_sync::FlowStateWinner(a, b), a);
+  EXPECT_EQ(default_sync::FlowStateWinner(b, a), a);
+}
+
+TEST(Sync09_SnapshotThreshold) {
+  EXPECT_EQ(default_sync::kDefaultSnapshotThreshold, 1000u);
+  EXPECT_FALSE(default_sync::ShouldPromote(999));
+  EXPECT_TRUE(default_sync::ShouldPromote(1000));
+  EXPECT_TRUE(default_sync::ShouldPromote(1001));
+  EXPECT_TRUE(default_sync::ShouldPromote(5, 5));
+  EXPECT_FALSE(default_sync::ShouldPromote(4, 5));
+}
+
+TEST(Sync09_FrameNonce) {
+  std::string base(12, '\0');
+  EXPECT_EQ(default_sync::FrameNonce(base, 0), base);  // seq 0 is a no-op
+  std::string n1 = default_sync::FrameNonce(base, 1);
+  std::string expect1(12, '\0');
+  expect1[11] = '\x01';
+  EXPECT_EQ(n1, expect1);
+  // Non-zero base XORs the big-endian seq into the low bytes.
+  std::string base2(12, '\xff');
+  std::string n = default_sync::FrameNonce(base2, 0x0102);
+  std::string exp = base2;
+  exp[11] = static_cast<char>(0xff ^ 0x02);
+  exp[10] = static_cast<char>(0xff ^ 0x01);
+  EXPECT_EQ(n, exp);
+}
+
+TEST(Sync09_FrameAadStable) {
+  default_sync::PeerRef from{"did:key:zA", "s1"};
+  std::optional<default_sync::PeerRef> broadcast = std::nullopt;
+  std::optional<default_sync::PeerRef> direct =
+      default_sync::PeerRef{"did:key:zB", "s2"};
+  std::string a1 = default_sync::FrameAad(default_sync::FrameType::kDiff,
+                                          "space://x", from, broadcast, 1, 2);
+  std::string a2 = default_sync::FrameAad(default_sync::FrameType::kDiff,
+                                          "space://x", from, broadcast, 1, 2);
+  EXPECT_EQ(a1, a2);  // deterministic
+  std::string a3 = default_sync::FrameAad(default_sync::FrameType::kDiff,
+                                          "space://x", from, direct, 1, 2);
+  EXPECT_NE(a1, a3);  // broadcast vs directed differ
+  // The AAD is well-formed deterministic CBOR: a 7-element array.
+  cbor::Value v;
+  EXPECT_TRUE(cbor::Decode(a1, &v));
+  EXPECT_TRUE(v.IsArray());
+  EXPECT_EQ(v.arr.size(), 7u);
+}
+
+TEST(Sync09_FrameSealOpenRoundTrip) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  std::string exporter(32, '\x11');  // synthetic epoch exporter secret
+  std::string space = "space://" + std::string(64, 'd');
+  default_sync::FrameKeys keys =
+      default_sync::DeriveFrameKeysFromExporter(exporter, space, crypto);
+  EXPECT_EQ(keys.key.size(), 16u);
+  EXPECT_EQ(keys.nonce.size(), 12u);
+
+  default_sync::WireFrame plain;
+  plain.type = default_sync::FrameType::kDiff;
+  plain.space_uri = space;
+  plain.from = {"did:key:zA", "s1"};
+  plain.to = std::nullopt;
+  plain.payload = default_sync::SignalToCbor("secret-diff-bytes");
+
+  default_sync::EncryptedFrame enc;
+  EXPECT_TRUE(default_sync::SealFrame(keys, plain, 7, 42, crypto, &enc));
+  EXPECT_EQ(enc.epoch, 7u);
+  EXPECT_EQ(enc.seq, 42u);
+  EXPECT_TRUE(enc.type == default_sync::FrameType::kDiff);
+  EXPECT_GT(enc.ct.size(), 16u);  // ciphertext + 16-byte tag
+
+  default_sync::WireFrame opened;
+  EXPECT_TRUE(default_sync::OpenFrame(keys, enc, crypto, &opened));
+  EXPECT_TRUE(opened.type == plain.type);
+  EXPECT_EQ(opened.space_uri, plain.space_uri);
+  EXPECT_EQ(opened.from.did, std::string("did:key:zA"));
+  std::string body;
+  EXPECT_TRUE(default_sync::SignalFromCbor(opened.payload, &body));
+  EXPECT_EQ(body, std::string("secret-diff-bytes"));
+
+  default_sync::WireFrame discard;
+  // Tampered ciphertext → AEAD auth fails.
+  default_sync::EncryptedFrame ct_bad = enc;
+  ct_bad.ct[0] = static_cast<char>(ct_bad.ct[0] ^ 0x01);
+  EXPECT_FALSE(default_sync::OpenFrame(keys, ct_bad, crypto, &discard));
+  // Tampered seq → recomputed nonce + AAD mismatch.
+  default_sync::EncryptedFrame seq_bad = enc;
+  seq_bad.seq = 43;
+  EXPECT_FALSE(default_sync::OpenFrame(keys, seq_bad, crypto, &discard));
+  // Tampered epoch → recomputed AAD mismatch.
+  default_sync::EncryptedFrame epoch_bad = enc;
+  epoch_bad.epoch = 8;
+  EXPECT_FALSE(default_sync::OpenFrame(keys, epoch_bad, crypto, &discard));
+}
+
+TEST(Sync09_EncryptedFrameCodec) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  std::string exporter(32, '\x22');
+  std::string space = "space://" + std::string(64, 'e');
+  auto keys = default_sync::DeriveFrameKeysFromExporter(exporter, space, crypto);
+
+  default_sync::WireFrame plain;
+  plain.type = default_sync::FrameType::kSignal;
+  plain.space_uri = space;
+  plain.from = {"did:key:zA", "s1"};
+  plain.to = default_sync::PeerRef{"did:key:zB", "s2"};
+  plain.payload = default_sync::SignalToCbor("hi");
+
+  default_sync::EncryptedFrame enc;
+  EXPECT_TRUE(default_sync::SealFrame(keys, plain, 1, 1, crypto, &enc));
+
+  std::string wire = default_sync::EncodeEncryptedFrame(enc);
+  default_sync::EncryptedFrame dec;
+  EXPECT_TRUE(default_sync::DecodeEncryptedFrame(wire, &dec));
+  EXPECT_TRUE(dec.type == enc.type);
+  EXPECT_EQ(dec.space_uri, enc.space_uri);
+  EXPECT_TRUE(dec.to.has_value());
+  EXPECT_EQ(dec.to->did, std::string("did:key:zB"));
+  EXPECT_EQ(dec.epoch, enc.epoch);
+  EXPECT_EQ(dec.seq, enc.seq);
+  EXPECT_EQ(dec.ct, enc.ct);
+  EXPECT_EQ(default_sync::EncodeEncryptedFrame(dec), wire);  // canonical
+
+  // The decoded envelope still opens to the original payload.
+  default_sync::WireFrame opened;
+  EXPECT_TRUE(default_sync::OpenFrame(keys, dec, crypto, &opened));
+  std::string body;
+  EXPECT_TRUE(default_sync::SignalFromCbor(opened.payload, &body));
+  EXPECT_EQ(body, std::string("hi"));
+}
+
+TEST(Sync09_FrameKeysDeterministic) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  std::string exporter(32, '\x33');
+  std::string spaceA = "space://" + std::string(64, 'a');
+  std::string spaceB = "space://" + std::string(64, 'b');
+  auto k1 = default_sync::DeriveFrameKeysFromExporter(exporter, spaceA, crypto);
+  auto k2 = default_sync::DeriveFrameKeysFromExporter(exporter, spaceA, crypto);
+  EXPECT_EQ(k1.key, k2.key);
+  EXPECT_EQ(k1.nonce, k2.nonce);
+  // The exporter context is the spaceUri, so a different space diverges.
+  auto k3 = default_sync::DeriveFrameKeysFromExporter(exporter, spaceB, crypto);
+  EXPECT_NE(k1.key, k3.key);
+  // The two-step derivation equals the one-shot convenience.
+  std::string sts =
+      default_sync::DeriveSpaceTrafficSecret(exporter, spaceA, crypto);
+  auto k4 = default_sync::DeriveFrameKeys(sts, crypto);
+  EXPECT_EQ(k4.key, k1.key);
+  EXPECT_EQ(k4.nonce, k1.nonce);
+}
+
+TEST(Sync09_RelaySubscribeDeliver) {
+  default_sync::InProcessRelay relay;
+  const std::string space = "space://" + std::string(64, 'f');
+  default_sync::PeerRef alice{"did:key:zA", "s-alice"};
+  default_sync::PeerRef bob{"did:key:zB", "s-bob"};
+  default_sync::PeerRef carol{"did:key:zC", "s-carol"};
+
+  EXPECT_EQ(relay.Subscribe(space, alice).size(), 1u);
+  EXPECT_EQ(relay.Subscribe(space, bob).size(), 2u);
+  relay.Subscribe(space, carol);
+  EXPECT_EQ(relay.Members(space).size(), 3u);
+
+  // Broadcast from alice reaches bob and carol but not alice.
+  relay.Send(space, alice.session_id, "frame-1", std::nullopt);
+  EXPECT_EQ(relay.Deliver(space, "s-alice").size(), 0u);
+  auto bob_in = relay.Deliver(space, "s-bob");
+  EXPECT_EQ(bob_in.size(), 1u);
+  EXPECT_EQ(bob_in[0], std::string("frame-1"));
+  EXPECT_EQ(relay.Deliver(space, "s-carol").size(), 1u);
+  EXPECT_EQ(relay.Deliver(space, "s-bob").size(), 0u);  // inbox drained
+
+  // Directed send addresses one member only.
+  relay.Send(space, alice.session_id, "frame-2",
+             std::optional<std::string>("s-carol"));
+  EXPECT_EQ(relay.Deliver(space, "s-bob").size(), 0u);
+  EXPECT_EQ(relay.Deliver(space, "s-carol").size(), 1u);
+
+  // Unsubscribe removes membership; re-subscribe with the same session id does
+  // not duplicate.
+  relay.Unsubscribe(space, "s-bob");
+  EXPECT_EQ(relay.Members(space).size(), 2u);
+  relay.Subscribe(space, carol);
+  EXPECT_EQ(relay.Members(space).size(), 2u);
+}
+
+TEST(Sync09_EncryptedExchangeThroughRelay) {
+  // End-to-end: two members share the epoch's exporter secret, and an encrypted
+  // DIFF sealed by one is delivered through the relay and opened by the other.
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  default_sync::InProcessRelay relay;
+  const std::string space = "space://" + std::string(64, '0');
+  std::string exporter(32, '\x55');
+  auto keys = default_sync::DeriveFrameKeysFromExporter(exporter, space, crypto);
+
+  default_sync::PeerRef alice{"did:key:zA", "sa"};
+  default_sync::PeerRef bob{"did:key:zB", "sb"};
+  relay.Subscribe(space, alice);
+  relay.Subscribe(space, bob);
+
+  default_sync::WireFrame plain;
+  plain.type = default_sync::FrameType::kDiff;
+  plain.space_uri = space;
+  plain.from = alice;
+  plain.to = std::nullopt;
+  plain.payload = default_sync::SignalToCbor("hello-bob");
+  default_sync::EncryptedFrame enc;
+  EXPECT_TRUE(default_sync::SealFrame(keys, plain, 3, 1, crypto, &enc));
+  relay.Send(space, alice.session_id, default_sync::EncodeEncryptedFrame(enc),
+             std::nullopt);
+
+  auto frames = relay.Deliver(space, bob.session_id);
+  EXPECT_EQ(frames.size(), 1u);
+  default_sync::EncryptedFrame received;
+  EXPECT_TRUE(default_sync::DecodeEncryptedFrame(frames[0], &received));
+  default_sync::WireFrame opened;
+  EXPECT_TRUE(default_sync::OpenFrame(keys, received, crypto, &opened));
+  std::string body;
+  EXPECT_TRUE(default_sync::SignalFromCbor(opened.payload, &body));
+  EXPECT_EQ(body, std::string("hello-bob"));
+}
+
+// ------------------------------------------------------------
+// Spec 09 §6.3 — real RFC 9420 MLS ceremony behind the exporter seam.
+//
+// These drive a genuine OpenMLS group (third_party/mls_ffi) through
+// create / add / update / remove and feed its §8.5 exporter into the shared
+// core's §6.3.9 key schedule + §6.3.10 AEAD envelope, proving the
+// Chromium-independent core and a real MLS stack agree on the space traffic
+// secret, the frame keys, and the sealed frames — no synthetic secret.
+// ------------------------------------------------------------
+
+TEST(Sync09_MlsTwoMemberExporterAgree) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  std::string space =
+      "space://" + Sync09BytesToHex(crypto.sha256("mls-space-alpha"));
+  std::string gid;
+  EXPECT_TRUE(default_sync::GroupIdFromSpaceUri(space, &gid));
+  EXPECT_EQ(gid.size(), 32u);
+
+  mls_engine::Member alice("did:key:zAlice");
+  mls_engine::Member bob("did:key:zBob");
+  alice.CreateGroup(gid);
+  auto added = alice.Add(bob.KeyPackage());
+  bob.Join(added.second);
+
+  EXPECT_EQ(alice.MemberCount(), 2u);
+  EXPECT_EQ(bob.MemberCount(), 2u);
+  EXPECT_EQ(alice.Epoch(), bob.Epoch());
+
+  // The RFC 9420 §8.5 exporter is the §6.3.9 seam: called with the space-frame
+  // label + spaceUri it returns exactly the core's space traffic secret.
+  const std::string label = default_sync::kSpaceFrameExporterLabel;
+  std::string sts_a = alice.ExportSecret(label, space, 32);
+  std::string sts_b = bob.ExportSecret(label, space, 32);
+  EXPECT_EQ(sts_a.size(), 32u);
+  EXPECT_EQ(sts_a, sts_b);
+
+  auto keys_a = default_sync::DeriveFrameKeys(sts_a, crypto);
+  auto keys_b = default_sync::DeriveFrameKeys(sts_b, crypto);
+  EXPECT_EQ(keys_a.key, keys_b.key);
+  EXPECT_EQ(keys_a.nonce, keys_b.nonce);
+  EXPECT_EQ(keys_a.key.size(), 16u);
+  EXPECT_EQ(keys_a.nonce.size(), 12u);
+}
+
+TEST(Sync09_MlsEndToEndFrameExchange) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  std::string space =
+      "space://" + Sync09BytesToHex(crypto.sha256("mls-space-e2e"));
+  std::string gid;
+  EXPECT_TRUE(default_sync::GroupIdFromSpaceUri(space, &gid));
+
+  mls_engine::Member alice("did:key:zAlice");
+  mls_engine::Member bob("did:key:zBob");
+  alice.CreateGroup(gid);
+  auto added = alice.Add(bob.KeyPackage());
+  bob.Join(added.second);
+  EXPECT_EQ(alice.Epoch(), bob.Epoch());
+
+  const std::string label = default_sync::kSpaceFrameExporterLabel;
+  auto keys_a =
+      default_sync::DeriveFrameKeys(alice.ExportSecret(label, space, 32), crypto);
+  auto keys_b =
+      default_sync::DeriveFrameKeys(bob.ExportSecret(label, space, 32), crypto);
+  EXPECT_EQ(keys_a.key, keys_b.key);
+
+  // Alice → Bob.
+  default_sync::WireFrame a2b;
+  a2b.type = default_sync::FrameType::kDiff;
+  a2b.space_uri = space;
+  a2b.from = {"did:key:zAlice", "sa"};
+  a2b.to = std::nullopt;
+  a2b.payload = default_sync::SignalToCbor("alice-diff");
+  default_sync::EncryptedFrame enc_a;
+  EXPECT_TRUE(
+      default_sync::SealFrame(keys_a, a2b, alice.Epoch(), 1, crypto, &enc_a));
+  default_sync::WireFrame got_by_bob;
+  EXPECT_TRUE(default_sync::OpenFrame(keys_b, enc_a, crypto, &got_by_bob));
+  std::string body_b;
+  EXPECT_TRUE(default_sync::SignalFromCbor(got_by_bob.payload, &body_b));
+  EXPECT_EQ(body_b, std::string("alice-diff"));
+
+  // Bob → Alice.
+  default_sync::WireFrame b2a;
+  b2a.type = default_sync::FrameType::kSignal;
+  b2a.space_uri = space;
+  b2a.from = {"did:key:zBob", "sb"};
+  b2a.to = std::nullopt;
+  b2a.payload = default_sync::SignalToCbor("bob-signal");
+  default_sync::EncryptedFrame enc_b;
+  EXPECT_TRUE(
+      default_sync::SealFrame(keys_b, b2a, bob.Epoch(), 1, crypto, &enc_b));
+  default_sync::WireFrame got_by_alice;
+  EXPECT_TRUE(default_sync::OpenFrame(keys_a, enc_b, crypto, &got_by_alice));
+  std::string body_a;
+  EXPECT_TRUE(default_sync::SignalFromCbor(got_by_alice.payload, &body_a));
+  EXPECT_EQ(body_a, std::string("bob-signal"));
+
+  // Epoch advance: Bob self-updates, Alice applies the commit; the exporter
+  // rotates, so the derived frame keys rotate with it.
+  uint64_t old_epoch = alice.Epoch();
+  std::string commit = bob.Update();
+  alice.ProcessCommit(commit);
+  EXPECT_EQ(alice.Epoch(), bob.Epoch());
+  EXPECT_GT(alice.Epoch(), old_epoch);
+
+  auto keys_a2 =
+      default_sync::DeriveFrameKeys(alice.ExportSecret(label, space, 32), crypto);
+  auto keys_b2 =
+      default_sync::DeriveFrameKeys(bob.ExportSecret(label, space, 32), crypto);
+  EXPECT_EQ(keys_a2.key, keys_b2.key);
+  EXPECT_NE(keys_a2.key, keys_a.key);
+
+  // A frame sealed under the new epoch round-trips …
+  default_sync::WireFrame post;
+  post.type = default_sync::FrameType::kDiff;
+  post.space_uri = space;
+  post.from = {"did:key:zAlice", "sa"};
+  post.to = std::nullopt;
+  post.payload = default_sync::SignalToCbor("post-rotation");
+  default_sync::EncryptedFrame enc_post;
+  EXPECT_TRUE(
+      default_sync::SealFrame(keys_a2, post, alice.Epoch(), 2, crypto, &enc_post));
+  default_sync::WireFrame post_open;
+  EXPECT_TRUE(default_sync::OpenFrame(keys_b2, enc_post, crypto, &post_open));
+  std::string post_body;
+  EXPECT_TRUE(default_sync::SignalFromCbor(post_open.payload, &post_body));
+  EXPECT_EQ(post_body, std::string("post-rotation"));
+
+  // … but the stale pre-rotation keys can no longer open it.
+  default_sync::WireFrame discard;
+  EXPECT_FALSE(default_sync::OpenFrame(keys_b, enc_post, crypto, &discard));
+}
+
+TEST(Sync09_MlsGroupAddRemove) {
+  auto crypto = default_sync::MakeOpenSslSyncCrypto();
+  std::string space =
+      "space://" + Sync09BytesToHex(crypto.sha256("mls-space-abc"));
+  std::string gid;
+  EXPECT_TRUE(default_sync::GroupIdFromSpaceUri(space, &gid));
+  const std::string label = default_sync::kSpaceFrameExporterLabel;
+
+  mls_engine::Member alice("did:key:zAlice");
+  mls_engine::Member bob("did:key:zBob");
+  mls_engine::Member carol("did:key:zCarol");
+  alice.CreateGroup(gid);
+
+  // Alice adds Bob.
+  auto add_bob = alice.Add(bob.KeyPackage());
+  bob.Join(add_bob.second);
+
+  // Alice adds Carol; Bob (already a member) applies the same commit.
+  auto add_carol = alice.Add(carol.KeyPackage());
+  bob.ProcessCommit(add_carol.first);
+  carol.Join(add_carol.second);
+
+  EXPECT_EQ(alice.MemberCount(), 3u);
+  EXPECT_EQ(bob.MemberCount(), 3u);
+  EXPECT_EQ(carol.MemberCount(), 3u);
+
+  std::string s_a = alice.ExportSecret(label, space, 32);
+  std::string s_b = bob.ExportSecret(label, space, 32);
+  std::string s_c = carol.ExportSecret(label, space, 32);
+  EXPECT_EQ(s_a, s_b);
+  EXPECT_EQ(s_a, s_c);
+
+  // Alice removes Carol; Bob applies the commit; Carol is evicted.
+  uint32_t carol_leaf = carol.OwnLeafIndex();
+  std::string rm = alice.Remove(carol_leaf);
+  bob.ProcessCommit(rm);
+
+  EXPECT_EQ(alice.MemberCount(), 2u);
+  EXPECT_EQ(bob.MemberCount(), 2u);
+
+  std::string s_a2 = alice.ExportSecret(label, space, 32);
+  std::string s_b2 = bob.ExportSecret(label, space, 32);
+  EXPECT_EQ(s_a2, s_b2);  // remaining members still agree …
+  EXPECT_NE(s_a2, s_a);   // … on a fresh post-removal secret.
+
+  // Carol's stale (pre-removal) secret no longer matches the group.
+  std::string s_c_stale = carol.ExportSecret(label, space, 32);
+  EXPECT_NE(s_c_stale, s_a2);
+
+  // The remaining two still seal/open a frame end-to-end.
+  auto keys_a = default_sync::DeriveFrameKeys(s_a2, crypto);
+  auto keys_b = default_sync::DeriveFrameKeys(s_b2, crypto);
+  default_sync::WireFrame f;
+  f.type = default_sync::FrameType::kDiff;
+  f.space_uri = space;
+  f.from = {"did:key:zAlice", "sa"};
+  f.to = std::nullopt;
+  f.payload = default_sync::SignalToCbor("after-removal");
+  default_sync::EncryptedFrame enc;
+  EXPECT_TRUE(default_sync::SealFrame(keys_a, f, alice.Epoch(), 1, crypto, &enc));
+  default_sync::WireFrame opened;
+  EXPECT_TRUE(default_sync::OpenFrame(keys_b, enc, crypto, &opened));
+  std::string body;
+  EXPECT_TRUE(default_sync::SignalFromCbor(opened.payload, &body));
+  EXPECT_EQ(body, std::string("after-removal"));
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -4538,6 +5344,7 @@ int main(int argc, char** argv) {
       tests_failed++;
       failures.push_back(entry.name);
       std::cout << " [FAIL]\n";
+      std::cerr << "    EXCEPTION: " << e.what() << "\n";
     }
   }
 
