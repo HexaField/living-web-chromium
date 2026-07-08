@@ -15,6 +15,10 @@ PersonalGraphManager::PersonalGraphManager(DIDKeyProvider* identity)
     : backends_(identity),
       governance_(identity),
       sync_(identity, &governance_),
+      // §5: resolves the target Graph's identity/governance/store per call and,
+      // for §7 inheritance, the context://participates_in parent graphs via
+      // |backends_|. Borrows all three, so it is initialised after them.
+      shapes_(identity, &governance_, &backends_),
       module_crypto_(identity),
       // §6.2: no host-network backing in this branch — module execution (and
       // thus any network import) awaits the Component Model engine. The runtime
@@ -118,7 +122,8 @@ void PersonalGraphManager::Create(
     CreateCallback callback) {
   GraphBackend* backend = backends_.Create(display_name);
   Retain(std::make_unique<PersonalGraphHost>(backend, &backends_, &governance_,
-                                             &sync_, std::move(receiver)),
+                                             &sync_, &shapes_,
+                                             std::move(receiver)),
          backend->id());
   std::move(callback).Run(BuildInfo(backend));
 }
@@ -136,7 +141,8 @@ void PersonalGraphManager::FromSnapshot(
     return;
   }
   Retain(std::make_unique<PersonalGraphHost>(backend, &backends_, &governance_,
-                                             &sync_, std::move(receiver)),
+                                             &sync_, &shapes_,
+                                             std::move(receiver)),
          backend->id());
   std::move(callback).Run(BuildInfo(backend), std::nullopt);
 }
@@ -187,7 +193,8 @@ void PersonalGraphManager::Mount(
 
   const bool writable = options->mode != graph::mojom::MountMode::kRead;
   auto host = std::make_unique<PersonalGraphHost>(
-      backend, &backends_, &governance_, &sync_, std::move(receiver));
+      backend, &backends_, &governance_, &sync_, &shapes_,
+      std::move(receiver));
   PersonalGraphHost* raw = host.get();
   Retain(std::move(host), backend->id());
   raw->InitAsMount(options->space_uri, options->module_hash, writable);

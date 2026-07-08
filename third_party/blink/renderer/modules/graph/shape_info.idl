@@ -1,0 +1,17 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// ShapeInfo — a registered shape as read back by Graph.getShapes() (Dynamic
+// Graph Shape Validation spec §5.1). `sourceGraphDid` is the DID of the graph
+// the shape is registered on: this graph, or a §7 participates_in parent it was
+// inherited from. `definitionAddress` is the §6.3 "sha256:<hex>" content address
+// of the shape's JCS-canonical definition.
+
+dictionary ShapeInfo {
+  required DOMString name;
+  required USVString targetClass;
+  required USVString definitionAddress;
+  required USVString sourceGraphDid;
+  required sequence<ShapePropertyInfo> properties;
+};

@@ -13,6 +13,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_GRAPH_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GRAPH_GRAPH_H_
 
+#include <utility>
+
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -38,6 +40,7 @@ namespace blink {
 class CapabilityInfo;
 class CapabilityProofInput;
 class ExecutionContext;
+class GetShapesOptions;
 class GovernanceValidationResult;
 class GraphConstraint;
 class GraphDiff;
@@ -47,6 +50,8 @@ class PublishedGraph;
 class PublishOptions;
 class ScriptPromiseResolverBase;
 class ScriptState;
+class ScriptValue;
+class ShapeInfo;
 class SparqlQueryOptions;
 class TripleQuery;
 class V8BufferSource;
@@ -130,6 +135,45 @@ class Graph final : public EventTarget,
                                                   const V8BufferSource* payload);
   ScriptPromise<IDLUndefined> broadcast(ScriptState*,
                                         const V8BufferSource* payload);
+
+  // §5 shape API — added by Dynamic Graph Shape Validation (Spec 07). Each
+  // round-trips to the graph's own host, which runs the per-realm ShapeService
+  // against the graph's identity, governance, and store. Registration and
+  // instance writes author as the browser's current identity, never named by the
+  // renderer.
+  ScriptPromise<IDLUndefined> addShape(ScriptState*,
+                                       const String& name,
+                                       const ScriptValue& shape_definition);
+  ScriptPromise<IDLUndefined> removeShape(ScriptState*, const String& name);
+  ScriptPromise<IDLSequence<ShapeInfo>> getShapes(ScriptState*,
+                                                  const GetShapesOptions* options);
+  ScriptPromise<IDLUSVString> createShapeInstance(
+      ScriptState*,
+      const String& shape_name,
+      const String& address,
+      const Vector<std::pair<String, String>>& initial_values);
+  ScriptPromise<IDLSequence<IDLUSVString>> getShapeInstances(
+      ScriptState*,
+      const String& shape_name);
+  ScriptPromise<IDLRecord<IDLString, IDLSequence<IDLString>>>
+  getShapeInstanceData(ScriptState*,
+                       const String& shape_name,
+                       const String& address);
+  ScriptPromise<IDLUndefined> setShapeProperty(ScriptState*,
+                                               const String& shape_name,
+                                               const String& address,
+                                               const String& property,
+                                               const String& value);
+  ScriptPromise<IDLUndefined> addToShapeCollection(ScriptState*,
+                                                   const String& shape_name,
+                                                   const String& address,
+                                                   const String& collection,
+                                                   const String& value);
+  ScriptPromise<IDLUndefined> removeFromShapeCollection(ScriptState*,
+                                                        const String& shape_name,
+                                                        const String& address,
+                                                        const String& collection,
+                                                        const String& value);
 
   // EventTarget overrides.
   const AtomicString& InterfaceName() const override;

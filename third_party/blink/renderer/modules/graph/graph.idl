@@ -93,3 +93,52 @@ partial interface Graph {
   attribute EventHandler onsignal;
   attribute EventHandler ondiff;
 };
+
+// §5 Shape API — added by Dynamic Graph Shape Validation ([[SHAPE-VALIDATION]],
+// Spec 07). A shape is a content-addressed constraint definition (§4) stored as
+// triples inside this graph (§6); registration and every instance write are
+// governed writes authored by the browser's current identity, never named by the
+// renderer. Folded onto Graph because a shape is registered on that graph's own
+// host. Registration and instantiation take the updateSHACL / per-write
+// governance path (§10.4, §5.5/§5.7); getShapes()/getShapeInstances()/
+// getShapeInstanceData() are reads.
+[Exposed=(Window,Worker), SecureContext]
+partial interface Graph {
+  // §5.2 — register |shapeDefinition| under |name| on this graph. Rejects
+  // "SyntaxError" (malformed definition), "ConstraintError" (duplicate local
+  // name / narrowing violation / unresolved extends), "NotAllowedError" (no
+  // updateSHACL capability), "InvalidStateError".
+  [CallWith=ScriptState, NewObject] Promise<undefined> addShape(DOMString name, object shapeDefinition);
+  // §5.3 — drop |name|'s registration (requires updateSHACL). Existing instances
+  // are left intact. Rejects "NotFoundError", "NotAllowedError".
+  [CallWith=ScriptState, NewObject] Promise<undefined> removeShape(DOMString name);
+  // §5.4 — the shapes registered on this graph plus, unless
+  // options.includeInherited is false, the accepted shapes inherited from §7
+  // parent graphs; local shapes shadow inherited shapes of the same name (§7.3).
+  [CallWith=ScriptState, NewObject] Promise<sequence<ShapeInfo>> getShapes(optional GetShapesOptions options = {});
+  // §5.5 — execute |shapeName|'s constructor into this graph. |address| empty
+  // mints a fresh urn:uuid. |initialValues| maps property names to a single
+  // lexical/IRI value each. Resolves with the instance address. Rejects
+  // "NotFoundError" (unknown shape), "TypeError" (missing required property or
+  // datatype failure), "NotAllowedError".
+  [CallWith=ScriptState, NewObject] Promise<USVString> createShapeInstance(DOMString shapeName, USVString address, record<DOMString, DOMString> initialValues);
+  // §5.6 — the addresses of every entity whose §4.5 rdf://type discriminator
+  // matches |shapeName|'s targetClass. Rejects "NotFoundError".
+  [CallWith=ScriptState, NewObject] Promise<sequence<USVString>> getShapeInstances(DOMString shapeName);
+  // §5.6 — the full property dictionary of |address| under |shapeName| (each
+  // property name → its ordered object values). Rejects "NotFoundError".
+  [CallWith=ScriptState, NewObject] Promise<record<DOMString, sequence<DOMString>>> getShapeInstanceData(DOMString shapeName, USVString address);
+  // §5.7 — the scalar setter: replace any existing value of |property| on
+  // |address| with |value|. Rejects "NotFoundError", "NoModificationAllowedError"
+  // (property has no setter), "InvalidAccessError" (property is a collection),
+  // "TypeError", "NotAllowedError".
+  [CallWith=ScriptState, NewObject] Promise<undefined> setShapeProperty(DOMString shapeName, USVString address, DOMString property, DOMString value);
+  // §5.7 — add |value| to the collection property |collection| on |address|.
+  // Rejects "NotFoundError", "InvalidAccessError" (property is scalar),
+  // "TypeError", "NotAllowedError".
+  [CallWith=ScriptState, NewObject] Promise<undefined> addToShapeCollection(DOMString shapeName, USVString address, DOMString collection, DOMString value);
+  // §5.7 — remove |value| from the collection property |collection| on
+  // |address|. Rejects "NotFoundError", "InvalidAccessError" (property is
+  // scalar).
+  [CallWith=ScriptState, NewObject] Promise<undefined> removeFromShapeCollection(DOMString shapeName, USVString address, DOMString collection, DOMString value);
+};

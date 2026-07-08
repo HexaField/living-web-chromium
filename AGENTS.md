@@ -174,7 +174,7 @@ Spec numbering (current, 10 specs):
 | 04 | Graph Capability Framework | `content/browser/governance/{governance_backend,zcap}.*` (ZCAP-LD + enforcement), `standalone/capability_provider.h`, `.../graph/graph.*` (§11 surface) + `group.*` (`delegateCapability`) |
 | 05 | Context Sync Protocol | `content/browser/graph_sync/{graph_diff,sync_backend}.*`, `.../graph/{personal_graph_host,personal_graph_manager}.*` (§6 folded), `standalone/sync_provider.h` |
 | 06 | Sync Module Architecture | `content/browser/module_runtime/{module_manifest,module_capabilities,module_runtime_host,module_runtime_backends}.*` + `graph_sync_module.wit`, `standalone/module_runtime_provider.h`; §6.4 `listModules` on `.../graph/personal_graph_manager.*` |
-| 07 | Dynamic Graph Shape Validation | `.../graph/personal_graph*` (shape methods) |
+| 07 | Dynamic Graph Shape Validation | `content/browser/shapes/{shape_definition,shape_service}.*`, `standalone/shape_provider.h`; §5 folded onto `.../graph/personal_graph_host.*` + `.../graph/graph.*`; `graph_backend_manager.*` `LookupHost` (§7 parent resolution) |
 | 08 | Governance Constraint Vocabulary | `content/browser/governance/` (constraint-kind handlers) |
 | 09 | Default Sync Module | — (planned, CRDT + MLS) |
 | 10 | Graph Flows | — (planned) |
@@ -183,7 +183,7 @@ Spec numbering (current, 10 specs):
 
 ## Conventions
 
-- **One spec per branch**, in dependency order (01 → 06, then 07–10). Branch name
+- **One spec per branch**, in dependency order (01 → 07, then 08–10). Branch name
   `spec-NN-shortname` (e.g. `spec-01-identity`). Each PR must be independently auditable.
 - **No subsets.** The spec is normative — implement exactly what it mandates. No mocks,
   stubs, or placeholders in landed work. Leverage real libraries (Ed25519, JCS, Oxigraph
@@ -457,6 +457,49 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   (137 total, green); browser port = `content/browser/module_runtime/*` with 17
   gtests (`tests/module_runtime_host_unittest.cc`); §6.4 renderer surface pinned by
   `tests/web_platform_tests/graph/sync-modules.html`.
+
+## Spec 07 specifics (landed)
+
+- **A shape is content-addressed data stored in the graph it governs.** No schema
+  registry: `addShape` writes the §6.4 triple shape (`rdf://type shape://Shape` +
+  `name`/`targetClass`/`definition`) linked from the graph's stable id via
+  `shape://has_shape`. The definition literal is the JCS-canonical JSON; the address
+  is `sha256:` + lowercase-hex(SHA-256(JCS)) — **colon**, unlike Spec 06's hyphenated
+  `sha256-` WASM hash.
+- **Shared core never hashes.** `content/browser/shapes/shape_definition.*` (namespace
+  `living_web`) owns the §4 grammar, `CanonicalizeShapeJson`, `FormatShapeAddress`,
+  `NormalizeDatatype`/`ValidateLexicalForDatatype`, `SetterKindFor`, `ShapeNarrows`.
+  The caller hashes with its build world's SHA-256 (`crypto::SHA256HashString` /
+  `standalone/crypto_sha2.h`) and feeds the digest to `FormatShapeAddress`, so the
+  core stays SHA-agnostic (same rule as Spec 02 content hashing).
+- **Per-realm service, folded onto the personal host.** `PersonalGraphManager` owns one
+  `content::ShapeService` (borrows identity + `&governance_` + `&backends_`), declared
+  **after** them, threaded into every `PersonalGraphHost` (Create/FromSnapshot/Mount).
+  The §5 API is per-graph so it folds onto `PersonalGraphHost` + `partial interface
+  Graph` (the Spec 04 §11 / Spec 05 §6 seam), **not** a new mojo host. Every §5 method
+  takes the target `GraphBackend* W` first; registration/instance writes author as
+  `governance_->ActiveCredentialId()` (current identity, never renderer-named).
+- **§7 inheritance walks `context://participates_in` up.** `GraphBackendManager::
+  LookupHost(key)` resolves a parent by stable id / DID / content-IRI (added for this
+  spec). Inheritance is **gated by acceptance (§10.5)**: the parent must carry a
+  `context://accepts_participation` reifier whose author is one of its
+  `capabilityDelegation` delegates, else the child sees nothing (`ParentAcceptsChild`).
+  A same-name local shape that strictly narrows shadows the inherited one (§7.3).
+- **Error vocabulary.** `SyntaxError`/`TypeError` are ECMAScript-native (blink rejects
+  them off the `DOMException` path); `ConstraintError`/`NotAllowedError`/`NotFoundError`/
+  `NoModificationAllowedError`/`InvalidAccessError`/`InvalidStateError` map to
+  `DOMException` codes (`Graph::RejectWithName`). `addLink` constructor actions always
+  emit an IRI object term (the §4.5 type discriminator); target setters type by the
+  referenced property's datatype.
+- **Governance gotcha (tests).** Under enforcement, once a capability constraint is
+  installed `SetEnforcementMode` re-authorises via `updateGovernance`, so any
+  `BootstrapEnforced` with a custom action set that also registers a shape must grant
+  **both** `updateSHACL` and `updateGovernance`.
+- Authoritative reference impl: `standalone/shape_provider.h` (`living_web::ShapeService`)
+  over `shape_definition.*`, verified by 24 `Shape_*` tests (161 total, green); browser
+  port = `content/browser/shapes/shape_service.*` with 16 gtests
+  (`tests/shape_service_unittest.cc`); §5 renderer surface pinned by
+  `tests/web_platform_tests/graph/personal-graph-shapes.html`.
 
 ## Gotchas
 

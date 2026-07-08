@@ -42,6 +42,10 @@
 #include "content/browser/module_runtime/module_capabilities.h"
 #include "content/browser/module_runtime/module_manifest.h"
 
+// Spec 07 — Dynamic Graph Shape Validation.
+#include "shape_provider.h"
+#include "content/browser/shapes/shape_definition.h"
+
 #include <chrono>
 #include <openssl/rand.h>
 
@@ -3384,6 +3388,529 @@ TEST(Module_ListModules_Introspection) {
   }
   EXPECT_TRUE(saw_alpha);
   EXPECT_TRUE(saw_beta);
+}
+
+// ============================================================
+// Spec 07 — Dynamic Graph Shape Validation
+// ============================================================
+
+namespace {
+
+// A well-formed §4 Person shape: three properties (a required scalar `name`, an
+// optional scalar `age` typed xsd:integer, an unbounded `knows` collection of
+// URIs) and a four-action constructor (the §4.5 rdf://type discriminator plus a
+// setter/collection action per property).
+constexpr char kPersonShape[] = R"JSON({
+  "targetClass": "http://schema.org/Person",
+  "properties": [
+    {"path": "http://schema.org/name", "name": "name", "datatype": "xsd:string", "minCount": 1, "maxCount": 1},
+    {"path": "http://schema.org/age", "name": "age", "datatype": "xsd:integer", "maxCount": 1},
+    {"path": "http://schema.org/knows", "name": "knows", "datatype": "URI"}
+  ],
+  "constructor": [
+    {"action": "shape://actions/addLink", "subject": "this", "predicate": "rdf://type", "object": "http://schema.org/Person"},
+    {"action": "shape://actions/setSingleTarget", "subject": "this", "predicate": "http://schema.org/name", "object": "name"},
+    {"action": "shape://actions/setSingleTarget", "subject": "this", "predicate": "http://schema.org/age", "object": "age"},
+    {"action": "shape://actions/addCollectionTarget", "subject": "this", "predicate": "http://schema.org/knows", "object": "knows"}
+  ]
+})JSON";
+
+// A Thing shape exercising every §4.2 setter classification: `title` scalar,
+// `locked` read-only (no setter), `tag` unbounded collection.
+constexpr char kThingShape[] = R"JSON({
+  "targetClass": "http://example.org/Thing",
+  "properties": [
+    {"path": "http://example.org/title", "name": "title", "datatype": "xsd:string", "minCount": 1, "maxCount": 1},
+    {"path": "http://example.org/locked", "name": "locked", "datatype": "xsd:string", "maxCount": 1, "readOnly": true},
+    {"path": "http://example.org/tag", "name": "tag", "datatype": "xsd:string"}
+  ],
+  "constructor": [
+    {"action": "shape://actions/addLink", "subject": "this", "predicate": "rdf://type", "object": "http://example.org/Thing"},
+    {"action": "shape://actions/setSingleTarget", "subject": "this", "predicate": "http://example.org/title", "object": "title"}
+  ]
+})JSON";
+
+constexpr char kAnimalShape[] = R"JSON({
+  "targetClass": "http://example.org/Animal",
+  "properties": [
+    {"path": "http://example.org/legs", "name": "legs", "datatype": "xsd:integer", "minCount": 0, "maxCount": 1}
+  ],
+  "constructor": [
+    {"action": "shape://actions/addLink", "subject": "this", "predicate": "rdf://type", "object": "http://example.org/Animal"}
+  ]
+})JSON";
+
+// Extends Animal and narrows it (legs becomes required) — a valid §4.6 refinement.
+constexpr char kDogShape[] = R"JSON({
+  "targetClass": "http://example.org/Dog",
+  "extends": "Animal",
+  "properties": [
+    {"path": "http://example.org/legs", "name": "legs", "datatype": "xsd:integer", "minCount": 1, "maxCount": 1}
+  ],
+  "constructor": [
+    {"action": "shape://actions/addLink", "subject": "this", "predicate": "rdf://type", "object": "http://example.org/Dog"}
+  ]
+})JSON";
+
+// Extends Animal but LOOSENS it (maxCount 1 → 4) — an invalid §4.6 extension.
+constexpr char kCatShape[] = R"JSON({
+  "targetClass": "http://example.org/Cat",
+  "extends": "Animal",
+  "properties": [
+    {"path": "http://example.org/legs", "name": "legs", "datatype": "xsd:integer", "minCount": 0, "maxCount": 4}
+  ],
+  "constructor": [
+    {"action": "shape://actions/addLink", "subject": "this", "predicate": "rdf://type", "object": "http://example.org/Cat"}
+  ]
+})JSON";
+
+// A same-name "Animal" shape that strictly narrows the inherited Animal (legs
+// minCount 0 → 1) WITHOUT `extends` — a §7.3 local override that shadows the
+// inherited definition. Not an extension, so it carries no `extends` key.
+constexpr char kAnimalNarrowedShape[] = R"JSON({
+  "targetClass": "http://example.org/Animal",
+  "properties": [
+    {"path": "http://example.org/legs", "name": "legs", "datatype": "xsd:integer", "minCount": 1, "maxCount": 1}
+  ],
+  "constructor": [
+    {"action": "shape://actions/addLink", "subject": "this", "predicate": "rdf://type", "object": "http://example.org/Animal"}
+  ]
+})JSON";
+
+ShapePropertyInfo* FindInfoProp(ShapeInfo* s, const std::string& name) {
+  for (auto& p : s->properties)
+    if (p.name == name)
+      return &p;
+  return nullptr;
+}
+
+ShapeInfo* FindInfo(std::vector<ShapeInfo>* v, const std::string& name) {
+  for (auto& s : *v)
+    if (s.name == name)
+      return &s;
+  return nullptr;
+}
+
+}  // namespace
+
+// ---- shared core: §4 grammar, §6.3 addressing, §4.4/§4.6 rules ----
+
+TEST(Shape_ParseValidDefinition) {
+  ShapeDefinition d;
+  std::string err;
+  EXPECT_TRUE(ParseShapeDefinition(kPersonShape, &d, &err));
+  EXPECT_TRUE(d.valid);
+  EXPECT_EQ(d.target_class, std::string("http://schema.org/Person"));
+  EXPECT_EQ(d.properties.size(), size_t(3));
+  EXPECT_EQ(d.constructor.size(), size_t(4));
+  const ShapePropertyDef* name = FindPropertyByName(d, "name");
+  EXPECT_TRUE(name != nullptr);
+  EXPECT_EQ(name->min_count, 1ul);
+  EXPECT_TRUE(name->max_count.has_value() && *name->max_count == 1ul);
+  const ShapePropertyDef* knows = FindPropertyByName(d, "knows");
+  EXPECT_TRUE(knows != nullptr);
+  EXPECT_FALSE(knows->max_count.has_value());  // unbounded collection
+  EXPECT_FALSE(d.extends.has_value());
+}
+
+TEST(Shape_ParseRejectsMalformed) {
+  ShapeDefinition d;
+  std::string err;
+  // Missing targetClass.
+  EXPECT_FALSE(ParseShapeDefinition(
+      R"({"properties":[],"constructor":[]})", &d, &err));
+  // Property name violating the §4.2 grammar.
+  EXPECT_FALSE(ParseShapeDefinition(
+      R"({"targetClass":"C","properties":[{"path":"p","name":"1bad"}],"constructor":[]})",
+      &d, &err));
+  // maxCount < minCount.
+  EXPECT_FALSE(ParseShapeDefinition(
+      R"({"targetClass":"C","properties":[{"path":"p","name":"x","minCount":3,"maxCount":1}],"constructor":[]})",
+      &d, &err));
+  // Constructor subject not "this".
+  EXPECT_FALSE(ParseShapeDefinition(
+      R"({"targetClass":"C","properties":[],"constructor":[{"action":"shape://actions/addLink","subject":"that","predicate":"p","object":"o"}]})",
+      &d, &err));
+  // Unknown constructor action URI.
+  EXPECT_FALSE(ParseShapeDefinition(
+      R"({"targetClass":"C","properties":[],"constructor":[{"action":"shape://actions/bogus","subject":"this","predicate":"p","object":"o"}]})",
+      &d, &err));
+  // Duplicate property name.
+  EXPECT_FALSE(ParseShapeDefinition(
+      R"({"targetClass":"C","properties":[{"path":"p","name":"x"},{"path":"q","name":"x"}],"constructor":[]})",
+      &d, &err));
+}
+
+TEST(Shape_PropertyNameGrammar) {
+  EXPECT_TRUE(IsValidShapePropertyName("name"));
+  EXPECT_TRUE(IsValidShapePropertyName("_x9"));
+  EXPECT_TRUE(IsValidShapePropertyName("A_b_2"));
+  EXPECT_FALSE(IsValidShapePropertyName(""));
+  EXPECT_FALSE(IsValidShapePropertyName("9x"));
+  EXPECT_FALSE(IsValidShapePropertyName("has-dash"));
+  EXPECT_FALSE(IsValidShapePropertyName("a b"));
+}
+
+TEST(Shape_ContentAddressStableAcrossFormatting) {
+  // Two byte-different encodings of the same JSON object (key order + spacing).
+  const std::string a =
+      R"({"targetClass":"C","properties":[],"constructor":[]})";
+  const std::string b =
+      "{  \"constructor\" : [] ,\n \"properties\":[],  \"targetClass\":\"C\" }";
+  auto ca = CanonicalizeShapeJson(a);
+  auto cb = CanonicalizeShapeJson(b);
+  EXPECT_TRUE(ca.has_value() && cb.has_value());
+  EXPECT_EQ(*ca, *cb);  // JCS collapses both to identical bytes
+  const std::string addr_a =
+      FormatShapeAddress(crypto::SHA256HashString(*ca));
+  const std::string addr_b =
+      FormatShapeAddress(crypto::SHA256HashString(*cb));
+  EXPECT_EQ(addr_a, addr_b);
+  EXPECT_TRUE(IsWellFormedShapeAddress(addr_a));
+  EXPECT_EQ(addr_a.substr(0, 7), std::string("sha256:"));  // colon, not hyphen
+  EXPECT_FALSE(IsWellFormedShapeAddress("sha256:deadbeef"));
+  EXPECT_FALSE(CanonicalizeShapeJson("not json").has_value());
+}
+
+TEST(Shape_NormalizeAndValidateDatatype) {
+  EXPECT_EQ(NormalizeDatatype("xsd:integer"),
+            std::string("http://www.w3.org/2001/XMLSchema#integer"));
+  EXPECT_EQ(NormalizeDatatype("URI"), std::string("URI"));
+  EXPECT_EQ(NormalizeDatatype("http://example.org/custom"),
+            std::string("http://example.org/custom"));
+  EXPECT_TRUE(IsUriDatatype(NormalizeDatatype("URI")));
+  EXPECT_FALSE(IsUriDatatype(NormalizeDatatype("xsd:string")));
+
+  EXPECT_TRUE(ValidateLexicalForDatatype("42", NormalizeDatatype("xsd:integer")));
+  EXPECT_FALSE(ValidateLexicalForDatatype("4.5", NormalizeDatatype("xsd:integer")));
+  EXPECT_TRUE(ValidateLexicalForDatatype("true", NormalizeDatatype("xsd:boolean")));
+  EXPECT_FALSE(ValidateLexicalForDatatype("yes", NormalizeDatatype("xsd:boolean")));
+  EXPECT_TRUE(ValidateLexicalForDatatype("2026-07-08T00:00:00Z",
+                                         NormalizeDatatype("xsd:dateTime")));
+  EXPECT_FALSE(ValidateLexicalForDatatype("not-a-date",
+                                          NormalizeDatatype("xsd:dateTime")));
+  EXPECT_TRUE(ValidateLexicalForDatatype("did:example:x",
+                                         NormalizeDatatype("URI")));
+  EXPECT_FALSE(ValidateLexicalForDatatype("has space",
+                                          NormalizeDatatype("URI")));
+  EXPECT_TRUE(ValidateLexicalForDatatype("-5", NormalizeDatatype("xsd:integer")));
+  EXPECT_FALSE(ValidateLexicalForDatatype(
+      "-5", NormalizeDatatype("xsd:nonNegativeInteger")));
+}
+
+TEST(Shape_SetterClassification) {
+  ShapeDefinition d;
+  std::string err;
+  EXPECT_TRUE(ParseShapeDefinition(kThingShape, &d, &err));
+  EXPECT_EQ(int(SetterKindFor(*FindPropertyByName(d, "title"))),
+            int(SetterKind::kScalar));
+  EXPECT_EQ(int(SetterKindFor(*FindPropertyByName(d, "locked"))),
+            int(SetterKind::kNone));  // readOnly → no setter
+  EXPECT_EQ(int(SetterKindFor(*FindPropertyByName(d, "tag"))),
+            int(SetterKind::kCollection));  // unbounded
+}
+
+TEST(Shape_NarrowingRule) {
+  ShapeDefinition parent, dog, cat;
+  std::string err;
+  EXPECT_TRUE(ParseShapeDefinition(kAnimalShape, &parent, &err));
+  EXPECT_TRUE(ParseShapeDefinition(kDogShape, &dog, &err));
+  EXPECT_TRUE(ParseShapeDefinition(kCatShape, &cat, &err));
+  std::string reason;
+  EXPECT_TRUE(ShapeNarrows(parent, dog, &reason));   // tightened minCount
+  EXPECT_FALSE(ShapeNarrows(parent, cat, &reason));  // loosened maxCount
+  EXPECT_FALSE(reason.empty());
+}
+
+TEST(Shape_ConstructorKeyAliases) {
+  // The §12 source/target aliases parse to the canonical subject/object fields.
+  const char kAlias[] = R"({
+    "targetClass": "C",
+    "properties": [{"path": "p", "name": "x"}],
+    "constructor": [{"action": "shape://actions/setSingleTarget", "source": "this", "predicate": "p", "target": "x"}]
+  })";
+  ShapeDefinition d;
+  std::string err;
+  EXPECT_TRUE(ParseShapeDefinition(kAlias, &d, &err));
+  EXPECT_EQ(d.constructor.size(), size_t(1));
+  EXPECT_EQ(d.constructor[0].subject, std::string("this"));
+  EXPECT_EQ(d.constructor[0].object, std::string("x"));
+}
+
+// ---- §5 service: registration, storage, listing ----
+
+TEST(Shape_AddShapeStoresAndLists) {
+  GovFixture f;  // open mode: no capability constraint installed
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+
+  auto shapes = svc.GetShapes(f.W());
+  EXPECT_EQ(shapes.size(), size_t(1));
+  ShapeInfo* p = FindInfo(&shapes, "Person");
+  EXPECT_TRUE(p != nullptr);
+  EXPECT_EQ(p->target_class, std::string("http://schema.org/Person"));
+  EXPECT_EQ(p->source_graph_did, f.Wdid());  // registered locally
+  EXPECT_TRUE(IsWellFormedShapeAddress(p->definition_address));
+  EXPECT_EQ(p->properties.size(), size_t(3));
+  EXPECT_TRUE(FindInfoProp(p, "name") != nullptr);
+}
+
+TEST(Shape_DuplicateNameConstraintError) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  EXPECT_FALSE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("ConstraintError"));
+}
+
+TEST(Shape_MalformedSyntaxError) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_FALSE(svc.AddShape(f.W(), "Bad", "{not a shape", f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("SyntaxError"));
+}
+
+TEST(Shape_UnknownAuthorInvalidState) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_FALSE(svc.AddShape(f.W(), "Person", kPersonShape, "urn:uuid:nope"));
+  EXPECT_EQ(svc.last_error(), std::string("InvalidStateError"));
+}
+
+TEST(Shape_ExtendsNarrowingEnforced) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Animal", kAnimalShape, f.gcred));
+  EXPECT_TRUE(svc.AddShape(f.W(), "Dog", kDogShape, f.gcred));  // valid narrowing
+  EXPECT_FALSE(svc.AddShape(f.W(), "Cat", kCatShape, f.gcred));  // loosens
+  EXPECT_EQ(svc.last_error(), std::string("ConstraintError"));
+  // extends an unresolvable parent name → ConstraintError.
+  const char kGhost[] = R"({"targetClass":"G","extends":"Nonexistent","properties":[],"constructor":[]})";
+  EXPECT_FALSE(svc.AddShape(f.W(), "Ghost", kGhost, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("ConstraintError"));
+}
+
+TEST(Shape_RemoveShape) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  EXPECT_EQ(svc.GetShapes(f.W()).size(), size_t(1));
+  EXPECT_TRUE(svc.RemoveShape(f.W(), "Person", f.gcred));
+  EXPECT_EQ(svc.GetShapes(f.W()).size(), size_t(0));
+  // Removing a shape that was never registered is a no-op success.
+  EXPECT_TRUE(svc.RemoveShape(f.W(), "Ghost", f.gcred));
+}
+
+// ---- §5.5/§5.6 instance construction + query ----
+
+TEST(Shape_CreateInstanceExecutesConstructor) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+
+  std::string inst;
+  std::map<std::string, std::string> vals = {
+      {"name", "Ada Lovelace"}, {"age", "36"}, {"knows", "did:example:bob"}};
+  EXPECT_TRUE(svc.CreateShapeInstance(f.W(), "Person", "", vals, f.gcred, &inst));
+  EXPECT_EQ(inst.substr(0, 9), std::string("urn:uuid:"));
+
+  std::vector<std::string> instances;
+  EXPECT_TRUE(svc.GetShapeInstances(f.W(), "Person", &instances));
+  EXPECT_EQ(instances.size(), size_t(1));
+  EXPECT_EQ(instances[0], inst);  // matched via the rdf://type IRI discriminator
+
+  ShapeInstanceData data;
+  EXPECT_TRUE(svc.GetShapeInstanceData(f.W(), "Person", inst, &data));
+  EXPECT_EQ(data["name"].size(), size_t(1));
+  EXPECT_EQ(data["name"][0], std::string("Ada Lovelace"));
+  EXPECT_EQ(data["age"][0], std::string("36"));
+  EXPECT_EQ(data["knows"][0], std::string("did:example:bob"));  // URI → IRI term
+}
+
+TEST(Shape_CreateInstanceRequiredMissingTypeError) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"age", "36"}};  // no required name
+  EXPECT_FALSE(
+      svc.CreateShapeInstance(f.W(), "Person", "", vals, f.gcred, &inst));
+  EXPECT_EQ(svc.last_error(), std::string("TypeError"));
+}
+
+TEST(Shape_CreateInstanceDatatypeTypeError) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"name", "X"}, {"age", "notanumber"}};
+  EXPECT_FALSE(
+      svc.CreateShapeInstance(f.W(), "Person", "", vals, f.gcred, &inst));
+  EXPECT_EQ(svc.last_error(), std::string("TypeError"));
+}
+
+TEST(Shape_CreateInstanceUnknownShapeNotFound) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"name", "X"}};
+  EXPECT_FALSE(
+      svc.CreateShapeInstance(f.W(), "Nope", "", vals, f.gcred, &inst));
+  EXPECT_EQ(svc.last_error(), std::string("NotFoundError"));
+}
+
+// ---- §5.7 setters + collection operations ----
+
+TEST(Shape_ScalarSetterAndGuards) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Thing", kThingShape, f.gcred));
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"title", "Hello"}};
+  EXPECT_TRUE(svc.CreateShapeInstance(f.W(), "Thing", "", vals, f.gcred, &inst));
+
+  // Scalar setter replaces the single value.
+  EXPECT_TRUE(
+      svc.SetShapeProperty(f.W(), "Thing", inst, "title", "World", f.gcred));
+  ShapeInstanceData data;
+  EXPECT_TRUE(svc.GetShapeInstanceData(f.W(), "Thing", inst, &data));
+  EXPECT_EQ(data["title"].size(), size_t(1));
+  EXPECT_EQ(data["title"][0], std::string("World"));
+
+  // Read-only property: no setter (§4.2).
+  EXPECT_FALSE(
+      svc.SetShapeProperty(f.W(), "Thing", inst, "locked", "x", f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("NoModificationAllowedError"));
+
+  // Collection property via the scalar setter → wrong accessor.
+  EXPECT_FALSE(
+      svc.SetShapeProperty(f.W(), "Thing", inst, "tag", "x", f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("InvalidAccessError"));
+}
+
+TEST(Shape_CollectionAddRemove) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Thing", kThingShape, f.gcred));
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"title", "T"}};
+  EXPECT_TRUE(svc.CreateShapeInstance(f.W(), "Thing", "", vals, f.gcred, &inst));
+
+  EXPECT_TRUE(
+      svc.AddToShapeCollection(f.W(), "Thing", inst, "tag", "red", f.gcred));
+  EXPECT_TRUE(
+      svc.AddToShapeCollection(f.W(), "Thing", inst, "tag", "blue", f.gcred));
+  ShapeInstanceData data;
+  EXPECT_TRUE(svc.GetShapeInstanceData(f.W(), "Thing", inst, &data));
+  EXPECT_EQ(data["tag"].size(), size_t(2));
+
+  EXPECT_TRUE(
+      svc.RemoveFromShapeCollection(f.W(), "Thing", inst, "tag", "red", f.gcred));
+  data.clear();
+  EXPECT_TRUE(svc.GetShapeInstanceData(f.W(), "Thing", inst, &data));
+  EXPECT_EQ(data["tag"].size(), size_t(1));
+  EXPECT_EQ(data["tag"][0], std::string("blue"));
+
+  // The scalar `title` rejects collection operations.
+  EXPECT_FALSE(
+      svc.AddToShapeCollection(f.W(), "Thing", inst, "title", "x", f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("InvalidAccessError"));
+}
+
+// ---- §5.2/§10.4 updateSHACL authorisation under enforcement ----
+
+TEST(Shape_UpdateShaclRequiredUnderEnforcement) {
+  GovFixture f;
+  BootstrapEnforced(f);  // root holds the 8 framework-core actions, NOT updateSHACL
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_FALSE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  EXPECT_EQ(svc.last_error(), std::string("NotAllowedError"));
+}
+
+TEST(Shape_UpdateShaclGrantedUnderEnforcement) {
+  GovFixture f;
+  // Mint the root WITH the updateSHACL extension action (+ the write actions the
+  // constructor needs + updateGovernance, which BootstrapEnforced's
+  // SetEnforcementMode requires once a capability constraint is installed).
+  BootstrapEnforced(f, std::vector<std::string>{"createLink", "removeLink",
+                                                "updateSHACL", "updateGovernance"});
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"name", "Grace"}};
+  EXPECT_TRUE(svc.CreateShapeInstance(f.W(), "Person", "", vals, f.gcred, &inst));
+}
+
+// ---- §7 cross-graph inheritance + §10.5 tamper defence ----
+
+TEST(Shape_InheritanceRequiresAcceptance) {
+  GovFixture f;  // f.group is the PARENT context
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Person", kPersonShape, f.gcred));
+
+  // A child context that unilaterally declares participation in the parent.
+  GroupCreationOptions co;
+  co.sync_module = "urn:sync:module:default";
+  co.display_name = "Child";
+  co.participates_in = f.Wdid();
+  std::unique_ptr<Group> child = f.groups.CreateGroup(co);
+  EXPECT_TRUE(child != nullptr);
+  Graph* C = child->graph();
+  const std::string ccred = CredIdForDid(f.provider, child->did());
+
+  // §10.5: without the parent's acceptance the inherited shape is invisible.
+  EXPECT_EQ(svc.GetShapes(C).size(), size_t(0));
+  std::string inst;
+  std::map<std::string, std::string> vals = {{"name", "X"}};
+  EXPECT_FALSE(svc.CreateShapeInstance(C, "Person", "", vals, ccred, &inst));
+  EXPECT_EQ(svc.last_error(), std::string("NotFoundError"));
+
+  // Parent accepts the child (authored by a capabilityDelegation delegate).
+  f.group->SetActingCredential(f.gcred);
+  EXPECT_TRUE(f.group->Invite(child->did()));
+
+  // Now the shape is inherited and instantiable in the child, and construction
+  // triples land in the CHILD graph (§5.5 step 4).
+  auto shapes = svc.GetShapes(C);
+  EXPECT_EQ(shapes.size(), size_t(1));
+  ShapeInfo* p = FindInfo(&shapes, "Person");
+  EXPECT_TRUE(p != nullptr);
+  EXPECT_EQ(p->source_graph_did, f.Wdid());  // sourced from the parent
+  EXPECT_TRUE(svc.CreateShapeInstance(C, "Person", "", vals, ccred, &inst));
+  std::vector<std::string> in_child;
+  EXPECT_TRUE(svc.GetShapeInstances(C, "Person", &in_child));
+  EXPECT_EQ(in_child.size(), size_t(1));
+  // The parent graph holds no instances of its own.
+  std::vector<std::string> in_parent;
+  EXPECT_TRUE(svc.GetShapeInstances(f.W(), "Person", &in_parent));
+  EXPECT_EQ(in_parent.size(), size_t(0));
+}
+
+TEST(Shape_LocalOverridesInherited) {
+  GovFixture f;
+  ShapeService svc(&f.provider, &f.gov, &f.groups);
+  EXPECT_TRUE(svc.AddShape(f.W(), "Animal", kAnimalShape, f.gcred));
+
+  GroupCreationOptions co;
+  co.sync_module = "urn:sync:module:default";
+  co.display_name = "Child";
+  co.participates_in = f.Wdid();
+  std::unique_ptr<Group> child = f.groups.CreateGroup(co);
+  Graph* C = child->graph();
+  const std::string ccred = CredIdForDid(f.provider, child->did());
+  f.group->SetActingCredential(f.gcred);
+  EXPECT_TRUE(f.group->Invite(child->did()));
+
+  // Child registers a same-name shape that strictly narrows the inherited one.
+  EXPECT_TRUE(svc.AddShape(C, "Animal", kAnimalNarrowedShape, ccred));
+
+  auto shapes = svc.GetShapes(C);
+  ShapeInfo* a = FindInfo(&shapes, "Animal");
+  EXPECT_TRUE(a != nullptr);
+  EXPECT_EQ(a->source_graph_did, child->did());  // local shadows inherited (§7.3)
+  ShapePropertyInfo* legs = FindInfoProp(a, "legs");
+  EXPECT_TRUE(legs != nullptr);
+  EXPECT_EQ(legs->min_count, 1ul);  // the child's tightened constraint
 }
 
 // ============================================================

@@ -27,6 +27,7 @@
 #include "content/browser/graph_sync/sync_backend.h"
 #include "content/browser/module_runtime/module_runtime_backends.h"
 #include "content/browser/module_runtime/module_runtime_host.h"
+#include "content/browser/shapes/shape_service.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -63,6 +64,13 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // and the §9.3 sync-blocking rule run against a single chain view. Must not
   // outlive this manager.
   SyncBackend* sync() { return &sync_; }
+
+  // The realm's Spec 07 shape service (§5 registration + instantiation, §7
+  // inheritance, §10.5 tamper defence). A per-realm object operating on whichever
+  // GraphBackend each call targets; shared with every PersonalGraphHost so the
+  // folded §5 `partial interface Graph` methods run against one view of the
+  // realm's identity, governance, and graph store. Must not outlive this manager.
+  ShapeService* shapes() { return &shapes_; }
 
   // graph::mojom::PersonalGraphManager:
   void Create(const std::optional<std::string>& display_name,
@@ -120,6 +128,10 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // Declared after |governance_|: SyncBackend borrows &governance_ at
   // construction, so it must be initialised later (and destroyed earlier).
   SyncBackend sync_;
+  // Spec 07 §5 shape service. Borrows |identity|, &governance_, and &backends_
+  // (the last for §7 participates_in parent resolution), so it is declared after
+  // them and destroyed before them.
+  ShapeService shapes_;
   // §6 module runtime ([[SYNC-MODULE-ARCHITECTURE]], Spec 06): the capability-
   // scoped host that owns the realm's installed sync modules and answers §6.4
   // listModules(). Its host-graph / host-crypto backings are the adapters below

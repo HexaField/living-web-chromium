@@ -16,11 +16,14 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_capability_info.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_capability_proof_input.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_get_shapes_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_governance_validation_result.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_constraint.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_snapshot_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_publish_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_shape_info.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_shape_property_info.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_sparql_query_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_triple_query.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_usvstring_literalvalue.h"
@@ -277,6 +280,40 @@ CapabilityInfo* CapabilityInfoFromMojo(
   return out;
 }
 
+// §5.1 ShapePropertyInfo (Mojo -> IDL dictionary). |datatype| is absent in Mojo
+// (null) when the property carries no datatype constraint; |max_count| is absent
+// when the property is unbounded (the IDL `unsigned long?`).
+ShapePropertyInfo* ShapePropertyInfoFromMojo(
+    const graph::mojom::blink::ShapePropertyInfoPtr& property) {
+  auto* out = MakeGarbageCollected<ShapePropertyInfo>();
+  out->setName(property->name);
+  out->setPath(property->path);
+  if (property->datatype && !property->datatype->empty())
+    out->setDatatype(*property->datatype);
+  out->setMinCount(property->min_count);
+  if (property->max_count)
+    out->setMaxCount(*property->max_count);
+  out->setWritable(property->writable);
+  out->setReadOnly(property->read_only);
+  return out;
+}
+
+// §5.1 ShapeInfo (Mojo -> IDL dictionary).
+ShapeInfo* ShapeInfoFromMojo(
+    const graph::mojom::blink::ShapeInfoPtr& shape) {
+  auto* out = MakeGarbageCollected<ShapeInfo>();
+  out->setName(shape->name);
+  out->setTargetClass(shape->target_class);
+  out->setDefinitionAddress(shape->definition_address);
+  out->setSourceGraphDid(shape->source_graph_did);
+  HeapVector<Member<ShapePropertyInfo>> properties;
+  properties.ReserveInitialCapacity(shape->properties.size());
+  for (const auto& property : shape->properties)
+    properties.push_back(ShapePropertyInfoFromMojo(property));
+  out->setProperties(std::move(properties));
+  return out;
+}
+
 }  // namespace
 
 Graph::Graph(ExecutionContext* context,
@@ -320,7 +357,25 @@ void Graph::RejectWithName(ScriptPromiseResolverBase* resolver,
       {"QuotaExceededError", DOMExceptionCode::kQuotaExceededError},
       {"TimeoutError", DOMExceptionCode::kTimeoutError},
       {"NotFoundError", DOMExceptionCode::kNotFoundError},
+      // Spec 07 §5 shape API error vocabulary. SyntaxError and TypeError are
+      // ECMAScript-native errors rather than DOMExceptions, so they are rejected
+      // separately below; the remaining names map to their DOMException codes.
+      {"ConstraintError", DOMExceptionCode::kConstraintError},
+      {"NoModificationAllowedError",
+       DOMExceptionCode::kNoModificationAllowedError},
+      {"InvalidAccessError", DOMExceptionCode::kInvalidAccessError},
   };
+  // SyntaxError / TypeError are ECMAScript-native (not DOMException); reject with
+  // the matching native error so `err instanceof SyntaxError` / `TypeError`
+  // holds, exactly as the Spec 07 algorithms specify (§5.2/§5.5/§5.7).
+  if (name == "SyntaxError") {
+    resolver->RejectWithDOMException(DOMExceptionCode::kSyntaxError, name);
+    return;
+  }
+  if (name == "TypeError") {
+    resolver->RejectWithTypeError("Shape property type mismatch");
+    return;
+  }
   for (const auto& entry : kMap) {
     if (name == entry.name) {
       resolver->RejectWithDOMException(entry.code, name);
@@ -1151,6 +1206,313 @@ ScriptPromise<IDLUndefined> Graph::broadcast(ScriptState* script_state,
 
   host_->Broadcast(
       std::move(bytes),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::addShape(
+    ScriptState* script_state,
+    const String& name,
+    const ScriptValue& shape_definition) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  // §5.2: serialise the shape definition to its JSON text synchronously — the
+  // v8 handle is only valid on this stack, before the async host call. The
+  // browser re-parses and JCS-canonicalises it (§6.3). A value that cannot be
+  // stringified (e.g. a cycle) is a malformed definition -> SyntaxError.
+  String shape_json;
+  if (!SerializeToJson(script_state, shape_definition, shape_json)) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kSyntaxError,
+                                     "The shape definition is not serialisable");
+    return promise;
+  }
+
+  host_->AddShape(
+      name, shape_json,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::removeShape(ScriptState* script_state,
+                                               const String& name) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->RemoveShape(
+      name, WTF::BindOnce(
+                [](ScriptPromiseResolver<IDLUndefined>* resolver,
+                   const String& error) {
+                  if (!error.IsNull()) {
+                    RejectWithName(resolver, error);
+                    return;
+                  }
+                  resolver->Resolve();
+                },
+                WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<ShapeInfo>> Graph::getShapes(
+    ScriptState* script_state,
+    const GetShapesOptions* options) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<ShapeInfo>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  // §5.4: includeInherited defaults to true (the IDL supplies the default, so a
+  // present dictionary always carries the member).
+  host_->GetShapes(
+      options->includeInherited(),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLSequence<ShapeInfo>>* resolver,
+             Vector<graph::mojom::blink::ShapeInfoPtr> shapes) {
+            HeapVector<Member<ShapeInfo>> out;
+            out.ReserveInitialCapacity(shapes.size());
+            for (const auto& shape : shapes)
+              out.push_back(ShapeInfoFromMojo(shape));
+            resolver->Resolve(std::move(out));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUSVString> Graph::createShapeInstance(
+    ScriptState* script_state,
+    const String& shape_name,
+    const String& address,
+    const Vector<std::pair<String, String>>& initial_values) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUSVString>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  // §5.5: the record<DOMString, DOMString> crosses the boundary as an ordered
+  // array of name->value entries (Mojo has no record type).
+  Vector<graph::mojom::blink::ShapeInitialValuePtr> mojo_values;
+  mojo_values.reserve(initial_values.size());
+  for (const auto& entry : initial_values) {
+    auto value = graph::mojom::blink::ShapeInitialValue::New();
+    value->name = entry.first;
+    value->value = entry.second;
+    mojo_values.push_back(std::move(value));
+  }
+
+  host_->CreateShapeInstance(
+      shape_name, address, std::move(mojo_values),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUSVString>* resolver,
+             const String& address_out, const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(address_out);
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<IDLUSVString>> Graph::getShapeInstances(
+    ScriptState* script_state,
+    const String& shape_name) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<IDLUSVString>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->GetShapeInstances(
+      shape_name,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLSequence<IDLUSVString>>* resolver,
+             std::optional<Vector<String>> addresses, const String& error) {
+            if (!addresses || !error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(*addresses);
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLRecord<IDLString, IDLSequence<IDLString>>>
+Graph::getShapeInstanceData(ScriptState* script_state,
+                            const String& shape_name,
+                            const String& address) {
+  auto* resolver = MakeGarbageCollected<
+      ScriptPromiseResolver<IDLRecord<IDLString, IDLSequence<IDLString>>>>(
+      script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->GetShapeInstanceData(
+      shape_name, address,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<
+                 IDLRecord<IDLString, IDLSequence<IDLString>>>* resolver,
+             std::optional<Vector<graph::mojom::blink::ShapeInstanceEntryPtr>>
+                 data,
+             const String& error) {
+            if (!data || !error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            // §5.6: the record<DOMString, sequence<DOMString>> is rebuilt from
+            // the ordered name->values entries the browser returned.
+            Vector<std::pair<String, Vector<String>>> out;
+            out.ReserveInitialCapacity(data->size());
+            for (const auto& entry : *data)
+              out.emplace_back(entry->name, entry->values);
+            resolver->Resolve(std::move(out));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::setShapeProperty(ScriptState* script_state,
+                                                    const String& shape_name,
+                                                    const String& address,
+                                                    const String& property,
+                                                    const String& value) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->SetShapeProperty(
+      shape_name, address, property, value,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::addToShapeCollection(
+    ScriptState* script_state,
+    const String& shape_name,
+    const String& address,
+    const String& collection,
+    const String& value) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->AddToShapeCollection(
+      shape_name, address, collection, value,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::removeFromShapeCollection(
+    ScriptState* script_state,
+    const String& shape_name,
+    const String& address,
+    const String& collection,
+    const String& value) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->RemoveFromShapeCollection(
+      shape_name, address, collection, value,
       WTF::BindOnce(
           [](ScriptPromiseResolver<IDLUndefined>* resolver,
              const String& error) {
