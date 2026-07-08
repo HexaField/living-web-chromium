@@ -434,21 +434,24 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   (external-trust, DID bound up front) + `Bind(did, backend)` — the browser analogue
   of the standalone `ModGraphBackend::AddGraph`. `AddTriples` has no external-trust
   write guard, so a module's `WriterApply` lands in the real Oxigraph store.
-- **Normative ABI is WIT, not WebIDL** (amendment §6.3): the module-facing contract
-  is the WIT world `graph-sync-module` (`graph_sync_module.wit`), checked in verbatim
-  as a **reference asset** — it is NOT in the `module_runtime` BUILD.gn `sources` (a
-  `.wit` is not C++). The §5 WebIDL is illustrative; the WIT governs where they
-  disagree. Keep it in lockstep with draft 06 §6.3 (drift without a matching draft
-  change is a bug).
-- **Null host-network is a layering boundary, not a stub** (amendment §6.2). A real
-  relay/peer transport is asynchronous and needs the Component Model
-  task-suspension bridge (§6.2), which no seam wires up in this branch;
+- **Normative ABI is WIT, not WebIDL** (draft §6.3, already normative): the
+  module-facing contract is the WIT world `graph-sync-module`
+  (`graph_sync_module.wit`), checked in verbatim as a **reference asset** — it is
+  NOT in the `module_runtime` BUILD.gn `sources` (a `.wit` is not C++). The §5
+  WebIDL is illustrative; the WIT governs where they disagree. This branch made no
+  draft change — the normative §6 WIT was folded into draft 06 ahead of it by the
+  cross-cutting amendment `53ea1b2`. Keep the checked-in `.wit` in lockstep with
+  draft 06 §6.3 (drift without a matching draft change is a bug).
+- **Null host-network is a layering boundary, not a stub** (impl note, draft §6.2
+  unchanged). A real relay/peer transport is asynchronous and needs the Component
+  Model task-suspension bridge (draft §6.2), which no seam wires up in this branch;
   `PersonalGraphManager` constructs the host with a **null** network backend and the
-  runtime answers every network import with `internal` when it is null. Graph,
-  crypto, storage, clock, random and consent are fully live and enforced; only the
-  wire transport is deferred to the Spec 09 default module. Tests drive the full
-  network path with an in-process transport (`LoopbackNetwork` gtest,
-  `ModNetworkBackend` harness) so the gating is still covered.
+  runtime answers every network import with `internal` (already in the draft's
+  `host-error` vocabulary) when it is null. Graph, crypto, storage, clock, random
+  and consent are fully live and enforced; only the wire transport is deferred to
+  the Spec 09 default module. Tests drive the full network path with an in-process
+  transport (`LoopbackNetwork` gtest, `ModNetworkBackend` harness) so the gating is
+  still covered.
 - Authoritative reference impl: `standalone/module_runtime_provider.h`
   (`ModuleRuntime`) over the two shared cores, verified by 17 `Module_*` tests
   (137 total, green); browser port = `content/browser/module_runtime/*` with 17

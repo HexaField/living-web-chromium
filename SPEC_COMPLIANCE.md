@@ -755,33 +755,34 @@ host implements the host side of the same seven §6.3 imports.
 
 ### Amendments
 
-Two under-specified areas surfaced while implementing Spec 06 have been **folded
-into draft 06 as normative detail** on `w3c-living-web-proposals` `main`. Neither
-weakens the implementation:
+**Spec 06 required no new draft amendments.** Unlike Specs 02–05, the module
+boundary was already made implementation-complete on `w3c-living-web-proposals`
+`main` *before* this branch, by the cross-cutting amendment
+[`53ea1b2`](https://github.com/HexaField/w3c-living-web-proposals/commit/53ea1b2)
+("Add normative detail closing implementation gaps across sync and identity
+specs"). That commit added draft 06's entire §6 *Normative WIT Definition* — the
+§6.1 IDL-to-WIT mapping (declaring the WIT authoritative where it and the §5
+WebIDL disagree), the §6.2 asynchronous-operations model (synchronous host
+imports typed `result<_, host-error>`, task suspension, the execution-budget
+watchdog), the §6.3 WIT world `graph-sync-module` itself, and §6.4 conformance.
+This branch implements that already-normative surface; it does not change the
+draft. `graph_sync_module.wit` is checked in verbatim beside the host as the
+reference asset and tracked against draft §6.3 (any drift without a matching
+draft change is a bug).
 
-- **(i) The module ABI is a normative WIT world, not the illustrative §5
-  WebIDL** — draft §6.3. The draft described the module boundary in WebIDL, which
-  cannot express the resource-handle, borrow, and `result<_, host-error>` semantics
-  a WebAssembly Component Model host actually enforces, leaving the byte-level ABI
-  two authors compile against unpinned. The amendment makes the WIT world
-  `graph-sync-module` normative — the eight capability-scoped host imports, the
-  `GraphSyncModule`/`inbound` exports, and the shared `types` (triple, graph-diff,
-  capability-proof, peer, host-error) — and declares the WIT authoritative where it
-  and the §5 WebIDL disagree. Checked in verbatim as `graph_sync_module.wit`;
-  tracked against the draft (any drift without a matching draft change is a bug).
-- **(ii) A null host-network backing answers `internal`, and is a layering
-  boundary rather than a stub** — draft §6.2. A real relay/peer transport is
-  asynchronous and needs the Component Model execution engine's task-suspension
-  bridge (§6.2), which no seam in this branch wires up; `PersonalGraphManager`
-  constructs `ModuleRuntimeHost` with a **null** network backend, and the runtime
-  answers every network import with `internal` when it is null. The amendment makes
-  this explicit: the graph, crypto, storage, clock, random and consent surfaces are
-  fully live and enforced here; only the wire transport is supplied by the default
-  sync module (Spec 09) once the async engine lands, exactly as Spec 05's session
-  layer stays trivially converged until a module attaches. The gating, scoping and
-  quota decisions the host makes are unaffected — an un-null test transport
-  (`LoopbackNetwork` in the gtest, `ModNetworkBackend` in the harness) exercises the
-  full network path against the same grant algebra.
+One implementation-layering note, **not** a spec change: a real relay/peer
+transport is asynchronous and needs the Component Model engine's task-suspension
+bridge (draft §6.2), which no seam in this branch wires up, so
+`PersonalGraphManager` constructs `ModuleRuntimeHost` with a **null** network
+backend and the runtime answers every network import with `host-error/internal`
+when it is null — a value already in the draft's error vocabulary. The graph,
+crypto, storage, clock, random and consent surfaces are fully live and enforced
+here; only the wire transport is deferred to the default sync module (Spec 09)
+once the async engine lands, exactly as Spec 05's session layer stays trivially
+converged until a module attaches. The gating, scoping and quota decisions the
+host makes are unaffected — an un-null test transport (`LoopbackNetwork` in the
+gtest, `ModNetworkBackend` in the harness) exercises the full network path
+against the same grant algebra.
 
 ---
 
