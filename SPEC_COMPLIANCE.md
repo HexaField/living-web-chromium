@@ -22,8 +22,8 @@ to this file** and flips its row to ✅.
 | 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `navigator.graph`, `Graph` | `spec-02-graphs` | ✅ |
 | 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | `did:graph`, `navigator.graph` groups, `Group` | `spec-03-group-identity` | ✅ |
 | 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | ZCAP-LD capabilities | `spec-04-capabilities` | ✅ |
-| 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `SharedGraph`, `graph.join()` | `spec-05-sync` | 🔲 |
-| 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | Pluggable sync modules | `spec-06-sync-modules` | 🔲 |
+| 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `Graph.publish()`, `GraphManager.mount()` | `spec-05-sync` | ✅ |
+| 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | `GraphManager.listModules()`, module runtime | `spec-06-sync-modules` | ✅ |
 | 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `addShape()`, shape instances | `spec-07-shapes` | 🔲 |
 | 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `canAddTriple()`, constraints | `spec-08-governance` | 🔲 |
 | 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | CRDT + MLS transport | `spec-09-default-sync` | 🔲 |
@@ -642,6 +642,146 @@ left open:
   Implemented as `DiffQueue` + `ReconnectBackoffMs` + the batch constants; covered
   by `Sync_DiffQueueDedupesByCommitId`, `…DiffQueueBatchCapsAndOrders`,
   `…ReconnectBackoffDoublesAndCaps`.
+
+---
+
+## Spec 06 — Sync Module Architecture ✅
+
+Fully implemented and tested. Spec 06 is the **capability-scoped host runtime**
+that installs, consents to, instantiates and mediates the pluggable WebAssembly
+sync modules Spec 05 defers to — the layer that turns the trivially-converged
+session surface into a live, module-driven one. A module is a WebAssembly
+component that *imports* the eight §6.3 capability-scoped host surfaces
+(host-graph, host-crypto, host-network, host-storage, host-clock, host-random,
+host-log, host-consent) and *exports* the §5.1 `GraphSyncModule` contract; the
+runtime authorises **every** host call against the module's §8 capability grants,
+its per-instance scope, and its §8.1 storage quota before carrying it down to the
+real browser backend, so a module cannot forge its way past a `not-authorised`
+(§8.3). Installation, consent and instantiation are user-mediated browser
+operations (§7.1, §7.2) with **no script surface** — a page cannot install a
+module or grant its own consent — so the only renderer-visible face of the runtime
+is the §6.4 read-only `listModules()` inventory already carried by `graph.mojom`
+and the `GraphManager` partial interface (added with the Spec 05 seam).
+
+The two byte-critical cores are Chromium-independent (namespace `living_web`,
+pure-std): `content/browser/module_runtime/module_manifest.*` (the §4.2
+content-address `"sha256-" + hex(SHA-256(wasm))`, the §8.2 manifest parse + its
+§8.2 mutual-verifiability binding, and the §7.3 fork constraint-kind superset
+check) and `content/browser/module_runtime/module_capabilities.*` (the §8
+capability vocabulary, the §6.3 `host-error` variant, and the grant algebra every
+host surface consults). They are shared **byte-for-byte** by the browser host
+(`module_runtime_host.*` + the concrete backings `module_runtime_backends.*`:
+`ModuleGraphAdapter` over a real `GraphBackendManager`, `ModuleCryptoAdapter` over
+the §5.4 `DIDKeyProvider` scoped signer) and the standalone harness
+(`standalone/module_runtime_provider.h`), so every content-hash, manifest binding,
+capability-token parse and quota decision is identical between the two build
+worlds. Normative behaviour is exercised by the 17 `Module_*` blocks of the C++
+harness (`living_web_tests`, 137 tests total, all green) and mirrored by the 17
+browser gtests (`tests/module_runtime_host_unittest.cc`,
+`ModuleRuntimeHostTest.*`, bound to the real `DIDKeyProvider` +
+`GraphBackendManager`); the §6.4 renderer surface is pinned by the WPT
+(`tests/web_platform_tests/graph/sync-modules.html`).
+
+The module-facing ABI is the **normative WIT world** `graph-sync-module`
+(`content/browser/module_runtime/graph_sync_module.wit`, §6.3) — the WebIDL of §5
+is illustrative and the WIT governs where the two disagree. It is checked in
+verbatim beside the host as a reference asset a component toolchain binds against;
+it is not compiled by the `module_runtime` source_set (a `.wit` is not C++). The
+host implements the host side of the same seven §6.3 imports.
+
+### §7 lifecycle — installation, consent, instantiation, suspend/resume/remove
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §4.2 content-addressing | §4.2, §9.2 | ✅ | ✅ | ✅ | `content-hash = "sha256-" + hex(SHA-256(wasm))` (71 chars, lowercase hex); the runtime verifies it over the actual binary before install. `Module_ContentHash_FormatAndWellFormedness`. |
+| §8.2 manifest parse + binding | §8.2, §7.1 | ✅ | ✅ | ✅ | Required `name`/`version`/`wasmContentHash`/`supportedConstraintKinds`/`capabilitiesRequired`; optional `publisher`/`description`; unknown top-level fields ignored. A manifest whose `wasmContentHash` does not bind the installed binary → `invalid-argument`. `Module_Manifest_*`. |
+| §7.1 installation | §7.1 | ✅ | ✅ | ✅ | Verifies the content hash **and** rejects a manifest requiring any capability token outside the §8 vocabulary (`invalid-argument`); a fresh install lands consent-pending. `Module_Install_VerifiesContentHashAndCaps`. |
+| §7.2 consent gating | §7.2, §8.3 | ✅ | ✅ | ✅ | Instantiation before `grantConsent` is `not-authorised`; a later `denyConsent` immediately closes every host surface — no forging past a revoked grant. `Module_Consent_GatesInstantiationAndSurfaces`. |
+| §4.4 instancing | §4.4 | ✅ | ✅ | ✅ | One instance per (content-hash, space-uri), each carrying its own authorised graph-DID set; space A cannot reach a graph authorised only in space B (`unknown-scope`). `Module_Instancing_PerSpaceScope`. |
+| §7.5 suspend / resume | §7.5 | ✅ | ✅ | ✅ | Suspension stops surface activity (`not-authorised`); resume restores it without re-instantiation, stores intact. `Module_Lifecycle_SuspendResumeRemovePreservesStores`. |
+| §7.4 remove (stores preserved) | §7.4 | ✅ | ✅ | ✅ | Removal drops instances + grants but **preserves** the per-graph store across a grace period; `purgeStorage` truly clears it. Same test. |
+| §7.3 fork precondition | §7.3, §8.2 | ✅ | ✅ | ✅ | A forked child module may replace the parent only if its `supportedConstraintKinds` is a superset of every kind in force on the parent; the missing kinds are the rejection reason. `Module_Fork_ConstraintKindSuperset`. |
+
+### §8 capability + scope + quota enforcement (the seven §6.3 host imports)
+
+| Host surface | Capability (§8) | C++ | Test | Status | Notes |
+|--------------|-----------------|-----|------|--------|-------|
+| host-graph reader/writer | `graph.read` / `graph.write` | ✅ | ✅ | ✅ | Real reads (query-triples / SPARQL / snapshot) and writes (a `GraphDiff` lands in the Spec 02 store) against the authorised graph; a graph outside the set → `unknown-scope`; a write without `graph.write` → `not-authorised`. `Module_HostGraph_*`. |
+| host-storage | `storage.module.<size>` | ✅ | ✅ | ✅ | Keyed by (content-hash, graph-did); the declared byte cap counts key+value; one byte over → `quota-exceeded`; module B shares the graph but sees none of A's keys (§9.5 isolation); delete frees the accounting; prefix-filtered list-keys. `Module_HostStorage_QuotaScopeAndIsolation`. |
+| host-network relay/peer/fetch | `network.relay.<endpoint>` / `network.peer.<protocol>` / `network.fetch.<origin>` | ✅ | ✅ | ✅ | Endpoint/protocol/origin-scoped over a real byte-stream transport with send/receive/close; an un-granted endpoint, mismatched protocol, or foreign fetch origin → `not-authorised`. `Module_HostNetwork_GatingAndTransport`. |
+| host-clock / host-random | `time.wallclock` / `time.monotonic` / `random.csprng` | ✅ | ✅ | ✅ | Wall-clock coarsened to 1 s (fingerprinting countermeasure); a module without the grant is `not-authorised` on every clock/random surface. `Module_HostClockRandom_GatingAndCoarsening`. |
+
+### §5.4 / §9.7 scoped signer (host-crypto)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| commit signer + build ledger | §5.4, §9.7 | ✅ | ✅ | ✅ | A `commit-id` the module never built via `module.commit` cannot be signed (`signing-refused`); once the runtime observes the build it becomes eligible and the 64-byte Ed25519 signature verifies over the commit-id. Requires `crypto.commit-sign`. `Module_ScopedSigner_CommitLedgerAndVerify`. |
+| signal signer | §5.4 | ✅ | ✅ | ✅ | A signal envelope is signed only with `crypto.signal-sign`; without it, `not-authorised`. `Module_ScopedSigner_SignalGatedByCapability`. |
+| scoped-signer identity | §5.4 | ✅ | ✅ | ✅ | The browser `ModuleCryptoAdapter` signs "on behalf of the local agent" — the `DIDKeyProvider`'s active credential — and `verify` (a pure, key-free operation gated by `crypto.verify`) checks against its DID. The standalone provider uses a dedicated signer credential; both drive the identical grant algebra. |
+
+### §6.4 module inventory (renderer surface, partial interface `GraphManager`)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `listModules()` → `sequence<SyncModuleInfo>` | §6.4 | ✅ | ✅ | ✅ | The read-only inventory: each `SyncModuleInfo` projects `{contentHash, name?, spaceCount, state, storageBytes}` where `state` ∈ `ModuleState` (`"running"`/`"suspended"`/`"error"`); a stable read on an unchanged realm. Installation being user-mediated, an unprivileged page observes an empty inventory (a `group://syncModule` reference is not an installed component), which the WPT tolerates. `Module_ListModules_Introspection`. |
+
+### Normative parameters
+
+- **Content address** (§4.2): `"sha256-"` prefix + 64 lowercase hex = one 32-byte
+  SHA-256 digest of the WASM binary; the SHA-256 primitive resolves per build
+  world (`//crypto` vs `standalone/crypto_sha2.h`), the format/binding core is
+  shared.
+- **Capability vocabulary** (§8): the fixed token set `graph.read`, `graph.write`,
+  `crypto.commit-sign`, `crypto.signal-sign`, `crypto.verify`,
+  `network.relay.<endpoint>`, `network.peer.<protocol>`, `network.fetch.<origin>`,
+  `storage.module.<size>`, `signal.send`, `signal.receive`, `time.wallclock`,
+  `time.monotonic`, `random.csprng`; any token outside it is rejected at install.
+- **Host-error model** (§6.3): `not-authorised`, `unknown-scope`, `quota-exceeded`,
+  `network-error`, `signing-refused`, `invalid-argument`, `budget-exceeded`,
+  `internal` — capability/scope/quota failures all report here.
+- **Instancing** (§4.4): one instance per (content-hash, space-uri); scope is the
+  per-instance authorised graph-DID set. **Storage** (§8.1, §9.5): keyed by
+  (content-hash, graph-did); the declared cap counts key+value bytes; per-module
+  isolation within a shared graph.
+- **Signer** (§5.4, §9.7): the module never touches key material; the scoped signer
+  accepts only an exhaustive set of shapes and refuses a commit-id absent from the
+  module's build ledger.
+- Authoritative reference impl: `standalone/module_runtime_provider.h`
+  (`ModuleRuntime`) over the shared `module_manifest.*` / `module_capabilities.*`,
+  verified by the 17 `Module_*` tests; the browser port
+  (`content/browser/module_runtime/module_runtime_host.*` +
+  `module_runtime_backends.*`) mirrors it against the real graph/identity backends,
+  and the normative ABI is `graph_sync_module.wit`.
+
+### Amendments
+
+Two under-specified areas surfaced while implementing Spec 06 have been **folded
+into draft 06 as normative detail** on `w3c-living-web-proposals` `main`. Neither
+weakens the implementation:
+
+- **(i) The module ABI is a normative WIT world, not the illustrative §5
+  WebIDL** — draft §6.3. The draft described the module boundary in WebIDL, which
+  cannot express the resource-handle, borrow, and `result<_, host-error>` semantics
+  a WebAssembly Component Model host actually enforces, leaving the byte-level ABI
+  two authors compile against unpinned. The amendment makes the WIT world
+  `graph-sync-module` normative — the eight capability-scoped host imports, the
+  `GraphSyncModule`/`inbound` exports, and the shared `types` (triple, graph-diff,
+  capability-proof, peer, host-error) — and declares the WIT authoritative where it
+  and the §5 WebIDL disagree. Checked in verbatim as `graph_sync_module.wit`;
+  tracked against the draft (any drift without a matching draft change is a bug).
+- **(ii) A null host-network backing answers `internal`, and is a layering
+  boundary rather than a stub** — draft §6.2. A real relay/peer transport is
+  asynchronous and needs the Component Model execution engine's task-suspension
+  bridge (§6.2), which no seam in this branch wires up; `PersonalGraphManager`
+  constructs `ModuleRuntimeHost` with a **null** network backend, and the runtime
+  answers every network import with `internal` when it is null. The amendment makes
+  this explicit: the graph, crypto, storage, clock, random and consent surfaces are
+  fully live and enforced here; only the wire transport is supplied by the default
+  sync module (Spec 09) once the async engine lands, exactly as Spec 05's session
+  layer stays trivially converged until a module attaches. The gating, scoping and
+  quota decisions the host makes are unaffected — an un-null test transport
+  (`LoopbackNetwork` in the gtest, `ModNetworkBackend` in the harness) exercises the
+  full network path against the same grant algebra.
 
 ---
 

@@ -173,7 +173,7 @@ Spec numbering (current, 10 specs):
 | 03 | Decentralised Group Identity | `content/browser/did/{did_graph,group_backend,group_backend_manager,group_host,group_service}.*`, `.../graph/group.*` |
 | 04 | Graph Capability Framework | `content/browser/governance/{governance_backend,zcap}.*` (ZCAP-LD + enforcement), `standalone/capability_provider.h`, `.../graph/graph.*` (§11 surface) + `group.*` (`delegateCapability`) |
 | 05 | Context Sync Protocol | `content/browser/graph_sync/{graph_diff,sync_backend}.*`, `.../graph/{personal_graph_host,personal_graph_manager}.*` (§6 folded), `standalone/sync_provider.h` |
-| 06 | Sync Module Architecture | — (planned) |
+| 06 | Sync Module Architecture | `content/browser/module_runtime/{module_manifest,module_capabilities,module_runtime_host,module_runtime_backends}.*` + `graph_sync_module.wit`, `standalone/module_runtime_provider.h`; §6.4 `listModules` on `.../graph/personal_graph_manager.*` |
 | 07 | Dynamic Graph Shape Validation | `.../graph/personal_graph*` (shape methods) |
 | 08 | Governance Constraint Vocabulary | `content/browser/governance/` (constraint-kind handlers) |
 | 09 | Default Sync Module | — (planned, CRDT + MLS) |
@@ -386,6 +386,74 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   verified by 29 `Sync_*` tests in `standalone/living_web_tests.cc`; browser port =
   `content/browser/graph/{personal_graph_host,personal_graph_manager}.*` (session + mount /
   inventory), renderer = `.../graph/{graph,graph_manager}.*` (§6 surface).
+
+## Spec 06 specifics (landed)
+
+- **A capability-scoped WASM host, not a new service.** The runtime installs,
+  consents to, instantiates and mediates pluggable WebAssembly sync modules
+  (§6/§7). Installation, consent and instantiation are **user-mediated with no
+  script surface** — a page cannot install a module or grant its own consent — so
+  the only renderer-visible face is the §6.4 read-only `listModules()` inventory,
+  already carried by `graph.mojom`'s `SyncModuleInfo` + the `GraphManager` partial
+  interface (folded in with the Spec 05 seam). No new Mojo host: `ModuleRuntimeHost`
+  is a per-realm object `PersonalGraphManager` constructs directly (as it constructs
+  `SyncBackend`).
+- **Two shared Chromium-independent cores** (namespace `living_web`, pure-std,
+  compiled by **both** build worlds): `module_manifest.*` (§4.2 content-address
+  `"sha256-" + hex(SHA-256(wasm))` = 71 chars; §8.2 manifest parse + the §8.2
+  mutual-verifiability binding; §7.3 fork constraint-kind superset) and
+  `module_capabilities.*` (the §8 capability vocabulary, the §6.3 `host-error`
+  variant, and the grant algebra every host surface consults). Like `graph_diff`,
+  they do **no hashing themselves** — the caller supplies the SHA-256 digest (the
+  primitive differs per world). The browser host (`module_runtime_host.*` +
+  `module_runtime_backends.*`) and the standalone provider
+  (`module_runtime_provider.h`) consume them verbatim, so every grant/scope/quota
+  decision is byte-identical.
+- **Capability enforcement** (§8, §8.3): every §6.3 host call — graph read/write,
+  crypto commit/signal sign + verify, network relay/peer/fetch, storage, clock,
+  random — is authorised against the module's grant set, its per-instance scope,
+  and its §8.1 storage quota **before** it reaches the real backend; a module
+  cannot forge past a `not-authorised`. Vocabulary: `graph.read`, `graph.write`,
+  `crypto.{commit-sign,signal-sign,verify}`, `network.relay.<endpoint>`,
+  `network.peer.<protocol>`, `network.fetch.<origin>`, `storage.module.<size>`,
+  `signal.{send,receive}`, `time.{wallclock,monotonic}`, `random.csprng`. An
+  unknown token is rejected at install.
+- **Scope + isolation** (§4.4, §9.5): one instance per (content-hash, space-uri),
+  each with its own authorised graph-DID set; storage is keyed by
+  (content-hash, graph-did) with the declared byte cap counting key+value, and one
+  module cannot see another's keys within a shared graph. Wall-clock is coarsened
+  to 1 s (§8 fingerprinting countermeasure).
+- **Scoped signer** (§5.4, §9.7): key material never enters the module; the signer
+  accepts only exhaustive shapes and refuses a `commit-id` absent from the module's
+  build ledger (`signing-refused`). The browser `ModuleCryptoAdapter` signs on
+  behalf of the local agent — the `DIDKeyProvider`'s **active** credential — so
+  verify checks against its DID; the standalone provider uses a dedicated signer
+  credential. Both drive the same algebra.
+- **Browser graph binding.** `ModuleGraphAdapter` binds a module's authorised
+  graph DIDs to real Spec 02 backends via `GraphBackendManager::CreateMounted(did)`
+  (external-trust, DID bound up front) + `Bind(did, backend)` — the browser analogue
+  of the standalone `ModGraphBackend::AddGraph`. `AddTriples` has no external-trust
+  write guard, so a module's `WriterApply` lands in the real Oxigraph store.
+- **Normative ABI is WIT, not WebIDL** (amendment §6.3): the module-facing contract
+  is the WIT world `graph-sync-module` (`graph_sync_module.wit`), checked in verbatim
+  as a **reference asset** — it is NOT in the `module_runtime` BUILD.gn `sources` (a
+  `.wit` is not C++). The §5 WebIDL is illustrative; the WIT governs where they
+  disagree. Keep it in lockstep with draft 06 §6.3 (drift without a matching draft
+  change is a bug).
+- **Null host-network is a layering boundary, not a stub** (amendment §6.2). A real
+  relay/peer transport is asynchronous and needs the Component Model
+  task-suspension bridge (§6.2), which no seam wires up in this branch;
+  `PersonalGraphManager` constructs the host with a **null** network backend and the
+  runtime answers every network import with `internal` when it is null. Graph,
+  crypto, storage, clock, random and consent are fully live and enforced; only the
+  wire transport is deferred to the Spec 09 default module. Tests drive the full
+  network path with an in-process transport (`LoopbackNetwork` gtest,
+  `ModNetworkBackend` harness) so the gating is still covered.
+- Authoritative reference impl: `standalone/module_runtime_provider.h`
+  (`ModuleRuntime`) over the two shared cores, verified by 17 `Module_*` tests
+  (137 total, green); browser port = `content/browser/module_runtime/*` with 17
+  gtests (`tests/module_runtime_host_unittest.cc`); §6.4 renderer surface pinned by
+  `tests/web_platform_tests/graph/sync-modules.html`.
 
 ## Gotchas
 

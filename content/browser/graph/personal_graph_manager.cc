@@ -14,7 +14,12 @@ namespace content {
 PersonalGraphManager::PersonalGraphManager(DIDKeyProvider* identity)
     : backends_(identity),
       governance_(identity),
-      sync_(identity, &governance_) {}
+      sync_(identity, &governance_),
+      module_crypto_(identity),
+      // §6.2: no host-network backing in this branch — module execution (and
+      // thus any network import) awaits the Component Model engine. The runtime
+      // answers network imports with `internal` when it is null.
+      module_runtime_(&module_graph_, &module_crypto_, /*network=*/nullptr) {}
 
 PersonalGraphManager::~PersonalGraphManager() = default;
 
@@ -61,6 +66,20 @@ graph::mojom::GraphInfoPtr PersonalGraphManager::BuildInfo(
   return info;
 }
 
+// static
+graph::mojom::ModuleState PersonalGraphManager::ModuleStateToMojo(
+    ModuleRuntimeState s) {
+  switch (s) {
+    case ModuleRuntimeState::kRunning:
+      return graph::mojom::ModuleState::kRunning;
+    case ModuleRuntimeState::kSuspended:
+      return graph::mojom::ModuleState::kSuspended;
+    case ModuleRuntimeState::kError:
+      return graph::mojom::ModuleState::kError;
+  }
+  return graph::mojom::ModuleState::kRunning;
+}
+
 void PersonalGraphManager::Retain(std::unique_ptr<PersonalGraphHost> host,
                                   const std::string& id) {
   PersonalGraphHost* raw = host.get();
@@ -82,6 +101,7 @@ void PersonalGraphManager::OnHostDisconnected(PersonalGraphHost* host,
   // an implicit unmount: drop the entry and announce the lost subscription (§6.4).
   for (auto it = mounts_.begin(); it != mounts_.end();) {
     if (it->second.backend_id == id) {
+      module_graph_.Unbind(it->first);
       if (manager_client_)
         manager_client_->OnSubscriptionLost(it->first, it->second.mode,
                                             "disconnected");
@@ -160,6 +180,11 @@ void PersonalGraphManager::Mount(
     return;
   }
 
+  // §6.2: expose the mounted graph to the module runtime by DID, so a writer
+  // module's host-graph imports (apply/query/snapshot) resolve to this backend.
+  // Unbound on unmount / implicit unmount, before the backend is dropped.
+  module_graph_.Bind(graph_did, backend);
+
   const bool writable = options->mode != graph::mojom::MountMode::kRead;
   auto host = std::make_unique<PersonalGraphHost>(
       backend, &backends_, &governance_, &sync_, std::move(receiver));
@@ -197,6 +222,7 @@ void PersonalGraphManager::Unmount(const std::string& graph_did,
   std::erase_if(hosts_, [host](const std::unique_ptr<PersonalGraphHost>& h) {
     return h.get() == host;
   });
+  module_graph_.Unbind(graph_did);
   backends_.Remove(backend_id);
   if (manager_client_)
     manager_client_->OnSubscriptionLost(graph_did, mode, "unmounted");
@@ -220,10 +246,21 @@ void PersonalGraphManager::ListMounted(ListMountedCallback callback) {
 }
 
 void PersonalGraphManager::ListModules(ListModulesCallback callback) {
-  // §6.4: the installed-module inventory is maintained by the module runtime
-  // ([[SYNC-MODULE-ARCHITECTURE]], Spec 06); none are installed at the protocol
-  // layer, so the inventory is empty here.
-  std::move(callback).Run({});
+  // §6.4: the installed-module inventory is owned by the module runtime
+  // ([[SYNC-MODULE-ARCHITECTURE]], Spec 06). Project each ModuleStatus onto the
+  // wire SyncModuleInfo.
+  std::vector<graph::mojom::SyncModuleInfoPtr> out;
+  for (const ModuleStatus& m : module_runtime_.ListModules()) {
+    auto info = graph::mojom::SyncModuleInfo::New();
+    info->content_hash = m.content_hash;
+    if (!m.name.empty())
+      info->name = m.name;
+    info->space_count = static_cast<uint32_t>(m.space_count);
+    info->state = ModuleStateToMojo(m.state);
+    info->storage_bytes = m.storage_bytes;
+    out.push_back(std::move(info));
+  }
+  std::move(callback).Run(std::move(out));
 }
 
 void PersonalGraphManager::ListSpaces(ListSpacesCallback callback) {
