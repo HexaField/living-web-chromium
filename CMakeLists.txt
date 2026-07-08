@@ -50,7 +50,9 @@ set(OXIGRAPH_FFI_SYSTEM_LIBS stdc++ gcc_s util rt pthread m dl c)
 
 # Spec 01 — Decentralised Identity + Spec 02 — Personal Linked Data Graphs +
 # Spec 03 — Decentralised Group Identity + Spec 04 — Graph Capability Framework +
-# Spec 05 — Graph Synchronisation Protocol.
+# Spec 05 — Graph Synchronisation Protocol + Spec 06 — Sync Module Architecture +
+# Spec 07 — Dynamic Graph Shape Validation + Spec 08 — Governance Constraint
+# Vocabulary.
 #
 # The Chromium-independent cores shared by the browser-process services and the
 # standalone harness: the did:key codec + JCS (Spec 01); the RDF 1.2 term
@@ -59,9 +61,13 @@ set(OXIGRAPH_FFI_SYSTEM_LIBS stdc++ gcc_s util rt pthread m dl c)
 # codec for the byte-level Ed25519 multibase work; the ZCAP-LD
 # canonicalisation core (Spec 04) — the delegation-proof pre-image, the
 # actions-subset / immutable-caveats attenuation tests, and the caveat-JSON
-# scanner; and the GraphDiff identity + sync-space derivation core (Spec 05) —
-# the revision/commitId pre-images and the space:// derivation input — so the
-# bytes a proof signs, and the content addresses a diff carries, never diverge
+# scanner; the GraphDiff identity + sync-space derivation core (Spec 05) —
+# the revision/commitId pre-images and the space:// derivation input; the
+# WIT module manifest + capability grant model (Spec 06); the SHACL shape
+# definition parser + content address (Spec 07); and the governance constraint
+# vocabulary core (Spec 08) — glob / allow-deny decisions, RFC-3339 plausibility,
+# the content-policy evaluator, and the living-web VC proof pre-image — so the
+# bytes a proof signs, and the verdicts governance reaches, never diverge
 # between the two build worlds.
 add_library(living_web STATIC
     content/browser/did/did_key_codec.cc
@@ -75,6 +81,7 @@ add_library(living_web STATIC
     content/browser/module_runtime/module_capabilities.cc
     content/browser/module_runtime/module_manifest.cc
     content/browser/shapes/shape_definition.cc
+    content/browser/governance/constraint_vocabulary.cc
 )
 add_dependencies(living_web oxigraph_ffi_build)
 target_include_directories(living_web PUBLIC
