@@ -25,7 +25,9 @@
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "content/browser/did/group_backend.h"
+#include "content/browser/governance/governance_backend.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
@@ -35,9 +37,12 @@ namespace content {
 class GroupHost : public graph::mojom::GroupHost {
  public:
   // |group| is a non-owning view whose host GraphBackend is owned by the realm's
-  // GraphBackendManager; the backend outlives this host. The host binds itself to
-  // |receiver| and owns the view for as long as the pipe is open.
+  // GraphBackendManager; the backend outlives this host. |governance| is the
+  // realm's Spec 04 registry, shared for §8.1.5 delegateCapability (it likewise
+  // outlives this host). The host binds itself to |receiver| and owns the view
+  // for as long as the pipe is open.
   GroupHost(std::unique_ptr<GroupBackend> group,
+            GovernanceBackend* governance,
             mojo::PendingReceiver<graph::mojom::GroupHost> receiver);
 
   GroupHost(const GroupHost&) = delete;
@@ -84,6 +89,8 @@ class GroupHost : public graph::mojom::GroupHost {
                  SignGraphCallback callback) override;
   void Resolve(ResolveCallback callback) override;
   void Deactivate(DeactivateCallback callback) override;
+  void DelegateCapability(graph::mojom::DelegateOptionsPtr options,
+                          DelegateCapabilityCallback callback) override;
 
  private:
   // ---- mojom<->living_web converters ----
@@ -104,6 +111,7 @@ class GroupHost : public graph::mojom::GroupHost {
       const SignedContentResult& r);
 
   std::unique_ptr<GroupBackend> group_;
+  raw_ptr<GovernanceBackend> governance_;  // The realm's Spec 04 registry.
   mojo::Receiver<graph::mojom::GroupHost> receiver_;
 };
 

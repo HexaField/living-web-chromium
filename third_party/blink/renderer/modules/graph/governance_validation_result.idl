@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GovernanceValidationResult — the outcome of an advisory authorisation check
+// (Graph.canAddTriple / Graph.canPerformAction, §11). The reject fields are
+// absent when `allowed` is true.
+
+dictionary GovernanceValidationResult {
+  required boolean allowed;
+  USVString? rejectedBy;      // constraint id that rejected the operation
+  USVString? constraintKind;  // "capability" | <plug-in kind>
+  USVString? reason;
+  DOMString? mode;            // current enforcement mode token
+};

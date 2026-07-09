@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Graph Capability Framework (Spec 04) — governance & ZCAP-LD — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 04 — Graph Capability Framework
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md
+//
+// The framework layers ZCAP-LD (§4.5.3) capability delegation and a three-mode
+// enforcement engine (§5) onto a groupified Personal Linked Data Graph (Spec 02
+// + Spec 03). A group's did:graph is the trust root: the first delegation
+// (§8.1.5 Group.delegateCapability) lazily mints the root capability (§4.3),
+// whose eight framework-core actions (§4.5.4) are held by every member of the
+// group DID's capability sections. Governance state lives as ordinary
+// governance:// triples in the host graph; the §11 renderer surface — folded
+// onto Graph as canAddTriple / canPerformAction / constraintsFor /
+// myCapabilities / enforcementMode / setEnforcementMode — reads and mutates it.
+// In "open" mode (the §5.1 default) writes are ungated; only "enforced" mode
+// turns the §7 ZCAP verification into a mandatory data-layer gate. §10 pins the
+// group's immutable seed predicates so they can never be overwritten.
+// ==========================================================================
+
+// The group's sync module is REQUIRED (GROUP-IDENTITY §4.5); any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// The eight framework-core actions a freshly-minted root capability grants
+// (§4.5.4). SPEC_COMPLIANCE amendment 04/§4.3 drops the draft's nominal
+// updateSHACL from the default set, so the root grants exactly these eight.
+const FRAMEWORK_CORE = [
+  'createLink', 'removeLink', 'updateGovernance', 'updateDIDDocument',
+  'delegateCapability', 'mountContext', 'forkGraph', 'announceFork',
+];
+
+// §4.5.1 install a bare capability constraint on |scopeDid| by writing the three
+// governance:// triples the browser's constraint collector reads: the entry's
+// type (an IRI object), its constraint_kind (the literal "capability"), and the
+// scope's has_constraint link (an IRI object). Written through addTriple in the
+// §5.1 default "open" mode these are ungated, so seeding the constraint needs no
+// prior authority. Returns the constraint's IRI.
+async function installCapabilityConstraint(graph, scopeDid) {
+  const cid = 'urn:uuid:' + crypto.randomUUID();
+  await graph.addTriple(new Triple(
+    cid, 'governance://entry_type', 'governance://constraint'));
+  await graph.addTriple(new Triple(
+    cid, 'governance://constraint_kind', new LiteralValue('capability')));
+  await graph.addTriple(new Triple(
+    scopeDid, 'governance://has_constraint', cid));
+  return cid;
+}
+
+// Mint the root (first delegation) and turn the graph into a gated, capability-
+// constrained, "enforced" graph. Returns the group plus the delegatee identity.
+async function enforcedGroup() {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+  await group.delegateCapability({
+    invoker: delegatee.did, actions: ['createLink'], resource: group.did });
+  await installCapabilityConstraint(group.graph, group.did);
+  await group.graph.setEnforcementMode('enforced');
+  return { group, delegatee };
+}
+
+// §11 / §8.1.5 — the governance surface MUST hang off Graph and Group.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const g = group.graph;
+  for (const m of ['canAddTriple', 'canPerformAction', 'constraintsFor',
+                   'myCapabilities', 'enforcementMode', 'setEnforcementMode']) {
+    assert_equals(typeof g[m], 'function',
+      `Graph MUST expose the §11 governance method ${m}()`);
+  }
+  assert_equals(typeof group.delegateCapability, 'function',
+    'Group MUST expose §8.1.5 delegateCapability()');
+}, '§11/§8.1.5 the governance surface MUST be present on Graph and Group');
+
+// §5.1 — enforcement defaults to "open".
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  assert_equals(await group.graph.enforcementMode(), 'open',
+    'a graph MUST default to "open" enforcement');
+}, '§5.1 enforcementMode() MUST default to "open"');
+
+// §7 step 1 / §11.1 — in "open" mode every write is permitted; the result
+// echoes the active enforcement mode.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const res = await group.graph.canAddTriple(new Triple(
+    'urn:note:1', 'urn:p:body', new LiteralValue('hi')));
+  assert_true(res.allowed,
+    'in "open" mode the §7 algorithm MUST short-circuit to ACCEPT (step 1)');
+  assert_equals(res.mode, 'open',
+    'the result MUST report the active enforcement mode');
+}, '§7/§11.1 canAddTriple() MUST allow in "open" mode');
+
+// §4.3 / §11.3 — no root capability exists until the first delegation, so a
+// fresh group's creator holds nothing.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const caps = await group.graph.myCapabilities();
+  assert_array_equals(caps, [],
+    'no capability is held until the root is lazily minted (§4.3)');
+}, '§11.3 myCapabilities() MUST be empty before the first delegation');
+
+// §8.1.5 / §4.3 — delegateCapability() signs a ZCAP-LD delegation and, on the
+// first call, lazily mints the root capability the creator then holds.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+
+  const signed = await group.delegateCapability({
+    invoker: delegatee.did,
+    actions: ['createLink'],
+    resource: group.did,
+  });
+  // §4.5.3.1: the delegation is a ZCAP-LD object signed by the group DID.
+  assert_equals(signed.author, group.did,
+    'the delegation MUST be signed by the group DID');
+  assert_equals(signed.proof.type, 'Ed25519Signature2020');
+  assert_true(signed.proof.method.startsWith(group.did + '#'),
+    'proof.method MUST be a verification method of the group DID');
+  assert_true(signed.proof.signature.startsWith('z'),
+    'the signature MUST be multibase base58btc (z-prefixed)');
+
+  // §4.3: the first delegation minted the root. The creator is a member of every
+  // capability section of the group DID the root is invoked as, so the root is
+  // the one capability visible to it.
+  const caps = await group.graph.myCapabilities();
+  assert_equals(caps.length, 1,
+    'exactly the root capability MUST be visible to the creator');
+  const root = caps[0];
+  assert_equals(root.resource, group.did,
+    'the root capability MUST be scoped to the group DID');
+  assert_equals(root.actions.length, FRAMEWORK_CORE.length,
+    'the root MUST grant exactly the framework-core action set (§4.5.4)');
+  for (const a of FRAMEWORK_CORE)
+    assert_true(root.actions.includes(a),
+      `the root MUST grant the framework-core action ${a}`);
+}, '§8.1.5/§4.3 delegateCapability() MUST sign a ZCAP and lazily mint the root');
+
+// §4.5.1 / §11.2 — constraintsFor() reports the installed capability constraint;
+// a bare one carries no extra properties.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  assert_array_equals(await group.graph.constraintsFor(group.did), [],
+    'a fresh group MUST carry no constraints');
+
+  const cid = await installCapabilityConstraint(group.graph, group.did);
+  const after = await group.graph.constraintsFor(group.did);
+  assert_equals(after.length, 1, 'the installed constraint MUST be reported');
+  const c = after[0];
+  assert_equals(c.id, cid, 'the constraint id MUST round-trip');
+  assert_equals(c.kind, 'capability', 'the kind MUST be "capability" (§4.5.1)');
+  assert_equals(c.scope, group.did,
+    'a capability constraint MUST be scoped to the graph DID');
+  // entry_type + constraint_kind are structural and excluded from the bag; a
+  // bare capability constraint declares no capability predicates, so it is empty.
+  assert_equals(Object.keys(c.properties).length, 0,
+    'a bare capability constraint MUST expose no extra properties');
+}, '§4.5.1/§11.2 constraintsFor() MUST report the installed capability constraint');
+
+// §5.2 / §11.4 — setEnforcementMode() round-trips; an unknown mode is an IDL
+// enum violation. A fresh group has no capability constraint, so the transition
+// is ungated (§5.2 only guards it once a capability constraint exists).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const g = group.graph;
+  for (const mode of ['announced', 'enforced', 'open']) {
+    await g.setEnforcementMode(mode);
+    assert_equals(await g.enforcementMode(), mode,
+      `setEnforcementMode(${mode}) MUST round-trip through enforcementMode()`);
+  }
+  await promise_rejects_js(t, TypeError,
+    g.setEnforcementMode('banana'),
+    'an unknown enforcement mode MUST reject with TypeError (IDL enum)');
+}, '§5.2/§11.4 setEnforcementMode() MUST round-trip and reject unknown modes');
+
+// §7 / §11 — under enforcement, an unauthorised author is denied (attributed to
+// a capability constraint) while the root-holding creator is permitted.
+
+promise_test(async t => {
+  const { group } = await enforcedGroup();
+  const outsider = await navigator.graph.createIdentity('Outsider');
+
+  const denied = await group.graph.canPerformAction('createLink', outsider.did);
+  assert_false(denied.allowed,
+    'an author holding no capability MUST be denied under enforcement (§7)');
+  assert_equals(denied.constraintKind, 'capability',
+    'the denial MUST be attributed to a capability constraint');
+  assert_equals(denied.mode, 'enforced');
+
+  const ok = await group.graph.canPerformAction('createLink', group.creator);
+  assert_true(ok.allowed,
+    'the root-holding creator MUST be permitted (§7)');
+  assert_equals(ok.mode, 'enforced');
+}, '§7/§11 canPerformAction() MUST enforce capabilities in "enforced" mode');
+
+// §2 / §11.5 — the data-layer gate admits the authorised author's write.
+
+promise_test(async t => {
+  const { group } = await enforcedGroup();
+  // The active author is the group creator, who holds the root's createLink, so
+  // an ordinary write MUST still be admitted at the §11.5 data-layer gate.
+  const written = await group.graph.addTriple(new Triple(
+    'urn:note:enforced', 'urn:p:label', new LiteralValue('ok')));
+  assert_equals(written.subject, 'urn:note:enforced',
+    'an authorised write MUST be admitted under enforcement');
+}, '§2/§11.5 enforced mode MUST admit the authorised author\'s write');
+
+// §10 — the group's immutable seed predicates MUST NOT be overwritten, even by
+// the otherwise-authorised creator; the gate surfaces this as NotAllowedError.
+
+promise_test(async t => {
+  const { group } = await enforcedGroup();
+  await promise_rejects_dom(t, 'NotAllowedError',
+    group.graph.addTriple(new Triple(
+      group.did, 'group://syncModule', new LiteralValue('urn:sync:evil'))),
+    'rewriting an immutable seed predicate MUST reject with NotAllowedError');
+}, '§10 enforced mode MUST reject writes to immutable seed predicates');
+
+// §2 — a DID-less plain graph (Spec 02) has nothing to govern: the surface is
+// inert and "open", and enforcement cannot be turned on.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'Plain' });
+  t.add_cleanup(() => graph.dissolve());
+  assert_equals(graph.did, null, 'a plain graph MUST have no DID');
+
+  assert_equals(await graph.enforcementMode(), 'open',
+    'a DID-less graph MUST report "open" (nothing to govern)');
+  const res = await graph.canAddTriple(new Triple(
+    'urn:s', 'urn:p', new LiteralValue('v')));
+  assert_true(res.allowed, 'a DID-less graph MUST permit every write');
+  assert_array_equals(await graph.constraintsFor(''), [],
+    'a DID-less graph MUST carry no constraints');
+  assert_array_equals(await graph.myCapabilities(), [],
+    'a DID-less graph MUST hold no capabilities');
+
+  await promise_rejects_dom(t, 'InvalidStateError',
+    graph.setEnforcementMode('enforced'),
+    'enforcing a DID-less graph MUST reject with InvalidStateError');
+}, '§2 a DID-less graph MUST expose an inert, "open" governance surface');
+</script>

@@ -12,6 +12,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_delegate_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_did_capability_section.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_did_document_method.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_participant.h"
@@ -114,6 +115,25 @@ SignedContent* SignedContentFromMojo(
       result->proof->method, result->proof->signature, result->proof->type);
   return MakeGarbageCollected<SignedContent>(
       result->author, result->timestamp, result->data_json, proof);
+}
+
+// §8.1.5 delegateCapability(): JSON-serialise a caveat object to the verbatim
+// literal the browser attenuates against and stores. Returns false when the
+// value cannot be stringified (e.g. it contains a cycle).
+bool SerializeToJson(ScriptState* script_state,
+                     const ScriptValue& value,
+                     String& out_json) {
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Value> v8_value = value.V8Value();
+  if (v8_value.IsEmpty()) {
+    out_json = "null";
+    return true;
+  }
+  v8::Local<v8::String> json;
+  if (!v8::JSON::Stringify(script_state->GetContext(), v8_value).ToLocal(&json))
+    return false;
+  out_json = ToCoreString(isolate, json);
+  return true;
 }
 
 // Shared settle path for the `=> (string? error)` governed mutations: resolve on
@@ -600,6 +620,54 @@ ScriptPromise<IDLUndefined> Group::deactivate(ScriptState* script_state) {
   }
 
   host_->Deactivate(WTF::BindOnce(&ResolveOrReject, WrapPersistent(resolver)));
+
+  return promise;
+}
+
+// ---- capability delegation (§8.1.5) ----
+
+ScriptPromise<SignedContent> Group::delegateCapability(
+    ScriptState* script_state,
+    const DelegateOptions* options) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<SignedContent>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (!host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The group is not available");
+    return promise;
+  }
+
+  // Caveats cross as verbatim JSON literals; stringify them synchronously while
+  // the argument ScriptValues' v8 handles are still valid on this stack.
+  auto mojo_options = graph::mojom::blink::DelegateOptions::New();
+  mojo_options->invoker = options->invoker();
+  mojo_options->actions = options->actions();
+  mojo_options->resource = options->resource();
+  if (options->hasCaveats()) {
+    for (const auto& caveat : options->caveats()) {
+      String json;
+      if (SerializeToJson(script_state, caveat, json))
+        mojo_options->caveats.push_back(json);
+    }
+  }
+  if (options->hasExpiresAt())
+    mojo_options->expires_at = options->expiresAt();
+
+  host_->DelegateCapability(
+      std::move(mojo_options),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<SignedContent>* resolver,
+             graph::mojom::blink::SignedContentPtr result,
+             const String& error) {
+            if (!result || !error.IsNull()) {
+              Graph::RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(SignedContentFromMojo(result));
+          },
+          WrapPersistent(resolver)));
 
   return promise;
 }

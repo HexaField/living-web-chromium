@@ -234,6 +234,33 @@ interface PersonalGraphHost {
 
   // §4.2/§4.4 event delivery — the browser pushes tripleadded/tripleremoved.
   Subscribe(pending_remote<PersonalGraphClient> client);
+
+  // ---- Spec 04 §11 governance API (folded into this host; see the Spec 04
+  // section below). Every call runs against the single per-realm
+  // GovernanceBackend the browser shares across all graphs. |canAddTriple| and
+  // |myCapabilities| resolve the *current* identity in the browser (§11.1/§11.3);
+  // |canPerformAction| authorises an explicitly named author (§7.1). Results are
+  // advisory — the mandatory data-layer gate lives in AddTriple/AddTriples. ----
+
+  // §11.1 canAddTriple: would the current identity be permitted to add |triple|?
+  CanAddTriple(Triple triple)
+      => (GovernanceValidationResult result, string? error);
+  // §7.1 non-triple authorisation (e.g. mountContext). |proof|, when present,
+  // supplies the explicit leaf→root delegation chain (CapabilityProofInput).
+  CanPerformAction(string action, string author_did, CapabilityProofInput? proof)
+      => (GovernanceValidationResult result, string? error);
+  // §11.2 constraintsFor: the constraints bound to this graph (per-graph;
+  // |context_did| is accepted for API parity but ignored — see §11.2).
+  ConstraintsFor(string context_did)
+      => (array<GraphConstraint>? constraints, string? error);
+  // §11.3 myCapabilities: valid, non-revoked, non-expired capabilities the
+  // current identity holds for this graph.
+  MyCapabilities() => (array<CapabilityInfo>? capabilities, string? error);
+  // §11.4 enforcementMode.
+  GetEnforcementMode() => (EnforcementMode mode, string? error);
+  // §11.4 setEnforcementMode: requires an updateGovernance capability (§5.2);
+  // "NotAllowedError" otherwise.
+  SetEnforcementMode(EnforcementMode mode) => (string? error);
 };
 
 // PersonalGraphClient — the renderer sink for graph events (§4.2, §4.4). The
@@ -434,6 +461,16 @@ interface GroupHost {
   Resolve() => (DidDocumentInfo? document, string? error);
   // §4.9 deactivate (capabilityDelegation).
   Deactivate() => (string? error);
+
+  // §8.1.5 delegateCapability (Spec 04 §4.5.3): issue a ZCAP whose resource is
+  // this group's did:graph (or another did:graph the group has authority over),
+  // signed by a current capabilityDelegation delegate. The browser resolves the
+  // signer, attenuates against the group's root capability, writes the ZCAP into
+  // the host graph, and returns it framed as SignedContent. "NotAllowedError"
+  // when no held capability carries delegateCapability for the target, "DataError"
+  // when the requested attenuation is invalid.
+  DelegateCapability(DelegateOptions options)
+      => (SignedContent? result, string? error);
 };
 
 // GroupManager — the browser-process host for the navigator.graph group surface
@@ -476,4 +513,86 @@ interface GroupManager {
   // §8.2 groups: the did:graph of every group this realm currently mounts. The
   // renderer materialises each into a Group via openGroup.
   ListGroups() => (array<string> dids);
+};
+
+// ============================================================
+// Spec 04 — Graph Capability Framework (ZCAP-LD)
+//
+// Authority over a Spec 02 graph is *constituted*: a root capability is minted
+// at graph creation (§4.3), delegations attenuate downward (§8), and a governed
+// write is accepted only if its author holds a valid capability chain
+// terminating at the graph's own root (§7). The browser owns the single
+// per-realm GovernanceBackend (the C++ port of living_web::GovernanceEngine); it
+// carries the plug-in registry and operates on whichever graph a call targets.
+//
+// There is no separate governance host: the §11 renderer surface is folded into
+// PersonalGraphHost above and group-scoped delegation (§8.1.5) into GroupHost,
+// because both already own a browser-side host over the graph the capabilities
+// are constituted on. All delegation signing uses the Spec 01 identity in the
+// browser, never the renderer.
+// ============================================================
+
+// §11 EnforcementMode (§5.1): "open" skips capability checks, "announced" makes
+// them advisory, "enforced" makes them a mandatory data-layer gate.
+enum EnforcementMode {
+  kOpen,
+  kAnnounced,
+  kEnforced,
+};
+
+// §11 GovernanceValidationResult. |mode| is the current enforcement-mode token
+// ("open" | "announced" | "enforced"); the reject fields are empty when allowed.
+struct GovernanceValidationResult {
+  bool allowed;
+  string rejected_by;      // constraint id
+  string constraint_kind;  // "capability" | <plug-in kind>
+  string reason;
+  string mode;
+};
+
+// One defining triple of a constraint subject, carried by GraphConstraint. Mojo
+// has no pair type; this mirrors the IDL record<USVString, USVString> entry
+// (blink represents that record as an ordered vector of pairs, so duplicate
+// predicates survive — a map would collapse them).
+struct GraphConstraintProperty {
+  string predicate;
+  string value;
+};
+
+// §11 GraphConstraint. |properties| carries every defining triple of the
+// constraint subject except entry_type/constraint_kind.
+struct GraphConstraint {
+  string id;
+  string kind;
+  string scope;  // the graph DID this constraint is bound to
+  array<GraphConstraintProperty> properties;
+};
+
+// §11 CapabilityInfo. |caveats| is the verbatim JSON array literal the IDL
+// exposes as sequence<object>, or "" when the capability carries none.
+struct CapabilityInfo {
+  string id;
+  array<string> actions;
+  string resource;
+  string caveats;
+  string? expires;
+};
+
+// §11 CapabilityProofInput — an explicitly supplied delegation chain for a
+// non-triple authorisation (canPerformAction). |chain| is leaf→root ZCAP
+// references resolvable in the target graph; |presentations| are verbatim
+// verifiable-credential presentation JSON consumed by `credential` caveats.
+struct CapabilityProofInput {
+  array<string> chain;
+  array<string> presentations;
+};
+
+// §8.1.5 DelegateOptions ([[GROUP-IDENTITY]]). |resource| empty defaults to the
+// group's own did:graph; |caveats| are verbatim JSON caveat objects.
+struct DelegateOptions {
+  string invoker;
+  array<string> actions;
+  string resource;
+  array<string> caveats;
+  string? expires_at;
 };

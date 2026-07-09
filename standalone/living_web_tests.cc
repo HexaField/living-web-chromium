@@ -29,6 +29,10 @@
 #include "group_provider.h"
 #include "content/browser/did/did_graph.h"
 
+// Spec 04 — Graph Capability Framework.
+#include "capability_provider.h"
+#include "content/browser/governance/zcap.h"
+
 using namespace living_web;
 
 // ============================================================
@@ -1344,6 +1348,578 @@ TEST(Group_OpenByDidAndByIri) {
 
   EXPECT_TRUE(f.groups.OpenGroup("did:graph:zUnknown") == nullptr);
   EXPECT_EQ(f.groups.last_error(), "NotFoundError");
+}
+
+// ============================================================
+// Spec 04 — Graph Capability Framework
+// ============================================================
+
+namespace {
+
+// The credential whose DID equals |did| — for a group, its own adopted key.
+std::string CredIdForDid(DIDKeyProvider& p, const std::string& did) {
+  for (const DIDKeyPair* c : p.ListCredentials())
+    if (c->did == did)
+      return c->id;
+  return std::string();
+}
+
+// A governance fixture: a group W (a graph bearing a did:graph whose DID document
+// holds the group key in every capability section) plus a GovernanceEngine.
+struct GovFixture {
+  DIDKeyProvider provider;
+  GraphManager graphs{&provider};
+  GroupManager groups{&provider, &graphs};
+  GovernanceEngine gov{&provider};
+  std::unique_ptr<Group> group;
+  std::string gcred;  // the group's own credential id (did == group->did())
+
+  GovFixture() {
+    provider.CreateKey("Human");
+    GroupCreationOptions o;
+    o.sync_module = "urn:sync:module:default";
+    o.display_name = "Governed";
+    group = groups.CreateGroup(o);
+    gcred = CredIdForDid(provider, group->did());
+  }
+  Graph* W() { return group->graph(); }
+  const std::string& Wdid() { return group->did(); }
+};
+
+// Mint the root, install the capability constraint, and set enforced mode, all
+// authored by the group key (the graph's constitutional signer). Returns root id.
+std::string BootstrapEnforced(
+    GovFixture& f,
+    const std::optional<std::vector<std::string>>& actions = std::nullopt) {
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, actions, &root));
+  std::string cid;
+  EXPECT_TRUE(
+      f.gov.InstallCapabilityConstraint(f.W(), f.gcred, std::nullopt, &cid));
+  EXPECT_TRUE(
+      f.gov.SetEnforcementMode(f.W(), f.gcred, EnforcementMode::kEnforced));
+  return root;
+}
+
+// A one-element expiry-caveat array at the given RFC-3339 instant (§9.2).
+std::string ExpiryCaveat(const std::string& at) {
+  return "[{\"type\":\"expiry\",\"value\":{\"expiresAt\":\"" + at + "\"}}]";
+}
+
+// A plug-in constraint kind (§9.3) that blocks writes to a named predicate.
+class BlockPredicateConstraint : public ConstraintKindHandler {
+ public:
+  std::string kind() const override { return "blockPredicate"; }
+  HandlerResult Validate(const std::optional<Triple>& triple,
+                         const GraphConstraint& constraint,
+                         const ValidationContext&) override {
+    HandlerResult r;
+    auto blocked = constraint.Property("governance://blocked_predicate");
+    if (triple && blocked && triple->predicate == *blocked) {
+      r.allowed = false;
+      r.reason = "blocked_predicate";
+    }
+    return r;
+  }
+};
+
+// A plug-in caveat (§9.3) that forbids a specific object-literal value.
+class ForbidValueCaveat : public CaveatHandler {
+ public:
+  std::string type() const override { return "forbidValue"; }
+  bool appliesToNonTripleOps() const override { return false; }
+  HandlerResult Evaluate(const Caveat& caveat,
+                         const std::optional<Triple>& triple,
+                         const std::string&, const ValidationContext&) override {
+    HandlerResult r;
+    auto forbidden = JsonStringField(caveat.value_raw, "equals");
+    if (triple && forbidden && triple->object.is_literal() &&
+        triple->object.literal->lexical == *forbidden) {
+      r.allowed = false;
+      r.reason = "forbidden_value";
+    }
+    return r;
+  }
+};
+
+}  // namespace
+
+// ---- ZCAP canonicalisation core (§4.5.3.1, §8; zcap.{h,cc}) ----
+
+TEST(Zcap_DelegationProofPreimageExactBytes) {
+  ZcapProofFields fields;
+  fields.id = "urn:uuid:cap";
+  fields.invoker = "did:key:z6MkInvoker";
+  fields.parent_capability = "urn:living-web:zcap:BootstrapRoot";
+  fields.actions = "createLink,removeLink";
+  fields.resource = "did:graph:z6MkGraph";
+  fields.caveats = "";
+  fields.proof_purpose = "capabilityDelegation";
+  fields.created = "2026-07-08T00:00:00Z";
+  const std::string expected =
+      "living-web/zcap/delegation/v1\n"
+      "urn:uuid:cap\n"
+      "did:key:z6MkInvoker\n"
+      "urn:living-web:zcap:BootstrapRoot\n"
+      "createLink,removeLink\n"
+      "did:graph:z6MkGraph\n"
+      "\n"  // empty caveats field
+      "capabilityDelegation\n"
+      "2026-07-08T00:00:00Z";
+  EXPECT_EQ(BuildDelegationProofPreimage(fields), expected);
+}
+
+TEST(Zcap_DefaultRootActionsAreFrameworkCore) {
+  auto a = DefaultRootActions();
+  EXPECT_EQ(a.size(), 8u);
+  const std::string joined = JoinActions(a);
+  EXPECT_TRUE(ActionInSet("createLink", joined));
+  EXPECT_TRUE(ActionInSet("updateGovernance", joined));
+  EXPECT_TRUE(ActionInSet("delegateCapability", joined));
+  EXPECT_TRUE(ActionInSet("announceFork", joined));
+  // §4.3 amendment: updateSHACL is a Spec-07 extension, NOT a default action.
+  EXPECT_FALSE(ActionInSet("updateSHACL", joined));
+}
+
+TEST(Zcap_ActionsSubsetParseJoin) {
+  EXPECT_TRUE(ActionsSubset("createLink", "createLink,removeLink"));
+  EXPECT_TRUE(ActionsSubset("removeLink,createLink", "createLink,removeLink"));
+  EXPECT_FALSE(ActionsSubset("updateGovernance", "createLink,removeLink"));
+  EXPECT_TRUE(ActionsSubset("", "createLink"));  // empty child ⊆ anything
+  auto p = ParseActions("  a , b ,, c ");
+  EXPECT_EQ(p.size(), 3u);
+  EXPECT_EQ(p[0], "a");
+  EXPECT_EQ(p[2], "c");
+  EXPECT_EQ(JoinActions({"a", "b", "c"}), "a,b,c");
+}
+
+TEST(Zcap_JsonScannerAndCaveatAttenuation) {
+  std::vector<std::string> elems;
+  EXPECT_TRUE(
+      SplitJsonArray("[{\"type\":\"expiry\"},{\"type\":\"x\"}]", &elems));
+  EXPECT_EQ(elems.size(), 2u);
+  auto t = JsonStringField(elems[0], "type");
+  EXPECT_TRUE(t.has_value());
+  EXPECT_EQ(*t, "expiry");
+  EXPECT_TRUE(SplitJsonArray("[]", &elems));
+  EXPECT_EQ(elems.size(), 0u);
+  EXPECT_FALSE(SplitJsonArray("not-json", &elems));
+  // §8 immutable caveats: every parent element must reappear byte-identically.
+  EXPECT_TRUE(CaveatsAttenuationOk("", "[{\"type\":\"x\"}]"));  // no parent caveats
+  EXPECT_TRUE(CaveatsAttenuationOk("[{\"type\":\"x\"}]",
+                                   "[{\"type\":\"x\"},{\"type\":\"y\"}]"));
+  EXPECT_FALSE(CaveatsAttenuationOk("[{\"type\":\"x\"}]", "[{\"type\":\"y\"}]"));
+  EXPECT_FALSE(CaveatsAttenuationOk("[{\"type\":\"x\"}]", ""));  // dropped
+  EXPECT_FALSE(CaveatsAttenuationOk("bad", "[{\"type\":\"x\"}]"));  // fail-closed
+}
+
+// ---- bootstrap: mint the root (§4.3) ----
+
+TEST(Cap_MintRootCapabilityRecordsAndLists) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  EXPECT_EQ(root.substr(0, 9), "urn:uuid:");
+  // The root is invoked by the graph DID and lists its framework-core actions.
+  auto caps = f.gov.MyCapabilities(f.W(), f.Wdid());
+  EXPECT_EQ(caps.size(), 1u);
+  EXPECT_EQ(caps[0].id, root);
+  EXPECT_EQ(caps[0].resource, f.Wdid());
+  EXPECT_TRUE(ActionInSet("updateGovernance", JoinActions(caps[0].actions)));
+}
+
+TEST(Cap_MintRootRequiresGraphDid) {
+  DIDKeyProvider provider;
+  auto k = provider.CreateKey("A");
+  GraphManager graphs(&provider);
+  GovernanceEngine gov(&provider);
+  auto g = graphs.Create("Plain");  // a local graph with no DID (§4.5.2)
+  std::string root;
+  EXPECT_FALSE(gov.MintRootCapability(g.get(), k->id, std::nullopt, &root));
+  EXPECT_EQ(gov.last_error(), "InvalidStateError");
+}
+
+// ---- enforcement modes (§5.1) ----
+
+TEST(Cap_OpenModeSkipsCapabilityChecks) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  std::string cid;
+  EXPECT_TRUE(
+      f.gov.InstallCapabilityConstraint(f.W(), f.gcred, std::nullopt, &cid));
+  // Default mode is open: an undelegated stranger is still allowed (§5.1).
+  auto stranger = f.provider.CreateKey("Stranger");
+  auto r = f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                              stranger->did);
+  EXPECT_TRUE(r.allowed);
+  EXPECT_EQ(r.mode, "open");
+}
+
+TEST(Cap_EnforcedAllowsHolderDeniesStranger) {
+  GovFixture f;
+  BootstrapEnforced(f);
+  // The graph DID (the root invoker) is authorised.
+  auto ok = f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                               f.Wdid());
+  EXPECT_TRUE(ok.allowed);
+  EXPECT_EQ(ok.mode, "enforced");
+  // A stranger holding no capability is denied, attributed to the constraint.
+  auto stranger = f.provider.CreateKey("Stranger");
+  auto no = f.gov.CanAddTriple(f.W(), MakeLit("urn:n:2", "urn:p:body", "hi"),
+                               stranger->did);
+  EXPECT_FALSE(no.allowed);
+  EXPECT_EQ(no.constraint_kind, "capability");
+}
+
+TEST(Cap_AnnouncedModeComputesButAccepts) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  std::string cid;
+  EXPECT_TRUE(
+      f.gov.InstallCapabilityConstraint(f.W(), f.gcred, std::nullopt, &cid));
+  EXPECT_TRUE(
+      f.gov.SetEnforcementMode(f.W(), f.gcred, EnforcementMode::kAnnounced));
+  // A stranger would fail the capability check, but announced never rejects.
+  auto stranger = f.provider.CreateKey("Stranger");
+  auto r = f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                              stranger->did);
+  EXPECT_TRUE(r.allowed);
+  EXPECT_EQ(r.mode, "announced");
+}
+
+// ---- delegation + attenuation (§4.5.3, §8) ----
+
+TEST(Cap_DelegateAttenuatesActions) {
+  GovFixture f;
+  std::string root = BootstrapEnforced(f);
+  auto member = f.provider.CreateKey("Member");
+
+  DelegationRequest req;
+  req.parent_capability = root;
+  req.invoker = member->did;
+  req.actions = {kActionCreateLink};
+  std::string child;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, req, &child));
+
+  // Member can createLink...
+  EXPECT_TRUE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                                 member->did)
+                  .allowed);
+  // ...but cannot updateGovernance (never delegated).
+  EXPECT_FALSE(
+      f.gov.CanPerformAction(f.W(), kActionUpdateGovernance, member->did)
+          .allowed);
+
+  // A mid cap that CAN delegate, but only createLink.
+  DelegationRequest mid;
+  mid.parent_capability = root;
+  mid.invoker = member->did;
+  mid.actions = {kActionCreateLink, kActionDelegateCapability};
+  std::string midcap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, mid, &midcap));
+
+  // Member (mid invoker) cannot over-delegate an action outside mid (§8).
+  auto m2 = f.provider.CreateKey("M2");
+  DelegationRequest over;
+  over.parent_capability = midcap;
+  over.invoker = m2->did;
+  over.actions = {kActionRemoveLink};
+  std::string x;
+  EXPECT_FALSE(f.gov.Delegate(f.W(), member->id, over, &x));
+  EXPECT_EQ(f.gov.last_error(), "attenuation_actions");
+}
+
+TEST(Cap_DelegateRejectsResourceEscalation) {
+  GovFixture f;
+  std::string root = BootstrapEnforced(f);
+  auto member = f.provider.CreateKey("Member");
+  DelegationRequest req;
+  req.parent_capability = root;
+  req.invoker = member->did;
+  req.actions = {kActionCreateLink};
+  req.resource = "did:graph:z6MkSomethingElse";  // != parent.resource (§8)
+  std::string x;
+  EXPECT_FALSE(f.gov.Delegate(f.W(), f.gcred, req, &x));
+  EXPECT_EQ(f.gov.last_error(), "attenuation_resource");
+}
+
+TEST(Cap_DelegateCaveatsAreImmutable) {
+  GovFixture f;
+  std::string root = BootstrapEnforced(f);
+  auto member = f.provider.CreateKey("Member");
+  // A mid cap carrying an expiry caveat + delegateCapability.
+  DelegationRequest mid;
+  mid.parent_capability = root;
+  mid.invoker = member->did;
+  mid.actions = {kActionCreateLink, kActionDelegateCapability};
+  mid.caveats = ExpiryCaveat("2099-01-01T00:00:00Z");
+  std::string midcap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, mid, &midcap));
+
+  auto m2 = f.provider.CreateKey("M2");
+  // Dropping the parent caveat is rejected (§8 immutable caveats).
+  DelegationRequest drop;
+  drop.parent_capability = midcap;
+  drop.invoker = m2->did;
+  drop.actions = {kActionCreateLink};
+  drop.caveats = "";
+  std::string x;
+  EXPECT_FALSE(f.gov.Delegate(f.W(), member->id, drop, &x));
+  EXPECT_EQ(f.gov.last_error(), "attenuation_caveats");
+
+  // Preserving it byte-for-byte is accepted.
+  DelegationRequest keep = drop;
+  keep.caveats = ExpiryCaveat("2099-01-01T00:00:00Z");
+  std::string ok;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), member->id, keep, &ok));
+}
+
+TEST(Cap_TwoLevelDelegationChainAuthorises) {
+  GovFixture f;
+  std::string root = BootstrapEnforced(f);
+  auto member = f.provider.CreateKey("Member");
+  DelegationRequest mid;
+  mid.parent_capability = root;
+  mid.invoker = member->did;
+  mid.actions = {kActionCreateLink, kActionDelegateCapability};
+  std::string midcap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, mid, &midcap));
+
+  auto m2 = f.provider.CreateKey("M2");
+  DelegationRequest leaf;
+  leaf.parent_capability = midcap;
+  leaf.invoker = m2->did;
+  leaf.actions = {kActionCreateLink};
+  std::string leafcap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), member->id, leaf, &leafcap));
+
+  // The deepest invoker writes via the two-hop chain root → mid → leaf.
+  EXPECT_TRUE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                                 m2->did)
+                  .allowed);
+}
+
+// ---- caveats (§9.2 expiry, §9.3 plug-ins) ----
+
+TEST(Cap_ExpiryCaveatBlocksExpiredAllowsLive) {
+  GovFixture f;
+  std::string root = BootstrapEnforced(f);
+
+  auto expired = f.provider.CreateKey("Expired");
+  DelegationRequest e;
+  e.parent_capability = root;
+  e.invoker = expired->did;
+  e.actions = {kActionCreateLink};
+  e.caveats = ExpiryCaveat("2000-01-01T00:00:00Z");
+  std::string ecap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, e, &ecap));
+  EXPECT_FALSE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                                  expired->did)
+                   .allowed);
+
+  auto live = f.provider.CreateKey("Live");
+  DelegationRequest l;
+  l.parent_capability = root;
+  l.invoker = live->did;
+  l.actions = {kActionCreateLink};
+  l.caveats = ExpiryCaveat("2099-01-01T00:00:00Z");
+  std::string lcap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, l, &lcap));
+  EXPECT_TRUE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:2", "urn:p:body", "hi"),
+                                 live->did)
+                  .allowed);
+}
+
+TEST(Cap_PluginCaveatHandler) {
+  GovFixture f;
+  f.gov.RegisterCaveatType(std::make_unique<ForbidValueCaveat>());
+  std::string root = BootstrapEnforced(f);
+  auto member = f.provider.CreateKey("Member");
+  DelegationRequest req;
+  req.parent_capability = root;
+  req.invoker = member->did;
+  req.actions = {kActionCreateLink};
+  req.caveats = "[{\"type\":\"forbidValue\",\"value\":{\"equals\":\"secret\"}}]";
+  std::string child;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, req, &child));
+  // The caveat forbids the object literal "secret".
+  EXPECT_FALSE(f.gov.CanAddTriple(f.W(),
+                                  MakeLit("urn:n:1", "urn:p:body", "secret"),
+                                  member->did)
+                   .allowed);
+  EXPECT_TRUE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:2", "urn:p:body", "ok"),
+                                 member->did)
+                  .allowed);
+}
+
+// ---- revocation + brick protection (§4.5.5, §13.10) ----
+
+TEST(Cap_RevokeBlocksDelegatee) {
+  GovFixture f;
+  std::string root = BootstrapEnforced(f);
+  auto member = f.provider.CreateKey("Member");
+  DelegationRequest req;
+  req.parent_capability = root;
+  req.invoker = member->did;
+  req.actions = {kActionCreateLink};
+  std::string child;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, req, &child));
+  EXPECT_TRUE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                                 member->did)
+                  .allowed);
+
+  // The graph DID (an ancestor invoker) revokes the child (§4.5.5).
+  EXPECT_TRUE(f.gov.Revoke(f.W(), f.gcred, child));
+  EXPECT_FALSE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:2", "urn:p:body", "hi"),
+                                  member->did)
+                   .allowed);
+}
+
+TEST(Cap_RootCapabilityIsUnrevokable) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  // The root has no ancestor invoker, so no agent has standing to revoke it.
+  EXPECT_FALSE(f.gov.Revoke(f.W(), f.gcred, root));
+  EXPECT_EQ(f.gov.last_error(), "not_authorised_to_revoke");
+}
+
+TEST(Cap_RevokeRedundantGovernanceAllowed) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  auto agent = f.provider.CreateKey("Agent");
+  DelegationRequest req;
+  req.parent_capability = root;
+  req.invoker = agent->did;
+  req.actions = {kActionUpdateGovernance, kActionDelegateCapability};
+  std::string gov_cap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, req, &gov_cap));
+  // Root (invoker = the graph DID) still governs, so revoking the redundant
+  // delegated governance capability is safe (§13.10 false branch).
+  EXPECT_TRUE(f.gov.Revoke(f.W(), f.gcred, gov_cap));
+  EXPECT_EQ(f.gov.MyCapabilities(f.W(), agent->did).size(), 0u);
+}
+
+TEST(Cap_RevokeRefusedWhenItWouldBrickGovernance) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  // A did:key agent will hold the sole *exercisable* governance capability.
+  auto agent = f.provider.CreateKey("Agent");
+  DelegationRequest req;
+  req.parent_capability = root;
+  req.invoker = agent->did;
+  req.actions = {kActionUpdateGovernance, kActionDelegateCapability};
+  std::string gov_cap;
+  EXPECT_TRUE(f.gov.Delegate(f.W(), f.gcred, req, &gov_cap));
+
+  // White-box: strip the group key from the graph DID's capabilityInvocation so
+  // the root (invoker = the graph DID) is no longer *exercisable*. The agent's
+  // governance capability is then the only surviving one, and revoking it must
+  // be refused as bricking (§13.10 true branch).
+  {
+    group_detail::ScopedActive active(&f.provider, f.gcred);
+    for (const auto& o : group_detail::QueryObjects(
+             f.W(), f.Wdid(),
+             SectionPredicate(DIDCapabilitySection::kCapabilityInvocation))) {
+      if (o.is_literal())
+        continue;
+      bool removed = false;
+      f.W()->RemoveTriple(
+          group_detail::T_iri(
+              f.Wdid(),
+              SectionPredicate(DIDCapabilitySection::kCapabilityInvocation),
+              o.iri_or_bnode),
+          &removed);
+    }
+  }
+  EXPECT_FALSE(f.gov.Revoke(f.W(), f.gcred, gov_cap));
+  EXPECT_EQ(f.gov.last_error(), "would_brick_governance");
+}
+
+// ---- immutable seeds (§10) ----
+
+TEST(Cap_ImmutableSeedPredicateRejectedInAllModes) {
+  GovFixture f;  // open mode, no capability constraint yet
+  // Rewriting the group's syncModule seed is rejected before any capability
+  // logic, in every mode (§10).
+  auto r = f.gov.CanAddTriple(
+      f.W(), MakeLit(f.Wdid(), kGroupSyncModule, "urn:sync:module:evil"),
+      f.Wdid());
+  EXPECT_FALSE(r.allowed);
+  EXPECT_EQ(r.reason, "immutable_seed_predicate");
+}
+
+// ---- constraint kinds (§9.3, §13.8) + governance gate (§5.2) ----
+
+TEST(Cap_UnknownConstraintKindFailsClosed) {
+  GovFixture f;
+  const std::string cid = "urn:uuid:constraint-temporal";
+  {
+    group_detail::ScopedActive active(&f.provider, f.gcred);
+    EXPECT_TRUE(f.W()->AddTriples({
+        group_detail::T_iri(cid, kGovEntryType, kGovConstraintEntryType),
+        group_detail::T_lit(cid, kGovConstraintKind, "temporal"),
+        group_detail::T_iri(f.Wdid(), kGovHasConstraint, cid),
+    }));
+  }
+  auto r = f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "hi"),
+                              f.Wdid());
+  EXPECT_FALSE(r.allowed);
+  EXPECT_EQ(r.constraint_kind, "temporal");
+  EXPECT_EQ(r.reason, "unknown_constraint_kind");
+}
+
+TEST(Cap_PluginConstraintKindHandler) {
+  GovFixture f;
+  f.gov.RegisterConstraintKind(std::make_unique<BlockPredicateConstraint>());
+  const std::string cid = "urn:uuid:constraint-block";
+  {
+    group_detail::ScopedActive active(&f.provider, f.gcred);
+    EXPECT_TRUE(f.W()->AddTriples({
+        group_detail::T_iri(cid, kGovEntryType, kGovConstraintEntryType),
+        group_detail::T_lit(cid, kGovConstraintKind, "blockPredicate"),
+        group_detail::T_lit(cid, "governance://blocked_predicate",
+                            "urn:p:forbidden"),
+        group_detail::T_iri(f.Wdid(), kGovHasConstraint, cid),
+    }));
+  }
+  EXPECT_FALSE(f.gov.CanAddTriple(f.W(),
+                                  MakeLit("urn:n:1", "urn:p:forbidden", "x"),
+                                  f.Wdid())
+                   .allowed);
+  EXPECT_TRUE(f.gov.CanAddTriple(f.W(), MakeLit("urn:n:1", "urn:p:body", "x"),
+                                 f.Wdid())
+                  .allowed);
+}
+
+TEST(Cap_SetEnforcementModeRequiresGovernance) {
+  GovFixture f;
+  BootstrapEnforced(f);
+  // Once a capability constraint is installed, flipping the mode demands
+  // updateGovernance (§5.2); a stranger cannot (§5.2).
+  auto stranger = f.provider.CreateKey("Stranger");
+  EXPECT_FALSE(
+      f.gov.SetEnforcementMode(f.W(), stranger->id, EnforcementMode::kOpen));
+  EXPECT_EQ(f.gov.last_error(), "not_authorised");
+  EXPECT_TRUE(f.gov.GetEnforcementMode(f.W()) == EnforcementMode::kEnforced);
+}
+
+TEST(Cap_ConstraintsForListsCapabilityConstraint) {
+  GovFixture f;
+  std::string root;
+  EXPECT_TRUE(f.gov.MintRootCapability(f.W(), f.gcred, std::nullopt, &root));
+  std::string cid;
+  EXPECT_TRUE(
+      f.gov.InstallCapabilityConstraint(f.W(), f.gcred, std::nullopt, &cid));
+  bool found = false;
+  for (const auto& c : f.gov.ConstraintsFor(f.W(), f.Wdid()))
+    if (c.kind == "capability" && c.id == cid)
+      found = true;
+  EXPECT_TRUE(found);
 }
 
 // ============================================================

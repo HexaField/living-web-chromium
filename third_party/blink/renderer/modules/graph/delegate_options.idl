@@ -1,0 +1,17 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// DelegateOptions — input to Group.delegateCapability (§8.1.5), which issues a
+// ZCAP whose resource is a did:graph the group has authority over. The
+// dictionary is defined by [[GROUP-IDENTITY]] §8 and consumed by the Graph
+// Capability Framework (Spec 04); per [[CAPABILITY-FRAMEWORK]] §1.3 the
+// `resource` MUST be a DID for long-lived authority.
+
+dictionary DelegateOptions {
+  required USVString invoker;             // DID receiving the capability
+  required sequence<USVString> actions;
+  required USVString resource;            // did:graph (the group's, or one it governs)
+  sequence<object> caveats;
+  USVString expiresAt;                    // RFC 3339; folded into an expiry caveat
+};

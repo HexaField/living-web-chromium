@@ -21,7 +21,7 @@ to this file** and flips its row to ✅.
 | 01 | [Decentralised Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_decentralised-identity-web-platform.md) | `navigator.credentials` + `DIDCredential` | `spec-01-identity` | ✅ |
 | 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `navigator.graph`, `Graph` | `spec-02-graphs` | ✅ |
 | 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | `did:graph`, `navigator.graph` groups, `Group` | `spec-03-group-identity` | ✅ |
-| 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | ZCAP-LD capabilities | `spec-04-capabilities` | 🔲 |
+| 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | ZCAP-LD capabilities | `spec-04-capabilities` | ✅ |
 | 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `SharedGraph`, `graph.join()` | `spec-05-sync` | 🔲 |
 | 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | Pluggable sync modules | `spec-06-sync-modules` | 🔲 |
 | 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `addShape()`, shape instances | `spec-07-shapes` | 🔲 |
@@ -349,6 +349,130 @@ interoperability hazard the draft left open:
   and records that the binding triple's subject is the graph's pre-final-state IRI (a
   consumer MUST NOT assume it equals the current `iri`). The browser keys graphs by a stable
   internal id and the Blink `groupify(Graph)` binding hands that id straight through.
+
+---
+
+## Spec 04 — Graph Capability Framework ✅
+
+Fully implemented and tested. The framework layers [[ZCAP-LD]] capability
+delegation (§4.5.3) and a three-mode enforcement engine (§5) onto a groupified
+Spec 03 graph. All governance state lives as ordinary `governance://` and
+`zcap://` triples **inside the host graph it governs** — there is no side table —
+so a capability minted by one engine verifies byte-for-byte under another. The
+engine (`content/browser/governance/governance_backend.*` + `zcap.*`, namespace
+`living_web`) is Chromium-independent and shared verbatim by the browser-process
+governance host and the standalone harness. Normative behaviour is exercised by
+the 24 `Cap_*`/`Zcap_*` blocks of the C++ harness (`living_web_tests`, 91 tests
+total, all green), 26 `GovernanceBackend*` browser gtests
+(`tests/governance_backend_unittest.cc`), and the 11-test WPT
+(`tests/web_platform_tests/graph/graph-capabilities.html`). The §11 governance
+surface is folded onto `Graph` and §8.1.5 `delegateCapability` onto `Group`, both
+off `navigator.graph`.
+
+### §11 renderer governance surface (partial interface `Graph`)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `enforcementMode()` → `EnforcementMode` | §5.1, §11.4 | ✅ | ✅ | ✅ | ✅ | Reads `governance://enforcement_mode`; a graph with no DID or no mode token reports `"open"`. |
+| `setEnforcementMode(mode)` | §5.2, §11.4 | ✅ | ✅ | ✅ | ✅ | Round-trips `open`/`announced`/`enforced`; unknown token → `TypeError` (IDL enum). Guarded by `updateGovernance` **only once a capability constraint exists**; a DID-less graph → `InvalidStateError`. |
+| `canAddTriple(triple)` → `GovernanceValidationResult` | §7, §11.1 | ✅ | ✅ | ✅ | ✅ | Derives the action from the predicate (§4.5.4.1) and runs §7; in `open` mode short-circuits to ACCEPT. Result echoes `{allowed, rejectedBy?, constraintKind?, reason?, mode}`. |
+| `canPerformAction(action, authorDid, proof?)` | §7, §11 | ✅ | ✅ | ✅ | ✅ | Evaluates an explicit author against the graph's capabilities; unauthorised author under `enforced` → `{allowed:false, constraintKind:"capability"}`. Optional `CapabilityProofInput` carries an off-graph chain. |
+| `myCapabilities()` → `sequence<CapabilityInfo>` | §4.3, §11.3 | ✅ | ✅ | ✅ | ✅ | Capabilities the active author holds (eligible, unrevoked, caveats satisfied, chain walks to a local root). Empty until the root is lazily minted. |
+| `constraintsFor(contextDid)` → `sequence<GraphConstraint>` | §4.5.1, §11.2 | ✅ | ✅ | ✅ | ✅ | Reports `governance://has_constraint` bindings as `{id, kind, scope, properties}`; `entry_type`/`constraint_kind` are structural and excluded from `properties`. |
+
+### ZCAP delegation & root capability (§4.3, §4.5.3, §8.1.5)
+
+| Capability | Spec | IDL | C++ | WPT | Status | Notes |
+|------------|------|-----|-----|-----|--------|-------|
+| Lazy root minting | §4.3 | — | ✅ | ✅ | ✅ | The root is **not** minted at group creation; the first `delegateCapability` mints it via `EnsureRootCapability`. Invoker = resource = the group `did:graph`; the creator (in every capability section) then holds it. |
+| Default root action set = 8 framework-core | §4.3, §4.5.4 | — | ✅ | ✅ | ✅ | `createLink, removeLink, updateGovernance, updateDIDDocument, delegateCapability, mountContext, forkGraph, announceFork` (`DefaultRootActions`). Extension actions excluded — see Amendment (i). |
+| `Group.delegateCapability(options)` → `SignedContent` | §8.1.5 | ✅ | ✅ | ✅ | ✅ | Signs a ZCAP-LD delegation by the group DID (`Ed25519Signature2020`, `proof.method` = `<groupDid>#<multibase>`, `z`-prefixed base58btc signature). `DelegateOptions` = `{invoker, actions, resource, caveats?, expiresAt?}`. |
+| Flattened ZCAP triples on the `zcap://` scheme | §4.5.3 | — | ✅ | ✅ | ✅ | `zcap://invoker/parentCapability/actions/resource/caveats/proofValue/proofPurpose/proofMethod/created` + `rdf:type zcap://Delegation`. Pinned by Amendment (ii). |
+| Delegation-proof pre-image (exact bytes) | §4.5.3.1 | — | ✅ | ✅ | ✅ | `BuildDelegationProofPreimage`: versioned tag + 8 LF-joined signed fields, SHA-256-then-Ed25519. New §4.5.3.1 — Amendment (iii); covered by `Zcap_DelegationProofPreimageExactBytes`. |
+| Attenuation (actions subset, resource fixed, caveats immutable) | §7, §8 | — | ✅ | — | ✅ | A child delegation's actions MUST be a subset of the parent's; resource escalation and caveat weakening are rejected (`Cap_DelegateAttenuatesActions`, `…RejectsResourceEscalation`, `…CaveatsAreImmutable`). |
+
+### Enforcement modes (§5) & verification (§7)
+
+| Behaviour | Spec | C++ | WPT | Status | Notes |
+|-----------|------|-----|-----|--------|-------|
+| `open` (default) skips capability checks | §5.1 | ✅ | ✅ | ✅ | §7 step 1 short-circuits to ACCEPT; writes ungated. |
+| `announced` computes & audits, never rejects | §5.3 | ✅ | — | ✅ | Capability decision is computed for the audit record but the write is always admitted (`Cap_AnnouncedModeComputesButAccepts`). |
+| `enforced` is a mandatory data-layer gate | §5, §11.5 | ✅ | ✅ | ✅ | `addTriple` runs §7 per triple; an unauthorised author → `NotAllowedError`. The root-holding creator's ordinary write is admitted. |
+| Chain walk terminates at the local `BootstrapRoot` | §4.3, §7 | ✅ | — | ✅ | Local-root re-verification against the graph's own `governance://root_capability` — Amendment (i); `Cap_TwoLevelDelegationChainAuthorises`. |
+| Eligibility: a `did:graph` invoker is eligible for its section members | §7 | ✅ | ✅ | ✅ | A capability whose invoker is a group DID is eligible for any author in that DID's `capabilityInvocation` section (group-of-one ⇒ the creator). |
+| Deny-wins composition, greatest-id audit tiebreak | §4.4, §6.3 | ✅ | — | ✅ | Any rejecting same-kind constraint rejects the write; `rejectedBy` attributes to the lexicographically-greatest constraint id. |
+
+### Caveats (§9), revocation (§4.5.5, §8) & constraints (§4.5.1, §10)
+
+| Behaviour | Spec | C++ | WPT | Status | Notes |
+|-----------|------|-----|-----|--------|-------|
+| Expiry caveat | §9 | ✅ | — | ✅ | An expired capability is inert; a live one authorises (`Cap_ExpiryCaveatBlocksExpiredAllowsLive`). Carried verbatim as the `zcap://caveats` JSON literal. |
+| Pluggable caveat & constraint-kind handlers | §9 | ✅ | — | ✅ | Applications register caveat/constraint-kind handlers; an unknown `constraint_kind` fails closed (`Cap_UnknownConstraintKindFailsClosed`, `…PluginCaveatHandler`, `…PluginConstraintKindHandler`). |
+| Revocation by an authorised agent | §4.5.5 | ✅ | — | ✅ | Writes `governance://revokes_capability`; a revoked delegatee is denied (`Cap_RevokeBlocksDelegatee`). |
+| Root is unrevokable; brick-guarded revocation | §4.5.5, §8 | ✅ | — | ✅ | The local root cannot be revoked; a revocation that would strip the last governance authority is refused (`Cap_RootCapabilityIsUnrevokable`, `…RefusedWhenItWouldBrickGovernance`). |
+| Capability constraint definition + `constraintsFor` | §4.5.1 | ✅ | ✅ | ✅ | `entry_type = governance://constraint`, `constraint_kind = "capability"`, optional `capability_predicates`; bound to the graph DID via `has_constraint`. |
+| Immutable seed predicates rejected in all modes | §10 | ✅ | ✅ | ✅ | A write to `group://syncModule`/`forkedFrom`/`forkedAtRevision` on the graph DID is rejected even for the creator; surfaces at `addTriple` as `NotAllowedError` (`Cap_ImmutableSeedPredicateRejectedInAllModes`). |
+
+### Normative parameters
+
+- **Framework-core actions** (§4.5.4): the eight in `DefaultRootActions()`. Extension
+  actions (`updateSHACL`, `updateFlow`) are conservative-by-default — an unknown action
+  requires an explicit capability.
+- **Action derivation** (§4.5.4.1): predicate-prefix registry `governance://` →
+  `updateGovernance`, `did-document://` **and** `did://` → `updateDIDDocument` (Amendment
+  (iv)); otherwise `createLink` (add) / `removeLink` (remove).
+- **Enforcement gate reach**: `setEnforcementMode` is authority-gated only once a capability
+  constraint exists (§5.2); the data-layer `NotAllowedError` gate is reached only in
+  `enforced` mode. A DID-less Spec 02 graph has nothing to govern — its surface is inert and
+  `"open"`, and enabling enforcement is `InvalidStateError`.
+- **Active author**: `createGroup` adopts the group key but leaves the human's `did:key`
+  active, so `graph.addTriple`/`canAddTriple`/`myCapabilities` author as the creator; group
+  governance ops scope-switch the active credential and restore it.
+- Authoritative reference impl: `standalone/capability_provider.h` over
+  `content/browser/governance/{governance_backend,zcap}.*`, verified by the 24
+  `Cap_*`/`Zcap_*` tests in `standalone/living_web_tests.cc`; the browser port
+  (`content/browser/graph/personal_graph_host.*` gating + `governance_backend.*`) and the
+  renderer (`third_party/blink/renderer/modules/graph/graph.*` §11 surface,
+  `group.*` `delegateCapability`) mirror it.
+
+### Amendments
+
+Four under-specified areas surfaced while implementing Spec 04 have been **folded
+into draft 04 as normative detail** on `w3c-living-web-proposals` `main` (the same
+practice used for Specs 01–03). None weakens the implementation; each removes an
+interoperability hazard the draft left open:
+
+- **(i) The default root action set is exactly the eight framework-core actions**, and
+  local-root re-verification is mandatory — draft §4.3. The draft's §4.3 example listed
+  **nine** actions including `updateSHACL`, contradicting §4.5.4 (which defines `updateSHACL`
+  as an *extension* action from [[SHAPE-VALIDATION]]) and the §15 walkthrough. The amendment
+  pins the freshly-minted root to the eight framework-core actions and forbids widening it;
+  extension actions are conferred only by an extension's own bootstrap or an explicit
+  delegation. It also makes **local-root re-verification** normative: a `BootstrapRoot`-parented
+  capability MUST match the writing graph's own `governance://root_capability` or the walk
+  fails closed. Implemented as `DefaultRootActions()` (8 actions) + the root-id check in the
+  chain walk.
+- **(ii) Flattened ZCAP predicates are pinned to the `zcap://` scheme** — draft §4.5.3. The
+  draft showed the ZCAP triples with the JSON-LD compact prefix `zcap:` (namespace
+  `https://w3id.org/zcap/v1#`) but never fixed the **substrate** predicate IRIs, leaving the
+  intra-graph form implementation-defined. The amendment pins one predicate per field on the
+  resolver-independent `zcap://` scheme (`zcap://invoker`, `zcap://actions`, …) as the
+  canonical form the verification algorithm queries and the pre-image is computed over.
+- **(iii) The delegation-proof pre-image is fixed byte-for-byte** — new draft §4.5.3.1. The
+  draft left the exact bytes a delegation's `zcap://proofValue` signs unspecified, so ZCAPs
+  could not verify across implementations. The amendment fixes the pre-image as a
+  domain-separation tag (`living-web/zcap/delegation/v1`) followed by eight signed fields
+  (`id`, `invoker`, `parentCapability`, `actions`, `resource`, `caveats`, `proofPurpose`,
+  `created`), LF-joined with no trailer, hashed with SHA-256 and signed raw-Ed25519 —
+  excluding `rdf:type`, `proofMethod`, and `proofValue`. Implemented as
+  `BuildDelegationProofPreimage`; covered by `Zcap_DelegationProofPreimageExactBytes`.
+- **(iv) The `did://` predicate family maps to `updateDIDDocument`** — draft §4.5.4.1. The
+  action-derivation registry mapped only `did-document://`, but [[GROUP-IDENTITY]] §4.4 stores
+  a group's live DID-document state as `did://*` triples in the host graph. Without this
+  mapping, writes that mutate signing authority would derive `createLink` and escape the
+  `updateDIDDocument` gate. The amendment adds `did://` → `updateDIDDocument` alongside
+  `did-document://` (the two never overlap). Registered in the engine constructor's action
+  prefixes.
 
 ---
 

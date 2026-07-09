@@ -21,6 +21,28 @@ std::optional<std::string> CurrentIri(GraphBackend* backend) {
   return std::nullopt;
 }
 
+// Spec 04 §2 / §11.5 data-layer gate. In enforced mode every renderer-authored
+// triple must pass the capability check for the current identity before it is
+// admitted; a single failure rejects the whole batch atomically (mirroring the
+// §4.2 all-or-nothing add semantics). Open and announced modes never gate here —
+// announced results are advisory only (§11) and open skips checks entirely.
+// Returns the DOMException name to reject with, or nullopt to admit the batch.
+std::optional<std::string> EnforcementError(
+    GovernanceBackend* governance,
+    GraphBackend* backend,
+    const std::vector<living_web::Triple>& triples) {
+  if (!governance ||
+      governance->GetEnforcementMode(backend) != EnforcementMode::kEnforced) {
+    return std::nullopt;
+  }
+  const std::string author = governance->ActiveAuthorDid();
+  for (const living_web::Triple& t : triples) {
+    if (!governance->CanAddTriple(backend, t, author).allowed)
+      return std::string("NotAllowedError");
+  }
+  return std::nullopt;
+}
+
 // Maps a living_web SPARQL result kind onto the mojom |kind| byte (§4.2): 0
 // Solutions, 1 Boolean, 2 Graph.
 uint8_t KindToByte(living_web::SparqlResultKind kind) {
@@ -40,9 +62,11 @@ uint8_t KindToByte(living_web::SparqlResultKind kind) {
 PersonalGraphHost::PersonalGraphHost(
     GraphBackend* backend,
     GraphBackendManager* manager,
+    GovernanceBackend* governance,
     mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver)
     : backend_(backend),
       manager_(manager),
+      governance_(governance),
       receiver_(this, std::move(receiver)) {}
 
 PersonalGraphHost::~PersonalGraphHost() = default;
@@ -236,8 +260,13 @@ void PersonalGraphHost::GetIri(GetIriCallback callback) {
 
 void PersonalGraphHost::AddTriple(graph::mojom::TriplePtr triple,
                                   AddTripleCallback callback) {
+  living_web::Triple in = FromMojo(triple);
+  if (auto err = EnforcementError(governance_, backend_, {in})) {
+    std::move(callback).Run(nullptr, std::nullopt, *err);
+    return;
+  }
   living_web::Triple added;
-  if (!backend_->AddTriple(FromMojo(triple), &added)) {
+  if (!backend_->AddTriple(in, &added)) {
     std::move(callback).Run(nullptr, std::nullopt, backend_->last_error());
     return;
   }
@@ -250,6 +279,10 @@ void PersonalGraphHost::AddTriples(std::vector<graph::mojom::TriplePtr> triples,
   in.reserve(triples.size());
   for (const auto& t : triples)
     in.push_back(FromMojo(t));
+  if (auto err = EnforcementError(governance_, backend_, in)) {
+    std::move(callback).Run(std::nullopt, std::nullopt, *err);
+    return;
+  }
   std::vector<living_web::Triple> added;
   if (!backend_->AddTriples(in, &added)) {
     std::move(callback).Run(std::nullopt, std::nullopt, backend_->last_error());
@@ -380,6 +413,137 @@ void PersonalGraphHost::OnTripleAdded(const living_web::Triple& triple) {
 void PersonalGraphHost::OnTripleRemoved(const living_web::Triple& triple) {
   if (client_)
     client_->OnTripleRemoved(ToMojo(triple));
+}
+
+// ---- Spec 04 §11 result converters ----------------------------------------
+
+// static
+graph::mojom::EnforcementMode PersonalGraphHost::ModeToMojo(EnforcementMode m) {
+  switch (m) {
+    case EnforcementMode::kOpen:
+      return graph::mojom::EnforcementMode::kOpen;
+    case EnforcementMode::kAnnounced:
+      return graph::mojom::EnforcementMode::kAnnounced;
+    case EnforcementMode::kEnforced:
+      return graph::mojom::EnforcementMode::kEnforced;
+  }
+  return graph::mojom::EnforcementMode::kOpen;
+}
+
+// static
+EnforcementMode PersonalGraphHost::ModeFromMojo(graph::mojom::EnforcementMode m) {
+  switch (m) {
+    case graph::mojom::EnforcementMode::kOpen:
+      return EnforcementMode::kOpen;
+    case graph::mojom::EnforcementMode::kAnnounced:
+      return EnforcementMode::kAnnounced;
+    case graph::mojom::EnforcementMode::kEnforced:
+      return EnforcementMode::kEnforced;
+  }
+  return EnforcementMode::kOpen;
+}
+
+// static
+graph::mojom::GovernanceValidationResultPtr PersonalGraphHost::ToMojo(
+    const GovernanceValidationResult& r) {
+  auto out = graph::mojom::GovernanceValidationResult::New();
+  out->allowed = r.allowed;
+  out->rejected_by = r.rejected_by;
+  out->constraint_kind = r.constraint_kind;
+  out->reason = r.reason;
+  out->mode = r.mode;
+  return out;
+}
+
+// static
+graph::mojom::GraphConstraintPtr PersonalGraphHost::ToMojo(
+    const GraphConstraint& c) {
+  auto out = graph::mojom::GraphConstraint::New();
+  out->id = c.id;
+  out->kind = c.kind;
+  out->scope = c.scope;
+  out->properties.reserve(c.properties.size());
+  for (const auto& kv : c.properties) {
+    auto p = graph::mojom::GraphConstraintProperty::New();
+    p->predicate = kv.first;
+    p->value = kv.second;
+    out->properties.push_back(std::move(p));
+  }
+  return out;
+}
+
+// static
+graph::mojom::CapabilityInfoPtr PersonalGraphHost::ToMojo(
+    const CapabilityInfo& c) {
+  auto out = graph::mojom::CapabilityInfo::New();
+  out->id = c.id;
+  out->actions = c.actions;
+  out->resource = c.resource;
+  out->caveats = c.caveats;
+  out->expires = c.expires;
+  return out;
+}
+
+// ---- Spec 04 §11 governance API -------------------------------------------
+
+void PersonalGraphHost::CanAddTriple(graph::mojom::TriplePtr triple,
+                                     CanAddTripleCallback callback) {
+  GovernanceValidationResult r = governance_->CanAddTriple(
+      backend_, FromMojo(triple), governance_->ActiveAuthorDid());
+  std::move(callback).Run(ToMojo(r), std::nullopt);
+}
+
+void PersonalGraphHost::CanPerformAction(
+    const std::string& action,
+    const std::string& author_did,
+    graph::mojom::CapabilityProofInputPtr proof,
+    CanPerformActionCallback callback) {
+  // The capability chain named by |proof| is resolved from the target graph by
+  // the §7 walk, so it needs no separate wiring here; |proof->presentations|
+  // feed the CONSTRAINT-VOCABULARY (Spec 08) `credential` caveat handler, which
+  // reads them from the ValidationContext when that plug-in is registered.
+  GovernanceValidationResult r =
+      governance_->CanPerformAction(backend_, action, author_did);
+  std::move(callback).Run(ToMojo(r), std::nullopt);
+}
+
+void PersonalGraphHost::ConstraintsFor(const std::string& context_did,
+                                       ConstraintsForCallback callback) {
+  std::vector<GraphConstraint> constraints =
+      governance_->ConstraintsFor(backend_, context_did);
+  std::vector<graph::mojom::GraphConstraintPtr> out;
+  out.reserve(constraints.size());
+  for (const GraphConstraint& c : constraints)
+    out.push_back(ToMojo(c));
+  std::move(callback).Run(std::move(out), std::nullopt);
+}
+
+void PersonalGraphHost::MyCapabilities(MyCapabilitiesCallback callback) {
+  std::vector<CapabilityInfo> caps =
+      governance_->MyCapabilities(backend_, governance_->ActiveAuthorDid());
+  std::vector<graph::mojom::CapabilityInfoPtr> out;
+  out.reserve(caps.size());
+  for (const CapabilityInfo& c : caps)
+    out.push_back(ToMojo(c));
+  std::move(callback).Run(std::move(out), std::nullopt);
+}
+
+void PersonalGraphHost::GetEnforcementMode(GetEnforcementModeCallback callback) {
+  std::move(callback).Run(ModeToMojo(governance_->GetEnforcementMode(backend_)),
+                          std::nullopt);
+}
+
+void PersonalGraphHost::SetEnforcementMode(graph::mojom::EnforcementMode mode,
+                                           SetEnforcementModeCallback callback) {
+  if (!governance_->SetEnforcementMode(backend_,
+                                       governance_->ActiveCredentialId(),
+                                       ModeFromMojo(mode))) {
+    // §5.2: only an updateGovernance holder may change the mode.
+    std::string err = governance_->last_error();
+    std::move(callback).Run(err == "not_authorised" ? "NotAllowedError" : err);
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
 }
 
 }  // namespace content

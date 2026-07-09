@@ -31,6 +31,7 @@
 #include "content/browser/did/group_backend.h"
 #include "content/browser/did/group_backend_manager.h"
 #include "content/browser/did/group_host.h"
+#include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph/personal_graph_host.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -41,10 +42,15 @@ namespace content {
 
 class GroupService : public graph::mojom::GroupManager {
  public:
-  // |identity| and |graphs| are the realm's shared identity provider and graph
-  // store (the same GraphBackendManager the realm's PersonalGraphManager uses).
-  // Both outlive this service.
-  GroupService(DIDKeyProvider* identity, GraphBackendManager* graphs);
+  // |identity|, |graphs|, and |governance| are the realm's shared identity
+  // provider, graph store, and Spec 04 governance backend (the same objects the
+  // realm's PersonalGraphManager owns/uses). All three outlive this service. The
+  // governance backend is threaded into every PersonalGraphHost this service
+  // binds (so the §11 surface + enforcement gate share one registry) and into
+  // every GroupHost (for §8.1.5 delegateCapability).
+  GroupService(DIDKeyProvider* identity,
+               GraphBackendManager* graphs,
+               GovernanceBackend* governance);
 
   GroupService(const GroupService&) = delete;
   GroupService& operator=(const GroupService&) = delete;
@@ -101,7 +107,8 @@ class GroupService : public graph::mojom::GroupManager {
   void OnGroupHostDisconnected(GroupHost* host);
   void OnGraphHostDisconnected(PersonalGraphHost* host);
 
-  raw_ptr<GraphBackendManager> graphs_;  // The realm's shared graph store.
+  raw_ptr<GraphBackendManager> graphs_;    // The realm's shared graph store.
+  raw_ptr<GovernanceBackend> governance_;  // The realm's Spec 04 registry.
   GroupBackendManager groups_;
   std::vector<std::unique_ptr<GroupHost>> group_hosts_;
   std::vector<std::unique_ptr<PersonalGraphHost>> graph_hosts_;

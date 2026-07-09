@@ -1,0 +1,17 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// CapabilityProofInput — an explicitly supplied ZCAP delegation chain for a
+// non-triple authorisation check (Graph.canPerformAction, §11 / §7.1). Used
+// when the acting identity is not the current one, or when the chain cannot be
+// discovered from the graph alone.
+
+dictionary CapabilityProofInput {
+  // Ordered ZCAP delegation chain (leaf -> root), as content-addressed
+  // references resolvable in the target graph.
+  required sequence<USVString> chain;
+  // Verifiable-credential presentations consumed by `credential` caveats on the
+  // chain ([[CONSTRAINT-VOCABULARY]] §7.10).
+  sequence<object> presentations;
+};

@@ -1,0 +1,16 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GraphConstraint — a governance constraint bound to a graph
+// (Graph.constraintsFor, §11 / §6.2). Constraints are per-graph; there is no
+// inherited or cross-graph component. `properties` carries every defining
+// triple of the constraint subject except its entry-type and constraint-kind
+// markers.
+
+dictionary GraphConstraint {
+  required USVString id;
+  required USVString kind;
+  required USVString scope;  // graph DID this constraint is bound to
+  record<USVString, USVString> properties;
+};

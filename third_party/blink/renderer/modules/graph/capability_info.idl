@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// CapabilityInfo — a valid, non-revoked, non-expired capability held by the
+// current identity for a graph (Graph.myCapabilities, §11 / §11.3).
+
+dictionary CapabilityInfo {
+  required USVString id;
+  required sequence<USVString> actions;
+  required USVString resource;  // graph DID (RECOMMENDED) or specific-snapshot IRI
+  sequence<object> caveats;
+  DOMString? expires;           // RFC 3339, when the capability carries an expiry
+};

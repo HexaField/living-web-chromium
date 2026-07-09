@@ -6,11 +6,16 @@
 
 #include <utility>
 
+#include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_capability_info.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_capability_proof_input.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_governance_validation_result.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_graph_constraint.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_snapshot_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_sparql_query_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_triple_query.h"
@@ -116,6 +121,127 @@ graph::mojom::blink::TripleQueryPtr QueryToMojo(const TripleQuery* query) {
     out->offset = query->offset();
   if (query->hasLimit())
     out->limit = query->limit();
+  return out;
+}
+
+// §11 EnforcementMode: Mojo enum <-> V8 enum.
+V8EnforcementMode EnforcementModeToV8(graph::mojom::blink::EnforcementMode mode) {
+  switch (mode) {
+    case graph::mojom::blink::EnforcementMode::kOpen:
+      return V8EnforcementMode(V8EnforcementMode::Enum::kOpen);
+    case graph::mojom::blink::EnforcementMode::kAnnounced:
+      return V8EnforcementMode(V8EnforcementMode::Enum::kAnnounced);
+    case graph::mojom::blink::EnforcementMode::kEnforced:
+      return V8EnforcementMode(V8EnforcementMode::Enum::kEnforced);
+  }
+  NOTREACHED();
+}
+
+graph::mojom::blink::EnforcementMode EnforcementModeFromV8(
+    const V8EnforcementMode& mode) {
+  switch (mode.AsEnum()) {
+    case V8EnforcementMode::Enum::kOpen:
+      return graph::mojom::blink::EnforcementMode::kOpen;
+    case V8EnforcementMode::Enum::kAnnounced:
+      return graph::mojom::blink::EnforcementMode::kAnnounced;
+    case V8EnforcementMode::Enum::kEnforced:
+      return graph::mojom::blink::EnforcementMode::kEnforced;
+  }
+  NOTREACHED();
+}
+
+// JSON-serialise a script object to its canonical string — the verbatim caveat /
+// presentation JSON the browser stores and round-trips. Returns false when the
+// value cannot be stringified (e.g. it contains a cycle).
+bool SerializeToJson(ScriptState* script_state,
+                     const ScriptValue& value,
+                     String& out_json) {
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Value> v8_value = value.V8Value();
+  if (v8_value.IsEmpty()) {
+    out_json = "null";
+    return true;
+  }
+  v8::Local<v8::String> json;
+  if (!v8::JSON::Stringify(script_state->GetContext(), v8_value).ToLocal(&json))
+    return false;
+  out_json = ToCoreString(isolate, json);
+  return true;
+}
+
+// Parse a JSON array literal into a sequence<object>. A non-array or invalid
+// payload yields an empty sequence. |script_state|'s context MUST be in scope.
+HeapVector<ScriptValue> ParseJsonArray(ScriptState* script_state,
+                                       const String& json) {
+  HeapVector<ScriptValue> out;
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> parsed;
+  if (!v8::JSON::Parse(context, V8String(isolate, json)).ToLocal(&parsed))
+    return out;
+  if (!parsed->IsArray())
+    return out;
+  v8::Local<v8::Array> array = parsed.As<v8::Array>();
+  out.ReserveInitialCapacity(array->Length());
+  for (uint32_t i = 0; i < array->Length(); ++i) {
+    v8::Local<v8::Value> element;
+    if (array->Get(context, i).ToLocal(&element))
+      out.emplace_back(isolate, element);
+  }
+  return out;
+}
+
+// §11 GovernanceValidationResult (Mojo -> IDL dictionary). The reject fields are
+// empty strings in Mojo when the operation was allowed; leave them unset then.
+GovernanceValidationResult* ValidationResultFromMojo(
+    const graph::mojom::blink::GovernanceValidationResultPtr& result) {
+  auto* out = MakeGarbageCollected<GovernanceValidationResult>();
+  out->setAllowed(result->allowed);
+  if (!result->rejected_by.empty())
+    out->setRejectedBy(result->rejected_by);
+  if (!result->constraint_kind.empty())
+    out->setConstraintKind(result->constraint_kind);
+  if (!result->reason.empty())
+    out->setReason(result->reason);
+  if (!result->mode.empty())
+    out->setMode(result->mode);
+  return out;
+}
+
+// §11 GraphConstraint (Mojo -> IDL dictionary). Mojo carries the record as an
+// ordered vector of pairs so duplicate predicates survive.
+GraphConstraint* ConstraintFromMojo(
+    const graph::mojom::blink::GraphConstraintPtr& constraint) {
+  auto* out = MakeGarbageCollected<GraphConstraint>();
+  out->setId(constraint->id);
+  out->setKind(constraint->kind);
+  out->setScope(constraint->scope);
+  Vector<std::pair<String, String>> properties;
+  properties.ReserveInitialCapacity(constraint->properties.size());
+  for (const auto& property : constraint->properties)
+    properties.emplace_back(property->predicate, property->value);
+  out->setProperties(std::move(properties));
+  return out;
+}
+
+// §11 CapabilityInfo (Mojo -> IDL dictionary). |caveats| is a JSON array literal
+// the browser round-trips verbatim; it is re-parsed here into the sequence<object>
+// the dictionary exposes. |script_state|'s context MUST be in scope.
+CapabilityInfo* CapabilityInfoFromMojo(
+    ScriptState* script_state,
+    const graph::mojom::blink::CapabilityInfoPtr& capability) {
+  auto* out = MakeGarbageCollected<CapabilityInfo>();
+  out->setId(capability->id);
+  out->setActions(capability->actions);
+  out->setResource(capability->resource);
+  if (!capability->caveats.empty()) {
+    HeapVector<ScriptValue> caveats =
+        ParseJsonArray(script_state, capability->caveats);
+    if (!caveats.empty())
+      out->setCaveats(std::move(caveats));
+  }
+  if (capability->expires && !capability->expires->empty())
+    out->setExpires(*capability->expires);
   return out;
 }
 
@@ -480,6 +606,212 @@ ScriptPromise<IDLUndefined> Graph::dissolve(ScriptState* script_state) {
         resolver->Resolve();
       },
       WrapPersistent(resolver), WrapPersistent(this)));
+
+  return promise;
+}
+
+ScriptPromise<GovernanceValidationResult> Graph::canAddTriple(
+    ScriptState* script_state,
+    Triple* triple) {
+  auto* resolver = MakeGarbageCollected<
+      ScriptPromiseResolver<GovernanceValidationResult>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->CanAddTriple(
+      TripleToMojo(triple),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<GovernanceValidationResult>* resolver,
+             graph::mojom::blink::GovernanceValidationResultPtr result,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(ValidationResultFromMojo(result));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<GovernanceValidationResult> Graph::canPerformAction(
+    ScriptState* script_state,
+    const String& action,
+    const String& author_did,
+    const CapabilityProofInput* proof) {
+  auto* resolver = MakeGarbageCollected<
+      ScriptPromiseResolver<GovernanceValidationResult>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  // Stringify the explicit proof (if any) synchronously — the ScriptValues hold
+  // v8 handles that are only valid on this stack, before the async host call.
+  graph::mojom::blink::CapabilityProofInputPtr mojo_proof;
+  if (proof) {
+    mojo_proof = graph::mojom::blink::CapabilityProofInput::New();
+    mojo_proof->chain = proof->chain();
+    if (proof->hasPresentations()) {
+      for (const auto& presentation : proof->presentations()) {
+        String json;
+        if (SerializeToJson(script_state, presentation, json))
+          mojo_proof->presentations.push_back(json);
+      }
+    }
+  }
+
+  host_->CanPerformAction(
+      action, author_did, std::move(mojo_proof),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<GovernanceValidationResult>* resolver,
+             graph::mojom::blink::GovernanceValidationResultPtr result,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(ValidationResultFromMojo(result));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<GraphConstraint>> Graph::constraintsFor(
+    ScriptState* script_state,
+    const String& context_did) {
+  auto* resolver = MakeGarbageCollected<
+      ScriptPromiseResolver<IDLSequence<GraphConstraint>>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->ConstraintsFor(
+      context_did,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLSequence<GraphConstraint>>* resolver,
+             std::optional<Vector<graph::mojom::blink::GraphConstraintPtr>>
+                 constraints,
+             const String& error) {
+            if (!constraints || !error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            HeapVector<Member<GraphConstraint>> out;
+            out.ReserveInitialCapacity(constraints->size());
+            for (const auto& constraint : *constraints)
+              out.push_back(ConstraintFromMojo(constraint));
+            resolver->Resolve(std::move(out));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<CapabilityInfo>> Graph::myCapabilities(
+    ScriptState* script_state) {
+  auto* resolver = MakeGarbageCollected<
+      ScriptPromiseResolver<IDLSequence<CapabilityInfo>>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->MyCapabilities(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLSequence<CapabilityInfo>>* resolver,
+         std::optional<Vector<graph::mojom::blink::CapabilityInfoPtr>>
+             capabilities,
+         const String& error) {
+        if (!capabilities || !error.IsNull()) {
+          RejectWithName(resolver, error);
+          return;
+        }
+        ScriptState* ss = resolver->GetScriptState();
+        if (!ss->ContextIsValid())
+          return;
+        // The caveat sequence<object> is rebuilt from JSON, so a live v8 scope
+        // is required.
+        ScriptState::Scope scope(ss);
+        HeapVector<Member<CapabilityInfo>> out;
+        out.ReserveInitialCapacity(capabilities->size());
+        for (const auto& capability : *capabilities)
+          out.push_back(CapabilityInfoFromMojo(ss, capability));
+        resolver->Resolve(std::move(out));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<V8EnforcementMode> Graph::enforcementMode(
+    ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<V8EnforcementMode>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->GetEnforcementMode(WTF::BindOnce(
+      [](ScriptPromiseResolver<V8EnforcementMode>* resolver,
+         graph::mojom::blink::EnforcementMode mode, const String& error) {
+        if (!error.IsNull()) {
+          RejectWithName(resolver, error);
+          return;
+        }
+        resolver->Resolve(EnforcementModeToV8(mode));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::setEnforcementMode(
+    ScriptState* script_state,
+    const V8EnforcementMode& mode) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->SetEnforcementMode(
+      EnforcementModeFromV8(mode),
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
 
   return promise;
 }

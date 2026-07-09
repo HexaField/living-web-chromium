@@ -355,6 +355,17 @@ class GroupBackend {
   GraphBackend* graph() const { return graph_; }
   const std::string& last_error() const { return last_error_; }
 
+  // The group's own constitutional credential (its DID == did()): the initial-key
+  // delegate seeded into all four capability sections at groupification (§4.2).
+  // This is the constitutional signer that mints the group's root capability
+  // (Spec 04 §4.3) — its DID becomes the root invoker, so any capabilityDelegation
+  // delegate can delegate from the root (§7 / Spec 04 §8.1.5).
+  const std::string& own_credential_id() const { return group_credential_id_; }
+
+  // The delegate credential currently authoring writes / signing delegations
+  // (§8.1.5). Defaults to own_credential_id(); SetActingCredential() overrides.
+  std::string acting_credential_id() const { return ActingCredId(); }
+
   bool GetIri(std::string* out);
 
   std::optional<std::string> name() {
@@ -613,6 +624,7 @@ class GroupBackend {
   raw_ptr<GraphBackend> graph_;                  // Not owned.
   std::string did_;
   std::string acting_credential_id_;
+  std::string group_credential_id_;  // constitutional key (DID == did_)
   std::string last_error_;
 };
 
