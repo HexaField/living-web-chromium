@@ -199,6 +199,21 @@ Each spec branch documents its own normative specifics (crypto parameters, error
 behaviour, reference impl) in a section it adds here when it lands, so this file
 stays the authoritative per-spec cheat-sheet as branches merge.
 
+## Spec 01 specifics (landed)
+
+- **did:key** (§4.1): `did:key:z` + base58btc(`0xed01` ‖ 32-byte Ed25519 pubkey). Every
+  Ed25519 did:key begins `did:key:z6Mk`.
+- **Signing** (§6.4): `message = SHA-256(JCS(data) ‖ timestamp_utf8)`; Ed25519-Sign;
+  `proof = { method: "<did>#<multibase-key>", signature: multibase-base58btc, type:
+  "Ed25519Signature2020" }`. JCS (RFC 8785) makes signatures key-order-independent.
+- **signRaw** (§6.5): signs bytes verbatim (no hash/timestamp/framing), raw 64-byte sig.
+- **Locked** (§5.3.2): `sign`/`signRaw`/`signCapability` reject with `InvalidStateError`.
+- **resolve** (§7): did:key ⇒ `trustLevel: "local"`; no global resolver (§7.3).
+- `ContentProof` is `{ method, signature, type }` (`Ed25519Signature2020`, multibase
+  base58btc).
+- Authoritative reference impl: `standalone/did_key_provider.h` + `content/browser/did/`
+  (`did_key_codec`, `jcs`), verified by 30 tests in `standalone/living_web_tests.cc`.
+
 ## Gotchas
 
 - Don't add DIDCredential logic that isn't reachable — wire new methods through

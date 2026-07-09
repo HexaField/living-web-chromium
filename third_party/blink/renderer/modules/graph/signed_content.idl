@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SignedContent — result of DIDCredential.sign() / signCapability().
+// Decentralised Identity spec §6.1.
+
+[Exposed=(Window,Worker)]
+interface SignedContent {
+  readonly attribute USVString author;     // signer DID URI
+  readonly attribute DOMString timestamp;  // RFC 3339
+  [CallWith=ScriptState] readonly attribute any data;
+  readonly attribute ContentProof proof;
+};

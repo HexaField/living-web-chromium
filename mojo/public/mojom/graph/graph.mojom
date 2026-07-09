@@ -1,0 +1,82 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Mojo interface definitions for Spec 01 — Decentralised Identity.
+// Defines the IPC contract between the Blink renderer and the browser process
+// for DID credential management (navigator.credentials / DIDCredential).
+//
+// Later specs extend this module in their own branches: Spec 02 adds the
+// SemanticTriple / PersonalGraph interfaces, Spec 05 the sync surface, and so
+// on. This base introduces only the identity types.
+
+module graph.mojom;
+
+// Cryptographic proof (Spec 01 §6.1). Attached to SignedContent.
+struct ContentProof {
+  string method;     // verification method id (DID URI + fragment)
+  string signature;  // multibase(base58btc, 'z') Ed25519 signature
+  string type;       // "Ed25519Signature2020"
+};
+
+// ============================================================
+// DIDCredentialService — decentralised identity management
+// ============================================================
+
+struct DIDCredentialInfo {
+  string id;           // Credential ID
+  string did;          // did:key:... URI
+  string algorithm;    // "Ed25519"
+  string display_name;
+  string created_at;   // RFC 3339
+  bool is_locked;
+};
+
+struct SignedContent {
+  string author;       // DID URI
+  string timestamp;    // RFC 3339
+  string data_json;    // JSON-serialized signed data
+  ContentProof proof;
+};
+
+interface DIDCredentialService {
+  // Create a new DID credential (Ed25519 keypair).
+  CreateCredential(string display_name, string algorithm)
+      => (DIDCredentialInfo? credential);
+
+  // List all DID credentials.
+  ListCredentials() => (array<DIDCredentialInfo> credentials);
+
+  // Get the active (default) credential.
+  GetActiveCredential() => (DIDCredentialInfo? credential);
+
+  // Set the active credential.
+  SetActiveCredential(string credential_id) => (bool success);
+
+  // Delete a credential.
+  DeleteCredential(string credential_id) => (bool success);
+
+  // Sign data with a credential. Canonicalises |data_json| with JCS
+  // [[RFC8785]] before hashing and signing (§6.1/§6.4).
+  Sign(string credential_id, string data_json) => (SignedContent? result);
+
+  // Sign a ZCAP-LD capability document (§6.3). Rejects payloads that are not
+  // JSON objects.
+  SignCapability(string credential_id, string zcap_json)
+      => (SignedContent? result);
+
+  // Sign raw bytes verbatim (§6.5) — no canonicalisation, hashing, timestamp,
+  // or framing. Returns the raw 64-byte Ed25519 signature.
+  SignRaw(string credential_id, array<uint8> payload)
+      => (array<uint8>? signature);
+
+  // Verify signed content.
+  Verify(SignedContent content) => (bool valid);
+
+  // Lock/unlock a credential.
+  Lock(string credential_id) => (bool success);
+  Unlock(string credential_id) => (bool success);
+
+  // Resolve a did:key to a DID Document.
+  ResolveDID(string did) => (string? did_document_json);
+};

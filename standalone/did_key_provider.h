@@ -1,0 +1,273 @@
+// DID Key Provider - standalone implementation.
+//
+// Implements the Decentralised Identity Web Platform specification (Spec 01)
+// for the did:key method: correct multicodec + base58btc did:key encoding,
+// JCS-canonicalised signing, multibase signatures, signRaw, and algorithmic
+// DID resolution. The cryptographic encoding and canonicalisation live in the
+// shared, Chromium-independent modules content/browser/did/did_key_codec.* and
+// content/browser/did/jcs.* so this harness and the browser backend never
+// diverge.
+#ifndef LIVING_WEB_DID_KEY_PROVIDER_H_
+#define LIVING_WEB_DID_KEY_PROVIDER_H_
+
+#include "types.h"
+#include "base_shim.h"
+#include "crypto_sha2.h"
+#include "third_party/ed25519/ed25519.h"
+#include "content/browser/did/did_key_codec.h"
+#include "content/browser/did/jcs.h"
+
+#include <ctime>
+#include <iomanip>
+#include <memory>
+#include <sstream>
+#include <unordered_map>
+
+namespace living_web {
+
+class DIDKeyProvider {
+ public:
+  DIDKeyProvider() = default;
+  ~DIDKeyProvider() = default;
+
+  DIDKeyProvider(const DIDKeyProvider&) = delete;
+  DIDKeyProvider& operator=(const DIDKeyProvider&) = delete;
+
+  std::unique_ptr<DIDKeyPair> CreateKey(const std::string& display_name) {
+    auto key = std::make_unique<DIDKeyPair>();
+    key->id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+    key->display_name = display_name;
+    key->algorithm = "Ed25519";
+    key->created_at = CurrentTimestamp();
+    key->is_locked = false;
+
+    key->public_key.resize(32);
+    key->private_key.resize(64);
+    ed25519_create_keypair(key->public_key.data(), key->private_key.data());
+
+    // did:key:z || base58btc(0xed01 || pub). public_key is always 32 bytes.
+    key->did = *did_key::DeriveDidKeyEd25519(key->public_key);
+
+    std::string id = key->id;
+    auto result = std::make_unique<DIDKeyPair>(*key);
+    credentials_[id] = std::move(key);
+
+    if (active_credential_id_.empty())
+      active_credential_id_ = id;
+
+    return result;
+  }
+
+  std::vector<const DIDKeyPair*> ListCredentials() const {
+    std::vector<const DIDKeyPair*> result;
+    for (const auto& [id, key] : credentials_)
+      result.push_back(key.get());
+    return result;
+  }
+
+  const DIDKeyPair* GetCredential(const std::string& id) const {
+    auto it = credentials_.find(id);
+    return it != credentials_.end() ? it->second.get() : nullptr;
+  }
+
+  bool DeleteCredential(const std::string& id) {
+    auto it = credentials_.find(id);
+    if (it == credentials_.end()) return false;
+    credentials_.erase(it);
+    if (active_credential_id_ == id) active_credential_id_.clear();
+    return true;
+  }
+
+  const DIDKeyPair* GetActiveCredential() const {
+    if (active_credential_id_.empty()) return nullptr;
+    return GetCredential(active_credential_id_);
+  }
+
+  bool SetActiveCredential(const std::string& id) {
+    if (credentials_.find(id) == credentials_.end()) return false;
+    active_credential_id_ = id;
+    return true;
+  }
+
+  // sign(data) per §6.1/§6.4. Canonicalises data with JCS [[RFC8785]], hashes
+  // SHA-256(canonical || timestamp), signs with Ed25519, and returns a
+  // multibase-encoded signature. Returns nullopt if the credential is unknown
+  // or locked (the browser maps the locked case to an "InvalidStateError"
+  // DOMException per §5.3.2), or if |data_json| is not well-formed JSON.
+  std::optional<SignedContentResult> Sign(const std::string& credential_id,
+                                           const std::string& data_json) {
+    auto it = credentials_.find(credential_id);
+    if (it == credentials_.end()) return std::nullopt;
+
+    const auto& key = it->second;
+    if (key->is_locked) return std::nullopt;
+
+    auto canonical = jcs::Canonicalize(data_json);
+    if (!canonical) return std::nullopt;
+
+    std::string timestamp = CurrentTimestamp();
+    std::string message_input = *canonical + timestamp;
+    std::string hash = crypto::SHA256HashString(message_input);
+
+    std::vector<uint8_t> signature(64);
+    ed25519_sign(signature.data(),
+                 reinterpret_cast<const uint8_t*>(hash.data()),
+                 hash.size(), key->private_key.data());
+
+    // §6.4 step 5: proof = { method: <verificationMethodId>,
+    // signature: multibase(sig), type: "Ed25519Signature2020" }. For did:key
+    // the verification method id is the DID plus the key's multibase fragment.
+    SignedContentResult result;
+    result.author = key->did;
+    result.timestamp = timestamp;
+    result.data_json = data_json;
+    result.proof_method =
+        key->did + "#" + *did_key::Ed25519PublicKeyMultibase(key->public_key);
+    result.proof_sig = did_key::MultibaseEncode(signature);
+    result.proof_type = "Ed25519Signature2020";
+    return result;
+  }
+
+  // verify() per §6.2. Resolves the author DID algorithmically, recomputes the
+  // canonical hash, and checks the Ed25519 signature. No user gesture/prompt.
+  bool Verify(const std::string& author_did,
+              const std::string& data_json,
+              const std::string& timestamp,
+              const std::string& signature_multibase) {
+    auto public_key = did_key::ParseDidKeyEd25519(author_did);
+    if (!public_key || public_key->size() != 32) return false;
+
+    auto canonical = jcs::Canonicalize(data_json);
+    if (!canonical) return false;
+
+    std::string message_input = *canonical + timestamp;
+    std::string hash = crypto::SHA256HashString(message_input);
+
+    auto signature = did_key::MultibaseDecode(signature_multibase);
+    if (!signature || signature->size() != 64) return false;
+
+    return ed25519_verify(
+        signature->data(),
+        reinterpret_cast<const uint8_t*>(hash.data()),
+        hash.size(), public_key->data()) == 1;
+  }
+
+  // signCapability(zcap) per §6.3. The identity layer canonicalises and signs
+  // the capability document; full ZCAP-LD structural validation and the
+  // delegator-authorisation rule are defined by the Capability Framework
+  // (Spec 04). Returns nullopt if |zcap_json| is not a JSON object.
+  std::optional<SignedContentResult> SignCapability(
+      const std::string& credential_id, const std::string& zcap_json) {
+    auto canonical = jcs::Canonicalize(zcap_json);
+    if (!canonical || canonical->empty() || (*canonical)[0] != '{')
+      return std::nullopt;
+    return Sign(credential_id, zcap_json);
+  }
+
+  // signRaw(payload) per §6.5. Signs the bytes verbatim — no canonicalisation,
+  // hashing, timestamp, or framing — and returns the raw 64-byte Ed25519
+  // signature. Returns nullopt if the credential is unknown or locked.
+  std::optional<std::vector<uint8_t>> SignRaw(
+      const std::string& credential_id,
+      const std::vector<uint8_t>& payload) {
+    auto it = credentials_.find(credential_id);
+    if (it == credentials_.end()) return std::nullopt;
+    const auto& key = it->second;
+    if (key->is_locked) return std::nullopt;
+
+    std::vector<uint8_t> signature(64);
+    ed25519_sign(signature.data(), payload.data(), payload.size(),
+                 key->private_key.data());
+    return signature;
+  }
+
+  // resolve(did) per §7. did:key resolution is algorithmic and always yields
+  // trustLevel "local".
+  std::string ResolveDID(const std::string& did) const {
+    auto public_key = did_key::ParseDidKeyEd25519(did);
+    if (!public_key) return "";
+
+    std::string pk_multibase = *did_key::Ed25519PublicKeyMultibase(*public_key);
+
+    return R"({
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://w3id.org/security/suites/ed25519-2020/v1"
+  ],
+  "id": ")" + did + R"(",
+  "verificationMethod": [{
+    "id": ")" + did + "#" + pk_multibase + R"(",
+    "type": "Ed25519VerificationKey2020",
+    "controller": ")" + did + R"(",
+    "publicKeyMultibase": ")" + pk_multibase + R"("
+  }],
+  "authentication": [")" + did + "#" + pk_multibase + R"("],
+  "assertionMethod": [")" + did + "#" + pk_multibase + R"("],
+  "capabilityDelegation": [")" + did + "#" + pk_multibase + R"("],
+  "capabilityInvocation": [")" + did + "#" + pk_multibase + R"("],
+  "trustLevel": "local"
+})";
+  }
+
+  bool Lock(const std::string& credential_id) {
+    auto it = credentials_.find(credential_id);
+    if (it == credentials_.end()) return false;
+    it->second->is_locked = true;
+    return true;
+  }
+
+  bool Unlock(const std::string& credential_id) {
+    auto it = credentials_.find(credential_id);
+    if (it == credentials_.end()) return false;
+    it->second->is_locked = false;
+    return true;
+  }
+
+  bool IsLocked(const std::string& credential_id) const {
+    auto it = credentials_.find(credential_id);
+    return it != credentials_.end() && it->second->is_locked;
+  }
+
+  // Public hex helpers retained for tests / interop.
+  static std::string HexEncode(const std::vector<uint8_t>& bytes) {
+    static const char hex_chars[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(bytes.size() * 2);
+    for (uint8_t b : bytes) {
+      result += hex_chars[b >> 4];
+      result += hex_chars[b & 0x0f];
+    }
+    return result;
+  }
+
+  static std::vector<uint8_t> HexDecode(const std::string& hex) {
+    std::vector<uint8_t> result;
+    result.reserve(hex.size() / 2);
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+      auto from_hex = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+        return 0;
+      };
+      result.push_back((from_hex(hex[i]) << 4) | from_hex(hex[i + 1]));
+    }
+    return result;
+  }
+
+ private:
+  std::string CurrentTimestamp() const {
+    auto now = std::time(nullptr);
+    auto* tm = std::gmtime(&now);
+    std::ostringstream ss;
+    ss << std::put_time(tm, "%Y-%m-%dT%H:%M:%SZ");
+    return ss.str();
+  }
+
+  std::unordered_map<std::string, std::unique_ptr<DIDKeyPair>> credentials_;
+  std::string active_credential_id_;
+};
+
+}  // namespace living_web
+
+#endif  // LIVING_WEB_DID_KEY_PROVIDER_H_
