@@ -1,0 +1,40 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Graph — a named, content-addressed set of RDF 1.2 triples. Personal Linked
+// Data Graphs spec §3.3.
+
+// §3.3 / §4.2: querySparql resolves with a SPARQL 1.2 result. The spec leaves
+// the shape opaque (SPARQL 1.1 Results JSON for SELECT/ASK; N-Triples for
+// CONSTRUCT/DESCRIBE), so it is surfaced as `any`.
+typedef any SparqlResult;
+
+[Exposed=(Window,Worker), SecureContext]
+interface Graph : EventTarget {
+  // Stable internal identifier (URN), unchanged for the graph's lifetime.
+  readonly attribute USVString id;
+  // Current snapshot IRI — graph://<content-hash> of the current triple set.
+  readonly attribute USVString iri;
+  // Optional DID identifying the graph across all its states. Null when none.
+  readonly attribute USVString? did;
+  readonly attribute DOMString? displayName;
+  // Provenance tag for this graph's local instance — see §7.4.
+  readonly attribute GraphTrustLevel trustLevel;
+
+  // Triple operations — §4.2.
+  [CallWith=ScriptState, NewObject] Promise<Triple> addTriple(Triple triple);
+  [CallWith=ScriptState, NewObject] Promise<sequence<Triple>> addTriples(sequence<Triple> triples);
+  [CallWith=ScriptState, NewObject] Promise<boolean> removeTriple(Triple triple);
+  [CallWith=ScriptState, NewObject] Promise<sequence<Triple>> queryTriples(TripleQuery query);
+  [CallWith=ScriptState, NewObject] Promise<SparqlResult> querySparql(USVString sparql, optional SparqlQueryOptions options = {});
+  [CallWith=ScriptState, NewObject] Promise<sequence<Triple>> snapshot();
+  [CallWith=ScriptState, NewObject] Promise<sequence<Reifier>> provenance(Triple triple);
+  [CallWith=ScriptState, NewObject] Promise<GraphSnapshot> getAsSnapshot(optional GraphSnapshotOptions options = {});
+  [CallWith=ScriptState, NewObject] Promise<undefined> dissolve();
+
+  attribute EventHandler ontripleadded;
+  attribute EventHandler ontripleremoved;
+};
+
+enum GraphTrustLevel { "local", "external" };

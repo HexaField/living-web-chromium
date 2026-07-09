@@ -80,3 +80,181 @@ interface DIDCredentialService {
   // Resolve a did:key to a DID Document.
   ResolveDID(string did) => (string? did_document_json);
 };
+
+// ============================================================
+// Spec 02 — Personal Linked Data Graphs
+//
+// The renderer-facing navigator.graph surface (blink PersonalGraphManager /
+// PersonalGraph) is backed by these browser-process interfaces. The browser
+// owns the Oxigraph-backed graph store; the renderer holds thin wrappers. All
+// cryptographic material (reifier signatures, snapshot proofs) is produced in
+// the browser via the Spec 01 DIDCredentialService identity, never in the
+// renderer.
+// ============================================================
+
+// §3.3 Graph.trustLevel. Later specs MAY extend this enum.
+enum GraphTrustLevel {
+  kLocal,
+  kExternal,
+};
+
+// §5.3 SnapshotFormat. Later specs MAY extend this enum.
+enum SnapshotFormat {
+  kNQuadsCanonical,
+  kNQuads,
+  kTurtle,
+  kJsonLd,
+};
+
+// §5.3 GraphSignBy.
+enum GraphSignBy {
+  kAgent,
+  kGraph,
+  kBoth,
+};
+
+// §3.1 LiteralValue.
+struct LiteralValue {
+  string lexical;
+  string datatype;      // XSD URI; "…#string" when unset by the caller
+  string? language;     // BCP 47; only meaningful for rdf:langString
+};
+
+// §3.1 Triple.object — an IRI, a blank node (identifier beginning "_:"), or a
+// literal. |literal| takes precedence when present; otherwise |iri_or_bnode|
+// carries the IRI or the "_:"-prefixed blank-node label.
+union TripleObject {
+  string iri_or_bnode;
+  LiteralValue literal;
+};
+
+// §3.1 Triple.
+struct Triple {
+  string subject;       // IRI or "_:"-prefixed blank node
+  string predicate;     // IRI (REQUIRED)
+  TripleObject object;
+};
+
+// §3.7 Reifier — the per-triple provenance record.
+struct Reifier {
+  string id;            // blank-node identifier in the current graph state
+  Triple triple;        // the reified data triple
+  string author;        // prov://author (a DID URI)
+  string timestamp;     // prov://timestamp (RFC 3339)
+  string method;        // prov://method (verification method URI)
+  string signature;     // prov://signature (multibase-encoded)
+};
+
+// §3.5 TripleQuery. Every supplied field combines with logical AND.
+struct TripleQuery {
+  string? subject;
+  string? predicate;
+  TripleObject? object;
+  string? author;       // matches reifier prov://author
+  string? from_date;    // RFC 3339; matches prov://timestamp >= from_date
+  string? until_date;   // RFC 3339; matches prov://timestamp <  until_date
+  uint64? offset;
+  uint64? limit;
+};
+
+// §5.3 SnapshotProof.
+struct SnapshotProof {
+  string role;          // "agent" or "graph"
+  string author;        // signing DID
+  string method;        // verification method URI
+  string signature;     // multibase-encoded
+};
+
+// §5.3 GraphSnapshot.
+struct GraphSnapshot {
+  string graph_iri;
+  string? graph_did;
+  SnapshotFormat format;
+  string timestamp;
+  string data;          // serialised triples (data + reifier triples)
+  array<SnapshotProof> proofs;
+};
+
+// The attributes needed to construct a renderer-side PersonalGraph (§3.3). The
+// browser returns one when a graph is created or materialised, alongside the
+// bound PersonalGraphHost.
+struct GraphInfo {
+  string id;            // stable internal URN (urn:graph:<uuid>)
+  string iri;           // current graph://<content-hash>
+  string? did;
+  string? display_name;
+  GraphTrustLevel trust_level;
+};
+
+// The outcome of a SPARQL 1.2 evaluation (§4.2 querySparql). |kind|: 0
+// Solutions (SELECT), 1 Boolean (ASK), 2 Graph (CONSTRUCT/DESCRIBE). |payload|
+// is SPARQL 1.1 JSON Results, or RDF 1.2 N-Triples for graph results.
+struct SparqlQueryResult {
+  bool ok;
+  string error;         // DOMException name when !ok (e.g. "TimeoutError")
+  uint8 kind;
+  string payload;
+};
+
+// PersonalGraphHost — the browser-process host for a single graph (§4/§5/§7).
+// One receiver is bound per Graph handed to a renderer; the browser owns the
+// underlying Oxigraph store. Every method that can fail returns a DOMException
+// name in |error| (null on success); operations on a dissolved graph return
+// "InvalidStateError".
+interface PersonalGraphHost {
+  // §5.2 the current content-address IRI.
+  GetIri() => (string? iri, string? error);
+
+  // §4.2 mutation. Each successful ack carries the post-mutation |iri| (§4.2
+  // step 6 / §5.2) so the renderer's Graph.iri is current the moment the promise
+  // resolves; |iri| is null on failure (|error| set) or if the IRI could not be
+  // recomputed. Cross-realm observers instead refresh via the pushed events.
+  AddTriple(Triple triple) => (Triple? added, string? iri, string? error);
+  AddTriples(array<Triple> triples)
+      => (array<Triple>? added, string? iri, string? error);
+  RemoveTriple(Triple triple) => (bool removed, string? iri, string? error);
+
+  // §4.2 / §7.2 read.
+  QueryTriples(TripleQuery query) => (array<Triple>? triples, string? error);
+  Snapshot() => (array<Triple>? triples, string? error);
+  Provenance(Triple triple) => (array<Reifier>? reifiers, string? error);
+  // |named_graph_ids| are internal ids of sibling graphs to include as named
+  // graphs in the dataset (§7.2); the browser resolves them against the graphs
+  // it owns. |timeout_ms| null means no timeout.
+  QuerySparql(string sparql,
+              array<string> named_graph_ids,
+              uint64? timeout_ms) => (SparqlQueryResult result);
+
+  // §5.4 export.
+  GetAsSnapshot(SnapshotFormat format, GraphSignBy sign_by)
+      => (GraphSnapshot? snapshot, string? error);
+
+  // §4.3 dissolve (idempotent).
+  Dissolve() => ();
+
+  // §4.2/§4.4 event delivery — the browser pushes tripleadded/tripleremoved.
+  Subscribe(pending_remote<PersonalGraphClient> client);
+};
+
+// PersonalGraphClient — the renderer sink for graph events (§4.2, §4.4). The
+// browser invokes these in commit order.
+interface PersonalGraphClient {
+  OnTripleAdded(Triple triple);
+  OnTripleRemoved(Triple triple);
+};
+
+// PersonalGraphManager — the browser-process host for navigator.graph (§3.4,
+// §4.1, §5.5). Per-realm; the renderer creates the PersonalGraphHost pipe and
+// passes the receiver, which the browser binds to the new/materialised graph.
+interface PersonalGraphManager {
+  // §4.1 create a fresh, empty, local graph.
+  Create(string? display_name,
+         pending_receiver<PersonalGraphHost> receiver) => (GraphInfo? info);
+
+  // §5.5 verify and materialise a graph from a snapshot. On failure |info| is
+  // null and |error| is the DOMException name.
+  FromSnapshot(GraphSnapshot snapshot,
+               GraphTrustLevel trust,
+               pending_receiver<PersonalGraphHost> receiver)
+      => (GraphInfo? info, string? error);
+};

@@ -1,0 +1,24 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GraphSnapshot — a transportable, self-verifying rendering of a graph's full
+// triple set with cryptographic proofs. Personal Linked Data Graphs spec §5.3.
+
+enum SnapshotFormat { "nquads-canonical", "nquads", "turtle", "jsonld" };
+enum GraphSignBy    { "agent", "graph", "both" };
+
+[Exposed=(Window,Worker)]
+interface GraphSnapshot {
+  readonly attribute USVString graphIri;
+  readonly attribute USVString? graphDid;
+  readonly attribute SnapshotFormat format;
+  readonly attribute DOMString timestamp;
+  readonly attribute DOMString data;              // serialised triples
+  readonly attribute FrozenArray<SnapshotProof> proofs;
+};
+
+dictionary GraphSnapshotOptions {
+  SnapshotFormat format = "nquads-canonical";
+  GraphSignBy   signBy = "agent";
+};

@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SnapshotProof — a cryptographic proof over a GraphSnapshot. Personal Linked
+// Data Graphs spec §5.3.
+
+[Exposed=(Window,Worker)]
+interface SnapshotProof {
+  readonly attribute DOMString role;       // "agent" or "graph"
+  readonly attribute USVString author;     // signing DID
+  readonly attribute USVString method;     // verification method URI
+  readonly attribute DOMString signature;  // multibase-encoded
+};

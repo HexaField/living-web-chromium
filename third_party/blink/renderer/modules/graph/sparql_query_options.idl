@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SparqlQueryOptions — options for Graph.querySparql(). Personal Linked Data
+// Graphs spec §3.6.
+
+dictionary SparqlQueryOptions {
+  // Other Graphs to include as named graphs in the SPARQL dataset. Each is
+  // addressable in the query via GRAPH <graph.iri> { ... }.
+  sequence<Graph> namedGraphs;
+  // Query timeout in milliseconds. After this duration the query MUST reject
+  // with "TimeoutError".
+  unsigned long? timeout;
+};

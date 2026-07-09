@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Personal Linked Data Graphs (Spec 02) — navigator.graph — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 02 — Personal Linked Data Graphs
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md
+//
+// The substrate is exposed on navigator.graph (§3.4). A `Graph` (§3.3) is a
+// content-addressed set of RDF 1.2 triples whose `iri` is graph://<sha-256 of
+// the rdfc-1.0 canonical form>. These tests mirror the spec's own "Examples"
+// (§12): create → addTriple → provenance → getAsSnapshot/fromSnapshot round
+// trip → dissolve. They use the constructable `Triple` (§3.1) and
+// `LiteralValue` (§3.1) IDL interfaces exactly as the spec defines them.
+// ==========================================================================
+
+// The empty-graph IRI is an invariant (§3.3, §4.1): every freshly-created empty
+// graph shares it. It is graph:// + SHA-256("") — the canonical form of the
+// empty triple set is the empty byte string.
+const EMPTY_GRAPH_IRI =
+  'graph://e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+// §4.1 create() — a fresh, empty, local graph at the well-known empty IRI.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'My Calendar' });
+  assert_true(graph instanceof Graph, 'create() MUST return a Graph');
+  assert_true(graph instanceof EventTarget, 'Graph MUST extend EventTarget');
+  assert_equals(graph.iri, EMPTY_GRAPH_IRI,
+    'a fresh graph MUST be at the well-known empty-graph IRI');
+  assert_equals(graph.did, null, 'did MUST be null until one is attached');
+  assert_equals(graph.trustLevel, 'local',
+    'a created graph MUST have trustLevel "local"');
+  assert_equals(graph.displayName, 'My Calendar', 'MUST store displayName');
+  assert_true(graph.id.startsWith('urn:graph:'),
+    'the stable id MUST be a urn:graph: URN');
+  await graph.dissolve();
+}, '§4.1 create() MUST yield an empty "local" graph at the empty-graph IRI');
+
+// §4.2 addTriple() — signs, reifies, advances the IRI, fires `tripleadded`.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'Calendar' });
+  t.add_cleanup(() => graph.dissolve());
+  const iri0 = graph.iri;
+  assert_equals(iri0, EMPTY_GRAPH_IRI);
+
+  const triple = new Triple(
+    'urn:event:1',
+    'https://schema.org/name',
+    new LiteralValue('Coffee with Alice'),
+  );
+
+  // §4.2 step 7: exactly one `tripleadded` fires, carrying the data triple.
+  const fired = new Promise(resolve => {
+    graph.addEventListener('tripleadded', resolve, { once: true });
+  });
+
+  const returned = await graph.addTriple(triple);
+  assert_equals(returned.subject, 'urn:event:1',
+    'addTriple() MUST resolve with the written data triple');
+
+  const event = await fired;
+  assert_equals(event.triple.subject, 'urn:event:1',
+    'the tripleadded event MUST carry the data triple');
+
+  assert_not_equals(graph.iri, iri0, 'the IRI MUST advance after a write');
+  assert_true(graph.iri.startsWith('graph://'),
+    'the IRI MUST remain a graph:// content address');
+}, '§4.2 addTriple() MUST advance the IRI and fire `tripleadded`');
+
+// §4.2 queryTriples() — returns the data triple, never its reifier triples.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create();
+  t.add_cleanup(() => graph.dissolve());
+  await graph.addTriple(new Triple(
+    'urn:event:1', 'urn:p:name', new LiteralValue('Alice')));
+
+  const results = await graph.queryTriples({ subject: 'urn:event:1' });
+  assert_equals(results.length, 1,
+    'queryTriples() MUST return exactly the matching data triple');
+  const [triple] = results;
+  assert_equals(triple.subject, 'urn:event:1');
+  assert_equals(triple.predicate, 'urn:p:name');
+  assert_true(triple.object instanceof LiteralValue,
+    'the object MUST be a LiteralValue');
+  assert_equals(triple.object.lexicalValue, 'Alice');
+  // §3.5: reifier triples (prov://*, rdf:reifies) MUST NOT appear here.
+  assert_equals(triple.predicate.indexOf('prov://'), -1,
+    'queryTriples() MUST NOT return reifier triples');
+}, '§4.2 queryTriples() MUST return the data triple, not reifier triples');
+
+// §4.2 / §3.2 provenance() — one reifier with author/timestamp/method/signature.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create();
+  t.add_cleanup(() => graph.dissolve());
+  const triple = new Triple(
+    'urn:event:1', 'urn:p:name', new LiteralValue('Alice'));
+  await graph.addTriple(triple);
+
+  const reifiers = await graph.provenance(triple);
+  assert_equals(reifiers.length, 1,
+    'a triple accepted by addTriple() MUST carry exactly one reifier (§3.2.2)');
+  const [reifier] = reifiers;
+  assert_true(reifier.author.startsWith('did:key:z'),
+    'prov://author MUST be a did:key DID');
+  assert_true(reifier.timestamp.length > 0,
+    'prov://timestamp MUST be an RFC 3339 string');
+  assert_true(reifier.method.startsWith(reifier.author + '#'),
+    'prov://method MUST be a verification method of the author DID');
+  assert_true(reifier.signature.startsWith('z'),
+    'prov://signature MUST be multibase base58btc (z-prefixed)');
+}, '§4.2 provenance() MUST return one Reifier with full §3.2 metadata');
+
+// §5.4/§5.5 getAsSnapshot → fromSnapshot — canonical round trip preserves the IRI.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'Source' });
+  t.add_cleanup(() => graph.dissolve());
+  await graph.addTriple(new Triple(
+    'urn:event:1', 'urn:p:name', new LiteralValue('Alice')));
+  const sourceIri = graph.iri;
+
+  const snapshot = await graph.getAsSnapshot({ signBy: 'agent' });
+  assert_equals(snapshot.format, 'nquads-canonical',
+    'the default snapshot format MUST be nquads-canonical (§5.3)');
+  assert_equals(snapshot.graphIri, sourceIri,
+    'snapshot.graphIri MUST equal the graph IRI at snapshot time');
+  assert_true(snapshot.proofs.length >= 1,
+    'an agent-signed snapshot MUST carry at least one proof');
+  assert_equals(snapshot.proofs[0].role, 'agent',
+    'signBy "agent" MUST produce an agent-role proof (§5.4)');
+
+  const mounted = await navigator.graph.fromSnapshot(snapshot);
+  t.add_cleanup(() => mounted.dissolve());
+  assert_equals(mounted.iri, sourceIri,
+    'fromSnapshot() MUST materialise a graph with the same IRI (round-trip)');
+  assert_equals(mounted.trustLevel, 'external',
+    'a materialised graph MUST default to trustLevel "external" (§5.5)');
+
+  const restored = await mounted.queryTriples({ subject: 'urn:event:1' });
+  assert_equals(restored.length, 1, 'the data triple MUST survive the round-trip');
+  assert_equals(restored[0].object.lexicalValue, 'Alice');
+}, '§5.4/§5.5 getAsSnapshot() → fromSnapshot() MUST round-trip the IRI');
+
+// §4.3 dissolve() — terminal; subsequent operations reject InvalidStateError.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create();
+  await graph.addTriple(new Triple(
+    'urn:s', 'urn:p', new LiteralValue('v')));
+
+  const result = await graph.dissolve();
+  assert_equals(result, undefined, 'dissolve() MUST resolve with undefined');
+
+  await promise_rejects_dom(t, 'InvalidStateError',
+    graph.addTriple(new Triple('urn:s2', 'urn:p', new LiteralValue('v'))),
+    'addTriple() after dissolve() MUST reject with InvalidStateError');
+
+  // §4.3: dissolve() itself is idempotent and still resolves.
+  await graph.dissolve();
+}, '§4.3 dissolve() then addTriple() MUST reject with InvalidStateError');
+</script>

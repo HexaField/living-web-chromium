@@ -19,6 +19,12 @@
 #include "content/browser/did/jcs.h"
 #include "third_party/ed25519/ed25519.h"
 
+// Spec 02 — Personal Linked Data Graphs.
+#include "graph_provider.h"
+#include "content/browser/graph/rdf_serialization.h"
+#include "content/browser/graph/oxigraph_store.h"
+#include "content/browser/graph/sparql_results.h"
+
 using namespace living_web;
 
 // ============================================================
@@ -446,6 +452,546 @@ TEST(DID_SignCapability) {
   // Non-object JSON is rejected at the identity layer.
   EXPECT_FALSE(provider.SignCapability(key->id, "[1,2,3]").has_value());
   EXPECT_FALSE(provider.SignCapability(key->id, "5").has_value());
+}
+
+// ============================================================
+// Spec 02 — Personal Linked Data Graphs
+// ============================================================
+
+namespace {
+
+// The IRI of the canonicalised empty triple set: graph:// + SHA-256("").
+constexpr char kEmptyGraphIri[] =
+    "graph://e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+Triple MakeLit(const std::string& s,
+               const std::string& p,
+               const std::string& lex) {
+  Triple t;
+  t.subject = s;
+  t.predicate = p;
+  LiteralValue lv;
+  lv.lexical = lex;
+  t.object = ObjectTerm::Literal(lv);
+  return t;
+}
+
+Triple MakeIri(const std::string& s,
+               const std::string& p,
+               const std::string& iri) {
+  Triple t;
+  t.subject = s;
+  t.predicate = p;
+  t.object = ObjectTerm::Iri(iri);
+  return t;
+}
+
+std::string HexOf(const std::string& raw) {
+  return DIDKeyProvider::HexEncode(
+      std::vector<uint8_t>(raw.begin(), raw.end()));
+}
+
+}  // namespace
+
+// ---- content hash foundation (§5.2) ----
+
+TEST(Graph_EmptyIriIsWellKnown) {
+  std::string iri, err;
+  EXPECT_TRUE(OxigraphStore::GraphIri("", &iri, &err));
+  EXPECT_EQ(iri, kEmptyGraphIri);
+}
+
+TEST(Graph_ContentHashIsDeterministic) {
+  const std::string doc = "<urn:s> <urn:p> \"v\" .\n";
+  std::string a, b, err;
+  EXPECT_TRUE(OxigraphStore::GraphIri(doc, &a, &err));
+  EXPECT_TRUE(OxigraphStore::GraphIri(doc, &b, &err));
+  EXPECT_EQ(a, b);
+  EXPECT_NE(a, std::string(kEmptyGraphIri));
+}
+
+// ---- create (§4.1) ----
+
+TEST(Graph_CreateIsEmptyLocalNoDid) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create("My Calendar");
+  EXPECT_EQ(g->id().substr(0, 10), "urn:graph:");
+  EXPECT_FALSE(g->did().has_value());
+  EXPECT_TRUE(g->trust_level() == GraphTrustLevel::kLocal);
+  EXPECT_TRUE(g->display_name().has_value());
+  EXPECT_EQ(*g->display_name(), "My Calendar");
+  std::string iri;
+  EXPECT_TRUE(g->GetIri(&iri));
+  EXPECT_EQ(iri, kEmptyGraphIri);
+}
+
+// ---- addTriple (§4.2) ----
+
+TEST(Graph_AddTripleAdvancesIriAndFires) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  std::string iri0;
+  EXPECT_TRUE(g->GetIri(&iri0));
+
+  int fired = 0;
+  g->set_on_triple_added([&](const Triple&) { fired++; });
+
+  Triple out;
+  EXPECT_TRUE(g->AddTriple(
+      MakeLit("urn:event:1", "https://schema.org/name", "Coffee with Alice"),
+      &out));
+  EXPECT_EQ(fired, 1);
+  EXPECT_EQ(out.subject, "urn:event:1");
+
+  std::string iri1;
+  EXPECT_TRUE(g->GetIri(&iri1));
+  EXPECT_NE(iri0, iri1);
+}
+
+TEST(Graph_AddTripleRequiresActiveCredential) {
+  DIDKeyProvider provider;  // no key created -> no active credential
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_FALSE(g->AddTriple(MakeLit("urn:s", "urn:p", "v")));
+  EXPECT_EQ(g->last_error(), "InvalidStateError");
+}
+
+TEST(Graph_QueryTriplesReturnsDataNotReifiers) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:event:1", "urn:p:name", "Alice")));
+
+  std::vector<Triple> got;
+  TripleQuery q;
+  q.subject = std::string("urn:event:1");
+  EXPECT_TRUE(g->QueryTriples(q, &got));
+  EXPECT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].subject, "urn:event:1");
+  EXPECT_EQ(got[0].predicate, "urn:p:name");
+  EXPECT_TRUE(got[0].object.is_literal());
+  EXPECT_EQ(got[0].object.literal->lexical, "Alice");
+}
+
+TEST(Graph_QueryTriplesOrderingAndFilters) {
+  DIDKeyProvider provider;
+  auto key = provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  // Equal timestamps -> tie broken by subject ascending.
+  EXPECT_TRUE(g->AddTriples({MakeLit("urn:c", "urn:p", "3"),
+                             MakeLit("urn:a", "urn:p", "1"),
+                             MakeLit("urn:b", "urn:p", "2")}));
+
+  std::vector<Triple> got;
+  EXPECT_TRUE(g->QueryTriples(TripleQuery{}, &got));
+  EXPECT_EQ(got.size(), 3u);
+  EXPECT_EQ(got[0].subject, "urn:a");
+  EXPECT_EQ(got[1].subject, "urn:b");
+  EXPECT_EQ(got[2].subject, "urn:c");
+
+  // author filter: our key matches all; a foreign DID matches none.
+  TripleQuery qa;
+  qa.author = key->did;
+  EXPECT_TRUE(g->QueryTriples(qa, &got));
+  EXPECT_EQ(got.size(), 3u);
+  TripleQuery qf;
+  qf.author = std::string("did:key:z6MkFOREIGN");
+  EXPECT_TRUE(g->QueryTriples(qf, &got));
+  EXPECT_EQ(got.size(), 0u);
+
+  // date window.
+  TripleQuery qfrom;
+  qfrom.from_date = std::string("2000-01-01T00:00:00Z");
+  EXPECT_TRUE(g->QueryTriples(qfrom, &got));
+  EXPECT_EQ(got.size(), 3u);
+  TripleQuery quntil;
+  quntil.until_date = std::string("2000-01-01T00:00:00Z");
+  EXPECT_TRUE(g->QueryTriples(quntil, &got));
+  EXPECT_EQ(got.size(), 0u);
+
+  // limit / offset.
+  TripleQuery qlim;
+  qlim.limit = 2u;
+  EXPECT_TRUE(g->QueryTriples(qlim, &got));
+  EXPECT_EQ(got.size(), 2u);
+  TripleQuery qoff;
+  qoff.offset = 1u;
+  qoff.limit = 2u;
+  EXPECT_TRUE(g->QueryTriples(qoff, &got));
+  EXPECT_EQ(got.size(), 2u);
+  EXPECT_EQ(got[0].subject, "urn:b");
+}
+
+// ---- provenance (§4.2, §3.2.1) ----
+
+TEST(Graph_ProvenanceSignatureVerifies) {
+  DIDKeyProvider provider;
+  auto key = provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  Triple t = MakeLit("urn:event:1", "urn:p:name", "Alice");
+  EXPECT_TRUE(g->AddTriple(t));
+
+  std::vector<Reifier> reifiers;
+  EXPECT_TRUE(g->Provenance(t, &reifiers));
+  EXPECT_EQ(reifiers.size(), 1u);
+  const Reifier& r = reifiers[0];
+  EXPECT_EQ(r.author, key->did);
+  EXPECT_EQ(r.method, key->did + "#" +
+                          *did_key::Ed25519PublicKeyMultibase(key->public_key));
+
+  // Recompute the §3.2.1 payload and verify the stored signature end-to-end.
+  // graphIdentifier is the graph id (no DID attached).
+  std::string preimage = BuildSignaturePreimage(t, r.timestamp, g->id());
+  std::string payload = crypto::SHA256HashString(preimage);
+  auto pub = did_key::ParseDidKeyEd25519(r.author);
+  auto sig = did_key::MultibaseDecode(r.signature);
+  EXPECT_TRUE(pub.has_value());
+  EXPECT_TRUE(sig.has_value());
+  EXPECT_EQ(sig->size(), 64u);
+  EXPECT_EQ(ed25519_verify(sig->data(),
+                           reinterpret_cast<const uint8_t*>(payload.data()),
+                           payload.size(), pub->data()),
+            1);
+}
+
+// ---- addTriples batch (§4.2) ----
+
+TEST(Graph_AddTriplesBatchAtomicOneIriAdvanceEventsPerTriple) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  std::string iri0;
+  EXPECT_TRUE(g->GetIri(&iri0));
+
+  int fired = 0;
+  g->set_on_triple_added([&](const Triple&) { fired++; });
+  EXPECT_TRUE(g->AddTriples({MakeLit("urn:a", "urn:p", "1"),
+                             MakeLit("urn:b", "urn:p", "2")}));
+  EXPECT_EQ(fired, 2);
+
+  std::vector<Triple> got;
+  EXPECT_TRUE(g->QueryTriples(TripleQuery{}, &got));
+  EXPECT_EQ(got.size(), 2u);
+  std::string iri1;
+  EXPECT_TRUE(g->GetIri(&iri1));
+  EXPECT_NE(iri0, iri1);
+}
+
+// ---- removeTriple (§4.2) ----
+
+TEST(Graph_RemoveTripleDropsDataAndReifiers) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  Triple t = MakeLit("urn:event:1", "urn:p:name", "Alice");
+  EXPECT_TRUE(g->AddTriple(t));
+
+  int removed_events = 0;
+  g->set_on_triple_removed([&](const Triple&) { removed_events++; });
+
+  bool removed = false;
+  EXPECT_TRUE(g->RemoveTriple(t, &removed));
+  EXPECT_TRUE(removed);
+  EXPECT_EQ(removed_events, 1);
+
+  std::vector<Triple> got;
+  EXPECT_TRUE(g->QueryTriples(TripleQuery{}, &got));
+  EXPECT_EQ(got.size(), 0u);
+  // All triples gone -> IRI returns to the empty-graph IRI.
+  std::string iri;
+  EXPECT_TRUE(g->GetIri(&iri));
+  EXPECT_EQ(iri, kEmptyGraphIri);
+
+  // Removing again matches nothing.
+  removed = true;
+  EXPECT_TRUE(g->RemoveTriple(t, &removed));
+  EXPECT_FALSE(removed);
+}
+
+// ---- snapshot ordering (§4.2) ----
+
+TEST(Graph_SnapshotOrdersByTimestampAscending) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriples({MakeLit("urn:b", "urn:p", "2"),
+                             MakeLit("urn:a", "urn:p", "1")}));
+  std::vector<Triple> got;
+  EXPECT_TRUE(g->Snapshot(&got));
+  EXPECT_EQ(got.size(), 2u);
+  // Equal ts -> subject ascending.
+  EXPECT_EQ(got[0].subject, "urn:a");
+  EXPECT_EQ(got[1].subject, "urn:b");
+}
+
+// ---- getAsSnapshot (§5.4) ----
+
+TEST(Graph_SnapshotCanonicalInvariantHolds) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:event:1", "urn:p:name", "Alice")));
+
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                               GraphSignBy::kAgent, &snap));
+  // §5.3.1 invariant: graphIri == "graph://" + hex(SHA-256(data)).
+  EXPECT_EQ(snap.graph_iri,
+            "graph://" + HexOf(crypto::SHA256HashString(snap.data)));
+  EXPECT_EQ(snap.proofs.size(), 1u);
+  EXPECT_EQ(snap.proofs[0].role, "agent");
+  std::string iri;
+  EXPECT_TRUE(g->GetIri(&iri));
+  EXPECT_EQ(snap.graph_iri, iri);
+}
+
+TEST(Graph_SnapshotSignByGraphRequiresMatchingDid) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:s", "urn:p", "v")));
+
+  GraphSnapshot snap;
+  // No DID attached -> signBy "graph" is NotAllowedError.
+  EXPECT_FALSE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                                GraphSignBy::kGraph, &snap));
+  EXPECT_EQ(g->last_error(), "NotAllowedError");
+  EXPECT_FALSE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                                GraphSignBy::kBoth, &snap));
+  EXPECT_EQ(g->last_error(), "NotAllowedError");
+}
+
+TEST(Graph_SnapshotJsonLdIsNotSupported) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  GraphSnapshot snap;
+  EXPECT_FALSE(g->GetAsSnapshot(SnapshotFormat::kJsonLd, GraphSignBy::kAgent,
+                                &snap));
+  EXPECT_EQ(g->last_error(), "NotSupportedError");
+}
+
+// §5.3.4: the advertised-format set is discoverable and drives NotSupportedError
+// on both producer and consumer. nquads-canonical / nquads / turtle REQUIRED;
+// jsonld OPTIONAL and not advertised here.
+TEST(Graph_SupportedSnapshotFormatsAdvertised) {
+  auto formats = SupportedSnapshotFormats();
+  EXPECT_EQ(formats.size(), 3u);
+  EXPECT_EQ(static_cast<int>(formats[0]),
+            static_cast<int>(SnapshotFormat::kNQuadsCanonical));
+  EXPECT_EQ(static_cast<int>(formats[1]),
+            static_cast<int>(SnapshotFormat::kNQuads));
+  EXPECT_EQ(static_cast<int>(formats[2]),
+            static_cast<int>(SnapshotFormat::kTurtle));
+  // Tokens match the IDL enum values.
+  EXPECT_EQ(std::string(SnapshotFormatToken(formats[0])), "nquads-canonical");
+  EXPECT_EQ(std::string(SnapshotFormatToken(formats[1])), "nquads");
+  EXPECT_EQ(std::string(SnapshotFormatToken(formats[2])), "turtle");
+  // Membership predicate.
+  EXPECT_TRUE(IsSnapshotFormatSupported(SnapshotFormat::kNQuadsCanonical));
+  EXPECT_TRUE(IsSnapshotFormatSupported(SnapshotFormat::kNQuads));
+  EXPECT_TRUE(IsSnapshotFormatSupported(SnapshotFormat::kTurtle));
+  EXPECT_FALSE(IsSnapshotFormatSupported(SnapshotFormat::kJsonLd));
+  // The GraphManager static mirror agrees with the free function.
+  EXPECT_EQ(GraphManager::supportedSnapshotFormats().size(), formats.size());
+
+  // Consumer side: a snapshot tagged jsonld is rejected before proof/parse.
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:event:1", "urn:p:name", "Alice")));
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                               GraphSignBy::kAgent, &snap));
+  snap.format = SnapshotFormat::kJsonLd;  // tag an otherwise-valid snapshot
+  std::string err;
+  auto m = mgr.FromSnapshot(snap, &err);
+  EXPECT_TRUE(m == nullptr);
+  EXPECT_EQ(err, "NotSupportedError");
+}
+
+// ---- fromSnapshot (§5.5) ----
+
+TEST(Graph_FromSnapshotRoundTripsCanonical) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:event:1", "urn:p:name", "Alice")));
+  std::string src_iri;
+  EXPECT_TRUE(g->GetIri(&src_iri));
+
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                               GraphSignBy::kAgent, &snap));
+
+  std::string err;
+  auto m = mgr.FromSnapshot(snap, &err);
+  EXPECT_TRUE(m != nullptr);
+  EXPECT_TRUE(m->trust_level() == GraphTrustLevel::kExternal);
+  std::string m_iri;
+  EXPECT_TRUE(m->GetIri(&m_iri));
+  EXPECT_EQ(m_iri, src_iri);
+
+  // The materialised graph exposes the same data triple.
+  std::vector<Triple> got;
+  EXPECT_TRUE(m->QueryTriples(TripleQuery{}, &got));
+  EXPECT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].object.literal->lexical, "Alice");
+}
+
+TEST(Graph_FromSnapshotTurtleRoundTrips) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:event:1", "urn:p:name", "Alice")));
+  std::string src_iri;
+  EXPECT_TRUE(g->GetIri(&src_iri));
+
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kTurtle, GraphSignBy::kAgent,
+                               &snap));
+  EXPECT_EQ(static_cast<int>(snap.format),
+            static_cast<int>(SnapshotFormat::kTurtle));
+
+  std::string err;
+  auto m = mgr.FromSnapshot(snap, &err);
+  EXPECT_TRUE(m != nullptr);
+  std::string m_iri;
+  EXPECT_TRUE(m->GetIri(&m_iri));
+  EXPECT_EQ(m_iri, src_iri);
+}
+
+TEST(Graph_FromSnapshotRejectsEmptyProofs) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:s", "urn:p", "v")));
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                               GraphSignBy::kAgent, &snap));
+  snap.proofs.clear();
+  std::string err;
+  EXPECT_TRUE(mgr.FromSnapshot(snap, &err) == nullptr);
+  EXPECT_EQ(err, "DataError");
+}
+
+TEST(Graph_FromSnapshotRejectsTamperedData) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:s", "urn:p", "v")));
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                               GraphSignBy::kAgent, &snap));
+  // Add a triple the claimed IRI does not cover -> hash check fails.
+  snap.data += "<urn:x> <urn:y> <urn:z> .\n";
+  std::string err;
+  EXPECT_TRUE(mgr.FromSnapshot(snap, &err) == nullptr);
+  EXPECT_EQ(err, "DataError");
+}
+
+TEST(Graph_FromSnapshotAttachesDidAndEnablesGraphSigning) {
+  DIDKeyProvider provider;
+  auto key = provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:s", "urn:p", "v")));
+  GraphSnapshot snap;
+  EXPECT_TRUE(g->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                               GraphSignBy::kAgent, &snap));
+  // Attach a graph DID (normally populated by another specification). The proof
+  // covers graphIri||timestamp, not graphDid, so it still verifies.
+  snap.graph_did = key->did;
+
+  std::string err;
+  auto m = mgr.FromSnapshot(snap, &err);
+  EXPECT_TRUE(m != nullptr);
+  EXPECT_TRUE(m->did().has_value());
+  EXPECT_EQ(*m->did(), key->did);
+
+  // With graph.did == active.did, signBy "graph" now succeeds.
+  GraphSnapshot gsnap;
+  EXPECT_TRUE(m->GetAsSnapshot(SnapshotFormat::kNQuadsCanonical,
+                              GraphSignBy::kGraph, &gsnap));
+  EXPECT_EQ(gsnap.proofs.size(), 1u);
+  EXPECT_EQ(gsnap.proofs[0].role, "graph");
+  EXPECT_TRUE(gsnap.graph_did.has_value());
+}
+
+// ---- dissolve (§4.3) ----
+
+TEST(Graph_DissolveIsTerminalAndIdempotent) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto g = mgr.Create();
+  EXPECT_TRUE(g->AddTriple(MakeLit("urn:s", "urn:p", "v")));
+  EXPECT_TRUE(g->Dissolve());
+  EXPECT_TRUE(g->dissolved());
+
+  // Every other operation now rejects with InvalidStateError.
+  EXPECT_FALSE(g->AddTriple(MakeLit("urn:s2", "urn:p", "v")));
+  EXPECT_EQ(g->last_error(), "InvalidStateError");
+  std::vector<Triple> got;
+  EXPECT_FALSE(g->QueryTriples(TripleQuery{}, &got));
+  EXPECT_EQ(g->last_error(), "InvalidStateError");
+  std::string iri;
+  EXPECT_FALSE(g->GetIri(&iri));
+
+  // dissolve() itself is idempotent.
+  EXPECT_TRUE(g->Dissolve());
+}
+
+// ---- holonic SPARQL (§7) ----
+
+TEST(Graph_HolonicSparqlAcrossTwoGraphs) {
+  DIDKeyProvider provider;
+  provider.CreateKey("A");
+  GraphManager mgr(&provider);
+  auto community = mgr.Create("Acme");
+  auto channel = mgr.Create("#general");
+
+  // Populate the channel first, then reference its *current* IRI so the named
+  // graph key matches at query time.
+  EXPECT_TRUE(channel->AddTriple(MakeLit("urn:msg:1", "urn:p:body", "hello")));
+  std::string ch_iri;
+  EXPECT_TRUE(channel->GetIri(&ch_iri));
+  EXPECT_TRUE(community->AddTriple(
+      MakeIri("urn:community:acme", "urn:p:hasChannel", ch_iri)));
+
+  std::vector<Graph*> named{channel.get()};
+  SparqlResult res = community->QuerySparql(
+      "SELECT ?msg ?body WHERE {\n"
+      "  <urn:community:acme> <urn:p:hasChannel> ?ch .\n"
+      "  GRAPH ?ch { ?msg <urn:p:body> ?body . }\n"
+      "}",
+      named);
+  EXPECT_TRUE(res.ok);
+  SparqlSelect sel;
+  std::string err;
+  EXPECT_TRUE(DecodeSparqlSelect(res.payload, &sel, &err));
+  EXPECT_EQ(sel.solutions.size(), 1u);
+  const SparqlTerm* body = sel.solutions[0].Get("body");
+  EXPECT_TRUE(body != nullptr);
+  EXPECT_EQ(body->value, "hello");
 }
 
 // ============================================================

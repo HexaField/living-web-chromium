@@ -1,0 +1,27 @@
+[package]
+name = "oxigraph_ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "C-ABI wrapper over Oxigraph for the Living Web graph substrate (Spec 02)."
+
+# Spec 02 leverages Oxigraph for real SPARQL 1.2, RDF 1.2 triple terms, and
+# RDF Dataset Canonicalization (rdfc-1.0). The `rdf-12` feature turns on triple
+# terms across the parser, serialiser and SPARQL engine; `rdfc-10` (the content
+# hash foundation) is pulled in transitively by oxrdf and needs no flag here.
+[dependencies]
+oxigraph = { version = "0.5", features = ["rdf-12"] }
+# SHA-256 for the `graph://<hash>` content address (Spec 02 §5.2). Computed here,
+# beside rdfc-1.0 canonicalisation, so both C++ callers hash identical bytes.
+sha2 = "0.10"
+
+# A static archive so the CMake harness can link the whole Rust + RocksDB world
+# as one `.a`. `cdylib` is also produced for hosts that prefer dynamic linking.
+[lib]
+name = "oxigraph_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

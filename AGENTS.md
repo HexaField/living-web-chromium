@@ -169,7 +169,7 @@ Spec numbering (current, 10 specs):
 | # | Spec | Where |
 |---|------|-------|
 | 01 | Decentralised Identity | `content/browser/did/`, `.../graph/did_credential.*`, `signed_content.*`, `content_proof.*` |
-| 02 | Personal Linked Data Graphs | `.../graph/personal_graph*`, `content/browser/graph/` |
+| 02 | Personal Linked Data Graphs | `.../graph/{graph,graph_manager,triple,literal_value,reifier,graph_snapshot,graph_triple_event}.*`, `content/browser/graph/` |
 | 03 | Decentralised Group Identity | — (planned) |
 | 04 | Graph Capability Framework | `content/browser/graph_governance/` (ZCAP) |
 | 05 | Context Sync Protocol | `.../graph/shared_graph*`, `content/browser/graph_sync/` |
@@ -214,6 +214,54 @@ stays the authoritative per-spec cheat-sheet as branches merge.
 - Authoritative reference impl: `standalone/did_key_provider.h` + `content/browser/did/`
   (`did_key_codec`, `jcs`), verified by 30 tests in `standalone/living_web_tests.cc`.
 
+## Spec 02 specifics (landed)
+
+- **Substrate is Oxigraph, not hand-rolled.** RDF 1.2, RDF Dataset Canonicalization
+  (`rdfc-1.0`), and SPARQL 1.2 come from **Oxigraph** via a Rust FFI static lib in
+  `third_party/oxigraph_ffi` (crate `oxigraph 0.5`, `features = ["rdf-12"]`). `CMakeLists.txt`
+  builds it with a `cargo build --release` custom command and links `liboxigraph_ffi.a`
+  plus its system deps (`stdc++ gcc_s util rt pthread m dl c`, RocksDB C++ backend).
+- **Build gotcha: `cargo` must be on PATH.** CMake locates it via
+  `find_program(CARGO cargo HINTS "$ENV{HOME}/.cargo/bin" REQUIRED)` and runs the build with
+  `~/.cargo/bin` prepended to PATH. If `cargo` is missing, configuration fails at
+  `find_program`; install the Rust toolchain (rustup) first. The archive is rebuilt only
+  when `third_party/oxigraph_ffi/src/*.rs` or its `Cargo.toml` change.
+- **Layering.** Shared Chromium-independent core = `content/browser/graph/{oxigraph_store,
+  rdf_serialization,sparql_results}.*` (the quad store + `graph://` content address, RDF 1.2
+  term syntax + §3.2.1 signature pre-image, SPARQL Results JSON decode). Browser-process
+  overlay = `content/browser/graph/{graph_backend,graph_backend_manager,personal_graph_host,
+  personal_graph_manager}.*` (Mojo hosts + manager). Standalone orchestration of the
+  §4/§5/§7 `Graph`/`GraphManager` algorithms = `standalone/graph_provider.h`. Blink bindings
+  = `third_party/blink/renderer/modules/graph/` (`graph.*`, `graph_manager.*`, `triple.*`,
+  `literal_value.*`, `reifier.*`, `graph_snapshot.*`, `graph_triple_event.*`). The shared
+  core is compiled by both worlds; the overlay only inside a full Chromium tree.
+- **Content address** (§5.2): `iri = "graph://" + lowercasehex(SHA-256(rdfc-1.0(dataset)))`.
+  The empty-graph IRI `graph://e3b0c442…7852b855` (= graph:// + SHA-256("")) is an invariant
+  shared by every fresh graph; graphs are tracked by their stable `urn:graph:<UUIDv4>` id,
+  not by IRI. The IRI is recomputed lazily and invalidated by every mutation.
+- **Reifier model** (§3.2): `addTriple` writes **6 triples** — the data triple, an
+  `rdf:reifies` triple whose object is the RDF 1.2 triple term `<<( s p o )>>`, and four
+  `prov://{author,timestamp,method,signature}` triples on the reifier blank node. Signature
+  payload (§3.2.1): `SHA-256(canonical(triple) ‖ "|" ‖ timestamp ‖ "|" ‖ graphIdentifier)`
+  signed with the active credential's `signRaw()`; `graphIdentifier` = `Graph.did` if set,
+  else `Graph.id` (never the volatile `iri`).
+- **Snapshot formats** (§5.3): `nquads-canonical` (default, the hash form), `nquads`, and
+  `turtle` are advertised via the static `GraphManager.supportedSnapshotFormats` accessor
+  (§5.3.4) and round-trip through `fromSnapshot()`; `jsonld` is **not** advertised —
+  `getAsSnapshot`/`fromSnapshot` reject it with `NotSupportedError`. `fromSnapshot` rejects
+  empty/failed proofs and tampered data with `DataError`, and enforces a §9.7 size bound
+  (`QuotaExceededError`).
+- **Errors** map to DOMException names: dissolved / no active credential →
+  `InvalidStateError`; `signBy:"graph"` without `graph.did == active.did` → `NotAllowedError`;
+  bad snapshot proof/hash → `DataError`; unadvertised format → `NotSupportedError`.
+- **Normative detail folded into draft 02** (on `main`, see `SPEC_COMPLIANCE.md`): (i) §4.2
+  `removeTriple` on a blank-node subject resolves `false` (canonicalization relabels blank
+  nodes); (ii) §5.3.4/§3.4 JSON-LD is OPTIONAL and unadvertised via `supportedSnapshotFormats`;
+  (iii) §3.2.1.1 pins the `canonical(triple)` N-Triples-1.2 pre-image byte form; (iv) §5.2
+  pins the `rdfc-1.0` triple-term canonicalisation profile.
+- Authoritative reference impl: `standalone/graph_provider.h` over the shared core, verified
+  by 22 `Graph_*` tests in `standalone/living_web_tests.cc`.
+
 ## Gotchas
 
 - Don't add DIDCredential logic that isn't reachable — wire new methods through
@@ -222,7 +270,12 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   `ToV8Traits<T>::ToV8`; `HeapMojoRemote`; `V8BufferSource` + `DOMArrayPiece` for
   `BufferSource`; `DOMArrayBuffer::Create(base::span(...))` to return an `ArrayBuffer`;
   `v8::JSON::Stringify`/`Parse` for `any` round-trips.
-- Event-handler IDL attributes are omitted (they need `event_type_names.json5`, a core
-  file). Interfaces extend `EventTarget`, so `addEventListener()` works post-integration.
+- Event-name registration is a core-file delta. `Graph` declares `ontripleadded` /
+  `ontripleremoved` (spec §4.2), so a full-tree build needs `tripleadded` and
+  `tripleremoved` added to `event_type_names.json5` (a Chromium core file outside this
+  overlay). Spec 01's DIDCredential had no events and needed no such entry; this is the
+  first spec that does. All graph interfaces extend `EventTarget`, so `addEventListener()`
+  works once the names are registered.
 - IDL files are **not** listed in `BUILD.gn` sources — they're wired separately during
-  full-tree integration; only `.cc`/`.h` go in `blink_modules_sources`.
+  full-tree integration (`idl_in_modules.gni` + `generated_in_modules.gni`); only `.cc`/`.h`
+  go in `blink_modules_sources`.
