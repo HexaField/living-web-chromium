@@ -17,15 +17,15 @@ top of this base.
 | # | Specification | Branch | Status |
 |---|--------------|--------|--------|
 | 01 | [Decentralised Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/01_decentralised-identity-web-platform.md) | `spec-01-identity` | 🔀 In review |
-| 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `spec-02-graphs` | 🔲 Planned |
-| 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | `spec-03-group-identity` | 🔲 Planned |
-| 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | `spec-04-capabilities` | 🔲 Planned |
-| 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `spec-05-sync` | 🔲 Planned |
-| 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | `spec-06-sync-modules` | 🔲 Planned |
-| 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `spec-07-shapes` | 🔲 Planned |
-| 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `spec-08-governance` | 🔲 Planned |
-| 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | `spec-09-default-sync` | 🔲 Planned |
-| 10 | [Graph Flows](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md) | `spec-10-flows` | 🔲 Planned |
+| 02 | [Personal Linked Data Graphs](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/02_personal-linked-data-graphs.md) | `spec-02-graphs` | 🔀 In review |
+| 03 | [Decentralised Group Identity](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/03_decentralised-group-identity.md) | `spec-03-group-identity` | 🔀 In review |
+| 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | `spec-04-capabilities` | 🔀 In review |
+| 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `spec-05-sync` | 🔀 In review |
+| 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | `spec-06-sync-modules` | 🔀 In review |
+| 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `spec-07-shapes` | 🔀 In review |
+| 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `spec-08-governance` | 🔀 In review |
+| 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | `spec-09-default-sync` | 🔀 In review |
+| 10 | [Graph Flows](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md) | `spec-10-flows` | 🔀 In review |
 
 Full API-by-API tracking: **[SPEC_COMPLIANCE.md](SPEC_COMPLIANCE.md)**.
 
@@ -96,8 +96,27 @@ spec**, never by weakening the implementation. Amendments already landed on the
 [specs repo](https://github.com/HexaField/w3c-living-web-proposals) `main`:
 
 - **01** — `signRaw` verbatim-bytes signing (§6.5).
-- **05** — invitation links (§12) and reconnection / offline handling (§13).
-- **06** — normative WIT interface for sync modules (§6).
+- **02** — blank-node `removeTriple` semantics (§4.2), JSON-LD as OPTIONAL and unadvertised
+  via `supportedSnapshotFormats` (§5.3.4, §3.4), the N-Triples-1.2 signature pre-image
+  (§3.2.1.1), and the `rdfc-1.0` triple-term canonicalisation profile (§5.2).
+- **03** — self-certifying verification-method ids (fragment = `publicKeyMultibase`, §4.4)
+  and `groupify(Graph)` keyed on the durable `did:graph` rather than the volatile
+  content-address IRI (§4.3, §8.2.2).
+- **04** — default root actions pinned to the eight framework-core actions plus mandatory
+  local-root re-verification (§4.3), flattened ZCAP predicates pinned to the `zcap://` scheme
+  (§4.5.3), the exact delegation-proof pre-image bytes (§4.5.3.1), and the `did://` predicate
+  family mapping to `updateDIDDocument` (§4.5.4.1).
+- **05** — the exact `revision`/`commitId` diff pre-image bytes and signature message
+  (§5.2.2.1), graph invitation links (§12), reconnection / offline handling (§13), and
+  the received-timestamp plausibility bound (§14.5).
+- **06** — normative WIT interface for sync modules (§6). Landed ahead of the
+  Spec 06 branch by the cross-cutting amendment `53ea1b2`; the branch introduced
+  no further draft changes.
+- **07** — canonical `subject`/`predicate`/`object` constructor-action keys with the
+  deprecated `source`/`target` aliases retained for compatibility (§4.3, §12), the
+  content address pinned to `sha256:` + lowercase-hex(SHA-256(JCS)) with the
+  `has_shape` link subject as the graph's stable id (§6.2–§6.4), and the three
+  accepted `datatype` forms — full XSD URI, `xsd:`-prefixed, or `"URI"` (§4.2).
 - **08** — timestamp plausibility bound (§5.3).
 - **09** — full MLS group-keying ceremony (§6.3).
 - **10** — concurrent flow-state transitions (§13).
