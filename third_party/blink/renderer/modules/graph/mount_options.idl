@@ -1,0 +1,18 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// MountOptions — options for GraphManager.mount() (Graph Synchronisation
+// Protocol spec §6.2). `capabilityProof` is REQUIRED for "write"/"governance"
+// mounts and for a "read" mount of a graph that binds a mountContext capability
+// constraint; `moduleHash` is a bootstrap hint superseded by the authoritative
+// `<graphDid> group://syncModule` value once the DID document resolves.
+
+dictionary MountOptions {
+  MountMode mode = "read";
+  CapabilityProofInput capabilityProof;
+  USVString snapshotUri;
+  USVString spaceUri;
+  USVString moduleHash;
+  sequence<USVString> relays;
+};

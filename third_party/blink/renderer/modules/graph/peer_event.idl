@@ -1,0 +1,12 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// PeerEvent — dispatched for Graph.onpeerjoined / Graph.onpeerleft (Graph
+// Synchronisation Protocol spec §6.3). Its `peer` attribute is the session that
+// joined or left the graph's sync space (§5.4).
+
+[Exposed=(Window,Worker)]
+interface PeerEvent : Event {
+  readonly attribute Peer peer;
+};

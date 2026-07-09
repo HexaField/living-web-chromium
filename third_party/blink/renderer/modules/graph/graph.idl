@@ -62,3 +62,34 @@ partial interface Graph {
   [CallWith=ScriptState, NewObject] Promise<EnforcementMode> enforcementMode();
   [CallWith=ScriptState, NewObject] Promise<undefined> setEnforcementMode(EnforcementMode mode);
 };
+
+// §6 Synchronisation API — added by the Graph Synchronisation Protocol
+// ([[SYNC-PROTOCOL]], Spec 05). Publish/unpublish addressing (§6.1), sync-state
+// and peer inspection (§6.3), ephemeral signalling (§6.3, §11), and diff
+// observation (§6.3). Folded onto Graph because a graph's sync subscription is
+// keyed on that graph's own host.
+[Exposed=(Window,Worker), SecureContext]
+partial interface Graph {
+  // §6.1 — publish this graph into a sync space; unpublish tears the
+  // subscription down; syncState reports the current lifecycle phase (§5.5).
+  [CallWith=ScriptState, NewObject] Promise<PublishedGraph> publish(optional PublishOptions options = {});
+  [CallWith=ScriptState, NewObject] Promise<undefined> unpublish();
+  [CallWith=ScriptState, NewObject] Promise<GraphSyncState> syncState();
+
+  // §6.3 — peer inspection and pending-diff retrieval.
+  [CallWith=ScriptState, NewObject] Promise<sequence<Peer>> peers();
+  [CallWith=ScriptState, NewObject] Promise<sequence<Peer>> onlinePeers();
+  [CallWith=ScriptState, NewObject] Promise<USVString> currentRevision();
+  [CallWith=ScriptState, NewObject] Promise<sequence<GraphDiff>> pendingDiffs();
+
+  // §6.3, §11 — ephemeral signalling. No [NewObject]: no object is returned.
+  [CallWith=ScriptState] Promise<undefined> sendSignal(USVString remoteDid, BufferSource payload);
+  [CallWith=ScriptState] Promise<undefined> sendSignalToSession(USVString remoteDid, USVString sessionId, BufferSource payload);
+  [CallWith=ScriptState] Promise<undefined> broadcast(BufferSource payload);
+
+  attribute EventHandler onpeerjoined;
+  attribute EventHandler onpeerleft;
+  attribute EventHandler onsyncstatechange;
+  attribute EventHandler onsignal;
+  attribute EventHandler ondiff;
+};

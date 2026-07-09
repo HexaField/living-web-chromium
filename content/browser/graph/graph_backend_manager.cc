@@ -136,6 +136,16 @@ GraphBackend* GraphBackendManager::FromSnapshot(const GraphSnapshot& snap,
   return FromSnapshot(snap, GraphTrustLevel::kExternal, error);
 }
 
+GraphBackend* GraphBackendManager::CreateMounted(const std::string& graph_did) {
+  std::string id = NewGraphId();
+  auto g =
+      std::make_unique<GraphBackend>(identity_, id, GraphTrustLevel::kExternal);
+  g->set_did(graph_did);
+  GraphBackend* raw = g.get();
+  graphs_[id] = std::move(g);
+  return raw;
+}
+
 GraphBackend* GraphBackendManager::Find(const std::string& id) {
   auto it = graphs_.find(id);
   return it == graphs_.end() ? nullptr : it->second.get();

@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// MountedGraphInfo — one entry of the realm's mount inventory, returned by
+// GraphManager.listMounted() (Graph Synchronisation Protocol spec §6.4).
+
+dictionary MountedGraphInfo {
+  USVString graphDid;
+  MountMode mode;
+  GraphSyncState syncState;
+  USVString spaceUri;
+  USVString moduleHash;
+  unsigned long peerCount;
+};

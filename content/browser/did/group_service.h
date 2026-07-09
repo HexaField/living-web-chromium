@@ -34,6 +34,7 @@
 #include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph/personal_graph_host.h"
+#include "content/browser/graph_sync/sync_backend.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
@@ -42,15 +43,19 @@ namespace content {
 
 class GroupService : public graph::mojom::GroupManager {
  public:
-  // |identity|, |graphs|, and |governance| are the realm's shared identity
-  // provider, graph store, and Spec 04 governance backend (the same objects the
-  // realm's PersonalGraphManager owns/uses). All three outlive this service. The
-  // governance backend is threaded into every PersonalGraphHost this service
-  // binds (so the §11 surface + enforcement gate share one registry) and into
-  // every GroupHost (for §8.1.5 delegateCapability).
+  // |identity|, |graphs|, |governance|, and |sync| are the realm's shared
+  // identity provider, graph store, Spec 04 governance backend, and Spec 05 sync
+  // backend (the same objects the realm's PersonalGraphManager owns/uses). All
+  // four outlive this service. The governance backend is threaded into every
+  // PersonalGraphHost this service binds (so the §11 surface + enforcement gate
+  // share one registry) and into every GroupHost (for §8.1.5
+  // delegateCapability); the sync backend is threaded into every
+  // PersonalGraphHost so a group's host graph shares the realm's single §6/§9
+  // sync surface (§9.3 sync-blocking runs against one chain view).
   GroupService(DIDKeyProvider* identity,
                GraphBackendManager* graphs,
-               GovernanceBackend* governance);
+               GovernanceBackend* governance,
+               SyncBackend* sync);
 
   GroupService(const GroupService&) = delete;
   GroupService& operator=(const GroupService&) = delete;
@@ -109,6 +114,7 @@ class GroupService : public graph::mojom::GroupManager {
 
   raw_ptr<GraphBackendManager> graphs_;    // The realm's shared graph store.
   raw_ptr<GovernanceBackend> governance_;  // The realm's Spec 04 registry.
+  raw_ptr<SyncBackend> sync_;              // The realm's Spec 05 sync backend.
   GroupBackendManager groups_;
   std::vector<std::unique_ptr<GroupHost>> group_hosts_;
   std::vector<std::unique_ptr<PersonalGraphHost>> graph_hosts_;

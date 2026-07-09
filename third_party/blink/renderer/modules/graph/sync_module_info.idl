@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SyncModuleInfo — one entry of the realm's installed-module inventory, returned
+// by GraphManager.listModules() (Graph Synchronisation Protocol spec §6.4).
+
+dictionary SyncModuleInfo {
+  USVString contentHash;
+  USVString? name;
+  unsigned long spaceCount;
+  ModuleState state;
+  unsigned long long storageBytes;
+};

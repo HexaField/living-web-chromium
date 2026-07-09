@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Graph Synchronisation Protocol (Spec 05) — publish, mount & signalling — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 05 — Graph Synchronisation Protocol
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md
+//
+// The protocol layers a peer-to-peer diff-gossip session onto a groupified
+// Personal Linked Data Graph (Spec 02 + Spec 03) whose authority is the Graph
+// Capability Framework (Spec 04). The §6 renderer surface is folded onto Graph
+// (a `partial interface Graph`: publish/unpublish + syncState, peer inspection,
+// pending-diff retrieval, and ephemeral signalling) and onto GraphManager (a
+// `partial interface GraphManager`: mount/unmount + the realm's listMounted /
+// listModules / listSpaces inventory and the subscription events). A graph must
+// bear a did:graph to be published (§6.1) — a plain Spec 02 graph has no stable
+// address to gossip under — so publish() on a DID-less graph rejects with
+// InvalidStateError. Signalling (§6.3, §11) is only meaningful once a graph has
+// an active session, so sendSignal/broadcast reject with InvalidStateError
+// before publish/mount and are inert no-ops afterwards. mount() opens a remote
+// graph by DID into this realm (§6.2); mounting the same DID twice is an
+// InvalidStateError.
+// ==========================================================================
+
+// The group's sync module is REQUIRED (GROUP-IDENTITY §4.5); any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// The §5.5 sync-state lifecycle tokens (GraphSyncState).
+const SYNC_STATES = [
+  'idle', 'resolving', 'connecting', 'syncing', 'synced', 'error',
+];
+
+// A tiny BufferSource for the signalling calls (payload bytes are opaque, §6.3).
+function payload() {
+  return new Uint8Array([1, 2, 3]);
+}
+
+// §6 — the synchronisation surface MUST hang off Graph and GraphManager.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const g = group.graph;
+  for (const m of ['publish', 'unpublish', 'syncState', 'peers', 'onlinePeers',
+                   'currentRevision', 'pendingDiffs', 'sendSignal',
+                   'sendSignalToSession', 'broadcast']) {
+    assert_equals(typeof g[m], 'function',
+      `Graph MUST expose the §6 synchronisation method ${m}()`);
+  }
+  for (const h of ['onpeerjoined', 'onpeerleft', 'onsyncstatechange',
+                   'onsignal', 'ondiff']) {
+    assert_true(h in g, `Graph MUST expose the §6 event handler ${h}`);
+  }
+}, '§6 the synchronisation surface MUST be present on Graph');
+
+promise_test(async t => {
+  const gm = navigator.graph;
+  for (const m of ['mount', 'unmount', 'listMounted', 'listModules',
+                   'listSpaces']) {
+    assert_equals(typeof gm[m], 'function',
+      `GraphManager MUST expose the §6.2/§6.4 method ${m}()`);
+  }
+  for (const h of ['onsubscriptiongained', 'onsubscriptionlost']) {
+    assert_true(h in gm, `GraphManager MUST expose the §6.4 event handler ${h}`);
+  }
+}, '§6.2/§6.4 the synchronisation surface MUST be present on GraphManager');
+
+// §5.5 — a freshly-created, unpublished graph is "idle".
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const state = await group.graph.syncState();
+  assert_true(SYNC_STATES.includes(state),
+    'syncState() MUST resolve with a GraphSyncState token');
+  assert_equals(state, 'idle',
+    'an unpublished graph MUST report the "idle" lifecycle phase (§5.5)');
+}, '§5.5 syncState() MUST default to "idle" before publish');
+
+// §6.1 — publish() resolves with a PublishedGraph whose addressing is the
+// group's did:graph, a derived space:// URI, the module hash, and the relay set.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+
+  const pub = await group.graph.publish();
+  assert_equals(pub.graphDid, group.did,
+    'PublishedGraph.graphDid MUST be the group DID (§6.1)');
+  assert_true(pub.spaceUri.startsWith('space://'),
+    'PublishedGraph.spaceUri MUST be a derived space:// URI (§7.3)');
+  assert_equals(typeof pub.moduleHash, 'string',
+    'PublishedGraph.moduleHash MUST be a string');
+  assert_true(Array.isArray(pub.relays),
+    'PublishedGraph.relays MUST be a frozen array');
+
+  // §5.5: publishing advances the session out of "idle".
+  assert_not_equals(await group.graph.syncState(), 'idle',
+    'publish() MUST advance the sync lifecycle out of "idle"');
+}, '§6.1 publish() MUST resolve with the group\'s PublishedGraph addressing');
+
+// §6.1 — a DID-less Spec 02 graph has no stable address to gossip under, so
+// publish() rejects with InvalidStateError.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'Plain' });
+  t.add_cleanup(() => graph.dissolve());
+  assert_equals(graph.did, null, 'a plain graph MUST have no DID');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    graph.publish(),
+    'publishing a DID-less graph MUST reject with InvalidStateError');
+}, '§6.1 publish() MUST reject a DID-less graph with InvalidStateError');
+
+// §6.1 — a moduleHash override that disagrees with the groupified graph's
+// authoritative group://syncModule triple is rejected with InvalidStateError.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.graph.publish({ moduleHash: 'urn:sync:module:disagrees' }),
+    'a moduleHash disagreeing with group://syncModule MUST reject (§6.1)');
+}, '§6.1 publish() MUST reject a moduleHash that disagrees with the seed');
+
+// §6.1 — publish then unpublish tears the subscription down and returns the
+// graph to "idle"; unpublish MUST be idempotent (a no-op when not published).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  await group.graph.publish();
+  await group.graph.unpublish();
+  assert_equals(await group.graph.syncState(), 'idle',
+    'unpublish() MUST return the sync lifecycle to "idle"');
+  // A second unpublish on an already-unpublished graph is an inert no-op.
+  await group.graph.unpublish();
+}, '§6.1 unpublish() MUST tear the session down and be idempotent');
+
+// §6.3 — peer inspection and pending-diff retrieval resolve with (empty)
+// sequences before any peer is discovered or diff received.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  assert_array_equals(await group.graph.peers(), [],
+    'a fresh graph MUST have no known peers (§6.3)');
+  assert_array_equals(await group.graph.onlinePeers(), [],
+    'a fresh graph MUST have no online peers (§6.3)');
+  assert_array_equals(await group.graph.pendingDiffs(), [],
+    'a fresh graph MUST have no pending diffs (§6.3)');
+}, '§6.3 peers()/onlinePeers()/pendingDiffs() MUST start empty');
+
+// §5.2.1 — currentRevision() reports the graph's local head as a hex string
+// (empty for a graph that has committed nothing).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const rev = await group.graph.currentRevision();
+  assert_equals(typeof rev, 'string',
+    'currentRevision() MUST resolve with a revision string (§5.2.1)');
+}, '§5.2.1 currentRevision() MUST resolve with the local head revision');
+
+// §6.3, §11 — signalling before an active session (unpublished, unmounted) has
+// no transport, so sendSignal/sendSignalToSession/broadcast reject with
+// InvalidStateError.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const peer = await navigator.graph.createIdentity('Peer');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.graph.sendSignal(peer.did, payload()),
+    'sendSignal() before publish MUST reject with InvalidStateError');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.graph.sendSignalToSession(peer.did, 'session-1', payload()),
+    'sendSignalToSession() before publish MUST reject with InvalidStateError');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.graph.broadcast(payload()),
+    'broadcast() before publish MUST reject with InvalidStateError');
+}, '§6.3/§11 signalling MUST reject before an active session');
+
+// §6.3, §11 — once published, signalling has a transport: the calls resolve
+// (they are no-ops with no peers, but MUST NOT reject).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+  const peer = await navigator.graph.createIdentity('Peer');
+  await group.graph.sendSignal(peer.did, payload());
+  await group.graph.sendSignalToSession(peer.did, 'session-1', payload());
+  await group.graph.broadcast(payload());
+}, '§6.3/§11 signalling MUST resolve (no-op) once published');
+
+// §6.2 / §6.4 — mount() opens a remote graph by DID into this realm; it then
+// appears in listMounted() with the requested mode; unmount() releases it.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+  const did = group.did;
+
+  const mounted = await navigator.graph.mount(did, { mode: 'read' });
+  t.add_cleanup(() => navigator.graph.unmount(did));
+  assert_equals(mounted.did, did,
+    'mount() MUST resolve with a Graph for the mounted DID (§6.2)');
+
+  const inv = await navigator.graph.listMounted();
+  assert_true(inv.some(e => e.graphDid === did),
+    'a mounted graph MUST appear in listMounted() (§6.4)');
+  const entry = inv.find(e => e.graphDid === did);
+  assert_equals(entry.mode, 'read',
+    'the mount inventory MUST record the requested mode');
+  assert_true(SYNC_STATES.includes(entry.syncState),
+    'MountedGraphInfo.syncState MUST be a GraphSyncState token');
+
+  await navigator.graph.unmount(did);
+  const after = await navigator.graph.listMounted();
+  assert_false(after.some(e => e.graphDid === did),
+    'unmount() MUST remove the graph from listMounted() (§6.4)');
+}, '§6.2/§6.4 mount()/unmount() MUST manage the realm mount inventory');
+
+// §6.2 — mounting the same DID twice is an InvalidStateError (the realm keeps a
+// single subscription per graph).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+  const did = group.did;
+
+  await navigator.graph.mount(did, { mode: 'read' });
+  t.add_cleanup(() => navigator.graph.unmount(did));
+  await promise_rejects_dom(t, 'InvalidStateError',
+    navigator.graph.mount(did, { mode: 'read' }),
+    'mounting an already-mounted DID MUST reject with InvalidStateError');
+}, '§6.2 mount() MUST reject a double-mount with InvalidStateError');
+
+// §6.3, §11 — a mounted read graph has an active session, so its signalling
+// resolves too.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+  const did = group.did;
+  const mounted = await navigator.graph.mount(did, { mode: 'read' });
+  t.add_cleanup(() => navigator.graph.unmount(did));
+
+  const peer = await navigator.graph.createIdentity('Peer');
+  await mounted.broadcast(payload());
+  await mounted.sendSignal(peer.did, payload());
+}, '§6.3/§11 signalling MUST resolve on a mounted graph');
+
+// §6.4 — the realm inventory endpoints resolve with sequences; a realm with no
+// installed modules or active spaces reports empties.
+
+promise_test(async t => {
+  const modules = await navigator.graph.listModules();
+  assert_true(Array.isArray(modules),
+    'listModules() MUST resolve with a sequence (§6.4)');
+  const spaces = await navigator.graph.listSpaces();
+  assert_true(Array.isArray(spaces),
+    'listSpaces() MUST resolve with a sequence (§6.4)');
+}, '§6.4 listModules()/listSpaces() MUST resolve with sequences');
+
+// §6.4 — after publishing, the graph's space appears in listSpaces() with the
+// module hash the group was created under.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  const pub = await group.graph.publish();
+
+  const spaces = await navigator.graph.listSpaces();
+  assert_true(spaces.some(s => s.spaceUri === pub.spaceUri),
+    'the published graph\'s space MUST appear in listSpaces() (§6.4)');
+}, '§6.4 listSpaces() MUST report the published graph\'s space');
+
+// §6.3 — the event handlers are settable (assignable EventHandler attributes),
+// so the renderer can observe session/peer/diff changes.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  const g = group.graph;
+  let synced = false, diffed = false, joined = false, left = false,
+      signalled = false;
+  g.onsyncstatechange = () => { synced = true; };
+  g.ondiff = () => { diffed = true; };
+  g.onpeerjoined = () => { joined = true; };
+  g.onpeerleft = () => { left = true; };
+  g.onsignal = () => { signalled = true; };
+  // The setters MUST round-trip to a callable (no dispatch is forced here — the
+  // presence and assignability of the handlers is the testable renderer surface).
+  assert_equals(typeof g.onsyncstatechange, 'function');
+  assert_equals(typeof g.ondiff, 'function');
+  assert_equals(typeof g.onpeerjoined, 'function');
+  assert_equals(typeof g.onpeerleft, 'function');
+  assert_equals(typeof g.onsignal, 'function');
+}, '§6.3 Graph sync event handlers MUST be assignable');
+
+// §6.4 — the manager subscription event handlers are settable too.
+
+promise_test(async t => {
+  const gm = navigator.graph;
+  const gained = gm.onsubscriptiongained;
+  const lost = gm.onsubscriptionlost;
+  gm.onsubscriptiongained = () => {};
+  gm.onsubscriptionlost = () => {};
+  assert_equals(typeof gm.onsubscriptiongained, 'function');
+  assert_equals(typeof gm.onsubscriptionlost, 'function');
+  gm.onsubscriptiongained = gained;
+  gm.onsubscriptionlost = lost;
+}, '§6.4 GraphManager subscription event handlers MUST be assignable');
+</script>

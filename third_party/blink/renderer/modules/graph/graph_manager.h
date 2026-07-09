@@ -13,13 +13,17 @@
 
 #include "base/functional/callback.h"
 #include "mojo/public/mojom/graph/graph.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/modules/graph/graph.h"
 #include "third_party/blink/renderer/modules/graph/group.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
@@ -31,10 +35,16 @@ class GraphFromSnapshotOptions;
 class GraphSnapshot;
 class GroupCreationOptions;
 class GroupifyOptions;
+class MountOptions;
+class MountedGraphInfo;
 class ScriptState;
+class SyncModuleInfo;
+class SyncSpaceInfo;
 class V8SnapshotFormat;
 
-class GraphManager final : public ScriptWrappable {
+class GraphManager final
+    : public EventTarget,
+      public graph::mojom::blink::PersonalGraphManagerClient {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -67,6 +77,35 @@ class GraphManager final : public ScriptWrappable {
   ScriptPromise<Group> openGroup(ScriptState*, const String& iri_or_did);
   ScriptPromise<IDLSequence<Group>> listGroups(ScriptState*);
 
+  // §6.2 / §6.4 synchronisation surface — added by the Graph Synchronisation
+  // Protocol (Spec 05). mount() opens a remote graph by DID (read-only when
+  // MountOptions.mode is "read"); unmount() releases it. The list* methods read
+  // the realm's mount / module / space inventory. Each round-trips to the
+  // realm's PersonalGraphManager, into which the sync surface is folded.
+  ScriptPromise<Graph> mount(ScriptState*,
+                             const String& graph_did,
+                             const MountOptions* options);
+  ScriptPromise<IDLUndefined> unmount(ScriptState*, const String& graph_did);
+  ScriptPromise<IDLSequence<MountedGraphInfo>> listMounted(ScriptState*);
+  ScriptPromise<IDLSequence<SyncModuleInfo>> listModules(ScriptState*);
+  ScriptPromise<IDLSequence<SyncSpaceInfo>> listSpaces(ScriptState*);
+
+  // EventTarget overrides.
+  const AtomicString& InterfaceName() const override;
+  ExecutionContext* GetExecutionContext() const override;
+
+  // §6.4 subscription event handlers.
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(subscriptiongained, kSubscriptiongained)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(subscriptionlost, kSubscriptionlost)
+
+  // graph::mojom::blink::PersonalGraphManagerClient — realm-level subscription
+  // events, pushed by the browser as mounts gain and lose diff delivery (§6.4).
+  void OnSubscriptionGained(const String& graph_did,
+                            graph::mojom::blink::MountMode mode) override;
+  void OnSubscriptionLost(const String& graph_did,
+                          graph::mojom::blink::MountMode previous_mode,
+                          const String& reason) override;
+
   // Opens |iri_or_did| into a Group (minting a fresh GroupHost + host-graph
   // PersonalGraphHost binding) and hands it to |on_done|, or nullptr if it could
   // not be opened. Backs Group::ResolveGroupList (parentGroups/childGroups and
@@ -94,6 +133,10 @@ class GraphManager final : public ScriptWrappable {
   Member<ExecutionContext> execution_context_;
   HeapMojoRemote<graph::mojom::blink::PersonalGraphManager> service_;
   HeapMojoRemote<graph::mojom::blink::GroupManager> group_service_;
+  // §6.4: bound in ConnectToBrowser() via PersonalGraphManager::SubscribeManager;
+  // the browser pushes onsubscriptiongained / onsubscriptionlost through it.
+  HeapMojoReceiver<graph::mojom::blink::PersonalGraphManagerClient, GraphManager>
+      manager_client_;
 };
 
 }  // namespace blink

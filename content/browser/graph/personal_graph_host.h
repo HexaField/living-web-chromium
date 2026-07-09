@@ -25,6 +25,7 @@
 #include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
+#include "content/browser/graph_sync/sync_backend.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -35,14 +36,16 @@ namespace content {
 
 class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
  public:
-  // |backend| is owned by |manager|; both outlive this host, as does the
-  // per-realm |governance| (owned by PersonalGraphManager and shared with the
-  // Spec 03 GroupService). The host binds itself to |receiver| and pushes
-  // tripleadded/tripleremoved events to the client supplied via Subscribe.
+  // |backend| is owned by |manager|; both outlive this host, as do the per-realm
+  // |governance| (Spec 04) and |sync| (Spec 05) backends — owned by
+  // PersonalGraphManager and shared with the Spec 03 GroupService. The host binds
+  // itself to |receiver| and pushes tripleadded/tripleremoved and the §6.3 sync
+  // events to the client supplied via Subscribe.
   PersonalGraphHost(
       GraphBackend* backend,
       GraphBackendManager* manager,
       GovernanceBackend* governance,
+      SyncBackend* sync,
       mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver);
 
   PersonalGraphHost(const PersonalGraphHost&) = delete;
@@ -100,6 +103,46 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   void SetEnforcementMode(graph::mojom::EnforcementMode mode,
                           SetEnforcementModeCallback callback) override;
 
+  // ---- Spec 05 §6 sync surface (folded into this host) ----
+  void Publish(graph::mojom::PublishOptionsPtr options,
+               PublishCallback callback) override;
+  void Unpublish(UnpublishCallback callback) override;
+  void SyncState(SyncStateCallback callback) override;
+  void Peers(PeersCallback callback) override;
+  void OnlinePeers(OnlinePeersCallback callback) override;
+  void CurrentRevision(CurrentRevisionCallback callback) override;
+  void PendingDiffs(PendingDiffsCallback callback) override;
+  void SendSignal(const std::string& remote_did,
+                  const std::vector<uint8_t>& payload,
+                  SendSignalCallback callback) override;
+  void SendSignalToSession(const std::string& remote_did,
+                           const std::string& session_id,
+                           const std::vector<uint8_t>& payload,
+                           SendSignalToSessionCallback callback) override;
+  void Broadcast(const std::vector<uint8_t>& payload,
+                 BroadcastCallback callback) override;
+
+  // §6.2 mount initialisation. Called by PersonalGraphManager::Mount right after
+  // the host is bound to open the graph as a live sync session: records the
+  // resolved space + module addressing, marks the session active (and writable
+  // for a write/governance mount), and moves to the synced state. Live peer
+  // transport is supplied later by the graph's sync module (Spec 06); until then
+  // the session is trivially converged with zero peers.
+  void InitAsMount(const std::string& space_uri,
+                   const std::string& module_hash,
+                   bool writable);
+
+  // §6.4 published-space inventory. PersonalGraphManager::ListSpaces aggregates
+  // the realm's active sync spaces from both its mount table and the local graphs
+  // its hosts have published; these accessors expose the latter without a
+  // host→manager backpointer (the manager owns every host in |hosts_|).
+  // |published()| is false for an idle or mounted host, so iterating hosts for
+  // published() cleanly yields only published local graphs — mounts are
+  // inventoried via the mount table, and the two never double-count.
+  bool published() const { return published_; }
+  const std::string& space_uri() const { return space_uri_; }
+  const std::string& module_hash() const { return module_hash_; }
+
  private:
   // Converters between the union/enum shapes.
   static graph::mojom::LiteralValuePtr ToMojo(const living_web::LiteralValue& v);
@@ -126,11 +169,58 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   void OnTripleAdded(const living_web::Triple& triple);
   void OnTripleRemoved(const living_web::Triple& triple);
 
+  // ---- Spec 05 §6 sync helpers ----
+
+  // content::sync <-> mojom converters for the durable-queue readout (§6.3
+  // pendingDiffs). |presentations| have no content:: representation (a browser/VC
+  // concern layered above §5.3) and stay empty.
+  static graph::mojom::DiffTriplePtr ToMojo(const DiffTriple& dt);
+  static graph::mojom::CapabilityProofPtr ToMojo(const CapabilityProof& p);
+  static graph::mojom::GraphDiffPtr ToMojo(const GraphDiff& d);
+
+  // Updates the cached sync state and, if a client is subscribed, pushes
+  // onsyncstatechange (§6.3).
+  void SetSyncState(graph::mojom::GraphSyncState state);
+
+  // §6.3 signalling gate: "InvalidStateError" when the graph is not
+  // published/mounted, else nullopt (a no-op success — the payload is dropped
+  // until a sync module supplies transport, Spec 06).
+  std::optional<std::string> SignalGate() const;
+
+  // §6.1 step 1: the authoritative sync-module hash bound to the graph's DID by
+  // <graphDid> group://syncModule (Spec 03 §4.5), or "" when the graph is not yet
+  // groupified.
+  std::string ResolveGroupSyncModule();
+
+  // §5.2.2 commit hook. When the graph holds a writable sync session (published,
+  // or write/governance-mounted), turns a committed local mutation into a signed
+  // GraphDiff, advances the local DAG head, and enqueues it in the durable queue
+  // (§13.1) for the sync module to gossip. A no-op outside a writable session
+  // (ordinary Spec 02 mutations are not gossiped).
+  void EmitDiff(const std::vector<living_web::Triple>& additions,
+                const std::vector<living_web::Triple>& removals);
+
   raw_ptr<GraphBackend> backend_;          // Owned by |manager_|.
   raw_ptr<GraphBackendManager> manager_;   // Not owned.
   raw_ptr<GovernanceBackend> governance_;  // Per-realm; owned by the manager.
+  raw_ptr<SyncBackend> sync_;              // Per-realm; owned by the manager.
   mojo::Receiver<graph::mojom::PersonalGraphHost> receiver_;
   mojo::Remote<graph::mojom::PersonalGraphClient> client_;
+
+  // §6 sync-session state. A graph is idle until published (a local graph made
+  // shareable) or mounted (a remote graph opened into this realm). |session_|
+  // gates signalling; |writable_| additionally gates diff emission.
+  bool published_ = false;
+  bool session_active_ = false;
+  bool session_writable_ = false;
+  graph::mojom::GraphSyncState sync_state_ = graph::mojom::GraphSyncState::kIdle;
+  std::string space_uri_;
+  std::string module_hash_;
+  std::vector<std::string> relays_;
+  DiffQueue diff_queue_;            // §13.1 durable local diff queue
+  std::string current_revision_;   // local DAG head (§5.2.1); "" until first commit
+  uint32_t diffs_since_snapshot_ = 0;  // §5.2.3
+
   base::WeakPtrFactory<PersonalGraphHost> weak_factory_{this};
 };
 

@@ -6,7 +6,7 @@
 // graphs. Personal Linked Data Graphs spec §3.4.
 
 [Exposed=(Window,Worker), SecureContext]
-interface GraphManager {
+interface GraphManager : EventTarget {
   // Create a fresh, empty graph owned by the calling agent.
   [CallWith=ScriptState, NewObject] Promise<Graph> create(optional GraphCreationOptions options = {});
   // Materialise a graph from a previously-serialised snapshot.
@@ -33,4 +33,26 @@ interface GraphManager {
   [CallWith=ScriptState, NewObject] Promise<Group> forkGroup(USVString parentIriOrDid, ForkOptions options);
   [CallWith=ScriptState, NewObject] Promise<Group> openGroup(USVString iriOrDid);
   [CallWith=ScriptState, NewObject] Promise<sequence<Group>> listGroups();
+};
+
+// §6 Synchronisation surface — added by the Graph Synchronisation Protocol
+// ([[SYNC-PROTOCOL]], Spec 05). mount()/unmount() open and release remote graphs
+// by DID into this realm (§6.2); listMounted/listModules/listSpaces expose the
+// realm's sync inventory (§6.4); the subscription events fire as mounts gain and
+// lose diff delivery in a space (§6.4). Folded onto GraphManager because a realm
+// keeps a single PersonalGraphManager host, which owns the mount table.
+[Exposed=(Window,Worker), SecureContext]
+partial interface GraphManager {
+  // §6.2 — mount a remote graph by DID; the returned Graph is read-only when
+  // MountOptions.mode is "read". unmount releases the subscription.
+  [CallWith=ScriptState, NewObject] Promise<Graph> mount(USVString graphDid, optional MountOptions options = {});
+  [CallWith=ScriptState, NewObject] Promise<undefined> unmount(USVString graphDid);
+
+  // §6.4 — the realm's sync inventory.
+  [CallWith=ScriptState, NewObject] Promise<sequence<MountedGraphInfo>> listMounted();
+  [CallWith=ScriptState, NewObject] Promise<sequence<SyncModuleInfo>> listModules();
+  [CallWith=ScriptState, NewObject] Promise<sequence<SyncSpaceInfo>> listSpaces();
+
+  attribute EventHandler onsubscriptiongained;
+  attribute EventHandler onsubscriptionlost;
 };

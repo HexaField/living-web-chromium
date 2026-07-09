@@ -50,6 +50,14 @@ class GraphBackendManager {
   // §5.5 with the default "external" trust level.
   GraphBackend* FromSnapshot(const GraphSnapshot& snap, std::string* error);
 
+  // §6.2 mount (Graph Synchronisation Protocol, Spec 05): allocate a fresh,
+  // empty, "external"-trust backend that stands in for a remote graph named by
+  // |graph_did|. Unlike Create(), the DID is bound up front (a mount is opened
+  // by DID, not minted locally) and no display name is set; the backend starts
+  // empty and is filled by the diffs the sync module delivers. The backend is
+  // owned here and returned by borrow; look it up later with Find(id).
+  GraphBackend* CreateMounted(const std::string& graph_did);
+
   // Resolves a live graph by its internal id (§7.2 named-graph resolution), or
   // nullptr if no such graph is owned here.
   GraphBackend* Find(const std::string& id);

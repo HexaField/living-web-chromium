@@ -1,0 +1,21 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// SubscriptionEvent — dispatched for GraphManager.onsubscriptiongained /
+// onsubscriptionlost (Graph Synchronisation Protocol spec §6.4, §8.5). For a
+// gained event `previousMode` is the mode just acquired and `reason` is null;
+// for a lost event `previousMode` is the mode held before loss and `reason`
+// carries the cause (e.g. capability revocation). Browser-dispatched only; not
+// constructible from script.
+//
+// Amendment 05/§6.4: the spec annotates this interface [Exposed=Window]; it is
+// implemented [Exposed=(Window,Worker)] to match GraphManager and every other
+// interface in this specification, which are all Window,Worker.
+
+[Exposed=(Window,Worker)]
+interface SubscriptionEvent : Event {
+  readonly attribute USVString graphDid;
+  readonly attribute MountMode previousMode;
+  readonly attribute USVString? reason;
+};
