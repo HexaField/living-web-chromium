@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Sync Module Architecture (Spec 06) — the §6.4 listModules() inventory — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 06 — Sync Module Architecture
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md
+//
+// A capability-scoped WebAssembly host installs, consents, instantiates and
+// mediates pluggable sync modules (§6, §7). Installation, consent and
+// instantiation are user-mediated browser operations (§7.1/§7.2) with no script
+// surface — a page cannot install a module or grant its own consent — so the
+// renderer-visible face of the runtime in this branch is the §6.4 read-only
+// inventory GraphManager.listModules(): a sequence of SyncModuleInfo records
+// projecting each installed module's content hash, name, live space count,
+// runtime state and total module-private storage. This WPT pins that surface:
+// the method presence, the SyncModuleInfo record shape, and the ModuleState
+// token set (§6.4). The full grant/scope/quota/lifecycle enforcement is exercised
+// by the content_unittests port (module_runtime_host_unittest.cc) and the
+// standalone conformance harness against the same shared cores.
+// ==========================================================================
+
+// §6.4 — the ModuleState token set surfaced by SyncModuleInfo.state.
+const MODULE_STATES = ['running', 'suspended', 'error'];
+
+// The group's sync module is REQUIRED (GROUP-IDENTITY §4.5); any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// §6.4 — listModules() is the runtime's renderer surface, on GraphManager.
+
+promise_test(async t => {
+  assert_equals(typeof navigator.graph.listModules, 'function',
+    'GraphManager MUST expose the §6.4 listModules() method');
+}, '§6.4 listModules() MUST be present on GraphManager');
+
+// §6.4 — listModules() resolves with a sequence<SyncModuleInfo>. A realm with no
+// user-installed modules reports an empty sequence (installation is user-mediated
+// with no script surface, so an unprivileged page observes an empty inventory).
+
+promise_test(async t => {
+  const modules = await navigator.graph.listModules();
+  assert_true(Array.isArray(modules),
+    'listModules() MUST resolve with a sequence (§6.4)');
+}, '§6.4 listModules() MUST resolve with a SyncModuleInfo sequence');
+
+// §6.4 — every SyncModuleInfo entry, whenever one is present, MUST carry the
+// §6.4 projection: a content-hash string, a nullable name, an unsigned space
+// count, a ModuleState token, and an unsigned storage-bytes total.
+
+promise_test(async t => {
+  const modules = await navigator.graph.listModules();
+  for (const m of modules) {
+    assert_equals(typeof m.contentHash, 'string',
+      'SyncModuleInfo.contentHash MUST be a string (§6.4)');
+    assert_true(m.name === null || typeof m.name === 'string',
+      'SyncModuleInfo.name MUST be a string or null (§6.4)');
+    assert_equals(typeof m.spaceCount, 'number',
+      'SyncModuleInfo.spaceCount MUST be an unsigned long (§6.4)');
+    assert_true(Number.isInteger(m.spaceCount) && m.spaceCount >= 0,
+      'SyncModuleInfo.spaceCount MUST be a non-negative integer (§4.4)');
+    assert_true(MODULE_STATES.includes(m.state),
+      'SyncModuleInfo.state MUST be a ModuleState token (§6.4)');
+    assert_equals(typeof m.storageBytes, 'number',
+      'SyncModuleInfo.storageBytes MUST be an unsigned long long (§8.1)');
+    assert_true(Number.isInteger(m.storageBytes) && m.storageBytes >= 0,
+      'SyncModuleInfo.storageBytes MUST be a non-negative integer (§8.1)');
+  }
+}, '§6.4 each SyncModuleInfo MUST carry the module inventory projection');
+
+// §6.4 — the inventory is a stable read: calling listModules() twice on an
+// unchanged realm yields the same set of content hashes.
+
+promise_test(async t => {
+  const a = await navigator.graph.listModules();
+  const b = await navigator.graph.listModules();
+  const hashesA = a.map(m => m.contentHash).sort();
+  const hashesB = b.map(m => m.contentHash).sort();
+  assert_array_equals(hashesB, hashesA,
+    'listModules() MUST be a stable read on an unchanged realm (§6.4)');
+}, '§6.4 listModules() MUST be a stable read across calls');
+
+// §6.4 — a group carries its sync-module reference in its authoritative
+// group://syncModule triple (GROUP-IDENTITY §4.5); creating a group and
+// publishing it exercises the module-reference path without a script install.
+// The realm inventory remains a well-formed sequence throughout (the seed urn is
+// a module *reference*, not an installed WASM component, so it need not surface
+// as a SyncModuleInfo — but the read MUST stay well-formed).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+
+  const modules = await navigator.graph.listModules();
+  assert_true(Array.isArray(modules),
+    'listModules() MUST stay a well-formed sequence after publish (§6.4)');
+  for (const m of modules) {
+    assert_equals(typeof m.contentHash, 'string',
+      'every SyncModuleInfo MUST keep its §6.4 shape after publish');
+    assert_true(MODULE_STATES.includes(m.state),
+      'every SyncModuleInfo.state MUST stay a ModuleState token after publish');
+  }
+}, '§6.4 listModules() MUST remain well-formed across a group publish');
+</script>

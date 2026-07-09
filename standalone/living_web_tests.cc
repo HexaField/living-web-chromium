@@ -37,6 +37,14 @@
 #include "sync_provider.h"
 #include "content/browser/graph_sync/graph_diff.h"
 
+// Spec 06 — Sync Module Architecture.
+#include "module_runtime_provider.h"
+#include "content/browser/module_runtime/module_capabilities.h"
+#include "content/browser/module_runtime/module_manifest.h"
+
+#include <chrono>
+#include <openssl/rand.h>
+
 using namespace living_web;
 
 // ============================================================
@@ -2466,6 +2474,916 @@ TEST(Sync_ReconnectBackoffDoublesAndCaps) {
   EXPECT_EQ(ReconnectBackoffMs(5), uint64_t(160000));
   EXPECT_EQ(ReconnectBackoffMs(6), uint64_t(300000));    // 320000 capped
   EXPECT_EQ(ReconnectBackoffMs(100), uint64_t(300000));  // stays capped
+}
+
+// ============================================================
+// Spec 06 — Sync Module Architecture
+// ============================================================
+//
+// These tests exercise the Chromium-independent module-runtime host contract
+// (ModuleRuntime + the two shared cores) directly: the test plays the WASM
+// module, calling the §6.3 host imports the way a component would, so every
+// grant/scope/quota/lifecycle decision the runtime makes is asserted without a
+// V8/component-model instance. The injected backends are REAL — a real Oxigraph
+// graph store (Spec 02 `Graph`), a real Ed25519 signer (`DIDKeyProvider`), a
+// real wall/monotonic clock and the OpenSSL CSPRNG — so the same bytes flow as
+// in the browser; only WASM instantiation itself (the §6.1 boundary) is absent.
+
+namespace {
+
+// The fake module binaries the harness content-addresses. The standalone
+// runtime never executes them — WASM instantiation is the browser overlay's
+// V8/component-model boundary (§6.1) — so any distinct bytes serve to drive the
+// host contract; two binaries give two distinct §4.2 content hashes.
+const char kModWasmA[] = "living-web-sync-module-A::wasm-component-bytes::v1";
+const char kModWasmB[] = "living-web-sync-module-B::wasm-component-bytes::v1";
+
+std::string ModContentHash(const std::string& wasm) {
+  return FormatModuleContentHash(crypto::SHA256HashString(wasm));
+}
+
+std::string ModJsonArr(const std::vector<std::string>& v) {
+  std::string s = "[";
+  for (size_t i = 0; i < v.size(); ++i) {
+    s += "\"" + v[i] + "\"";
+    if (i + 1 < v.size())
+      s += ",";
+  }
+  return s + "]";
+}
+
+// A §8.2 manifest JSON binding |content_hash|, requiring |kinds| / |caps|.
+std::string ModManifest(const std::string& name,
+                        const std::string& version,
+                        const std::string& content_hash,
+                        const std::vector<std::string>& kinds,
+                        const std::vector<std::string>& caps) {
+  return std::string("{") + "\"name\":\"" + name + "\"," + "\"version\":\"" +
+         version + "\"," + "\"wasmContentHash\":\"" + content_hash + "\"," +
+         "\"supportedConstraintKinds\":" + ModJsonArr(kinds) + "," +
+         "\"capabilitiesRequired\":" + ModJsonArr(caps) + "}";
+}
+
+// host-graph backing over real Spec 02 graphs, keyed by graph-did.
+class ModGraphBackend : public HostGraphBackend {
+ public:
+  explicit ModGraphBackend(DIDKeyProvider* identity) : identity_(identity) {}
+
+  Graph* AddGraph(const std::string& graph_did) {
+    auto g =
+        std::make_unique<Graph>(identity_, graph_did, GraphTrustLevel::kLocal);
+    Graph* raw = g.get();
+    graphs_[graph_did] = std::move(g);
+    return raw;
+  }
+  Graph* Get(const std::string& graph_did) {
+    auto it = graphs_.find(graph_did);
+    return it == graphs_.end() ? nullptr : it->second.get();
+  }
+
+  bool QueryTriples(const std::string& graph_did,
+                    const TripleQuery& query,
+                    std::vector<Triple>* out,
+                    std::string* err) override {
+    Graph* g = Get(graph_did);
+    if (!g) {
+      *err = "unknown graph";
+      return false;
+    }
+    if (!g->QueryTriples(query, out)) {
+      *err = g->last_error();
+      return false;
+    }
+    return true;
+  }
+  bool QuerySparql(const std::string& graph_did,
+                   const std::string& sparql,
+                   std::string* out,
+                   std::string* err) override {
+    Graph* g = Get(graph_did);
+    if (!g) {
+      *err = "unknown graph";
+      return false;
+    }
+    SparqlResult r = g->QuerySparql(sparql, {});
+    if (!r.ok) {
+      *err = r.error;
+      return false;
+    }
+    *out = r.payload;
+    return true;
+  }
+  bool Snapshot(const std::string& graph_did,
+                std::vector<Triple>* out,
+                std::string* err) override {
+    Graph* g = Get(graph_did);
+    if (!g) {
+      *err = "unknown graph";
+      return false;
+    }
+    if (!g->Snapshot(out)) {
+      *err = g->last_error();
+      return false;
+    }
+    return true;
+  }
+  bool Apply(const std::string& graph_did,
+             const GraphDiff& diff,
+             std::string* err) override {
+    Graph* g = Get(graph_did);
+    if (!g) {
+      *err = "unknown graph";
+      return false;
+    }
+    std::vector<Triple> adds;
+    for (const DiffTriple& dt : diff.additions)
+      adds.push_back(dt.triple);
+    if (!adds.empty() && !g->AddTriples(adds)) {
+      *err = g->last_error();
+      return false;
+    }
+    for (const DiffTriple& dt : diff.removals) {
+      bool removed = false;
+      if (!g->RemoveTriple(dt.triple, &removed)) {
+        *err = g->last_error();
+        return false;
+      }
+    }
+    return true;
+  }
+
+ private:
+  DIDKeyProvider* identity_;
+  std::map<std::string, std::unique_ptr<Graph>> graphs_;
+};
+
+// host-crypto backing: the scoped Ed25519 signer over a real DIDKeyProvider.
+class ModCryptoBackend : public HostCryptoBackend {
+ public:
+  ModCryptoBackend(DIDKeyProvider* identity, std::string signer_cred_id)
+      : identity_(identity), signer_(std::move(signer_cred_id)) {}
+
+  bool SignCommit(const std::string& /*graph_did*/,
+                  const std::string& commit_id,
+                  HostSigned* out,
+                  std::string* err) override {
+    const std::string msg = BuildSignatureMessage(commit_id);
+    auto sig = identity_->SignRaw(
+        signer_, std::vector<uint8_t>(msg.begin(), msg.end()));
+    if (!sig) {
+      *err = "sign failed";
+      return false;
+    }
+    out->signature = *sig;
+    const DIDKeyPair* k = identity_->GetCredential(signer_);
+    out->verification_method = k ? k->method_id : std::string();
+    return true;
+  }
+  bool SignSignal(const std::string& space_uri,
+                  const std::string& local_did,
+                  const std::string& remote_did,
+                  const std::vector<uint8_t>& payload,
+                  HostSigned* out,
+                  std::string* err) override {
+    std::string pre = space_uri;
+    pre.push_back('\x1f');
+    pre += local_did;
+    pre.push_back('\x1f');
+    pre += remote_did;
+    pre.push_back('\x1f');
+    pre.append(payload.begin(), payload.end());
+    auto sig = identity_->SignRaw(
+        signer_, std::vector<uint8_t>(pre.begin(), pre.end()));
+    if (!sig) {
+      *err = "sign failed";
+      return false;
+    }
+    out->signature = *sig;
+    const DIDKeyPair* k = identity_->GetCredential(signer_);
+    out->verification_method = k ? k->method_id : std::string();
+    return true;
+  }
+  bool Verify(const std::vector<uint8_t>& message,
+              const HostSigned& signature,
+              const std::string& public_key,
+              bool* valid) override {
+    auto pub = did_key::ParseDidKeyEd25519(public_key);
+    if (!pub || pub->size() != 32 || signature.signature.size() != 64) {
+      *valid = false;
+      return true;
+    }
+    *valid = ed25519_verify(signature.signature.data(), message.data(),
+                            message.size(), pub->data()) == 1;
+    return true;
+  }
+
+ private:
+  DIDKeyProvider* identity_;
+  std::string signer_;
+};
+
+// An in-process loopback transport: framed messages sent are echoed back on
+// receive. No external I/O, but a real byte stream with real close semantics.
+class ModConnection : public HostConnection {
+ public:
+  bool Send(const std::vector<uint8_t>& message, HostError* err) override {
+    if (!open_) {
+      *err = HostError::kNetworkError;
+      return false;
+    }
+    inbox_.push_back(message);
+    return true;
+  }
+  bool Receive(std::vector<uint8_t>* out,
+               bool* closed,
+               HostError* /*err*/) override {
+    if (inbox_.empty()) {
+      out->clear();
+      *closed = !open_;
+      return true;
+    }
+    *out = inbox_.front();
+    inbox_.erase(inbox_.begin());
+    *closed = false;
+    return true;
+  }
+  bool IsOpen() const override { return open_; }
+  void Close() override { open_ = false; }
+
+ private:
+  bool open_ = true;
+  std::vector<std::vector<uint8_t>> inbox_;
+};
+
+class ModNetworkBackend : public HostNetworkBackend {
+ public:
+  HostConnection* Connect(const std::string&,
+                          RelayProtocol,
+                          HostError*) override {
+    conns_.push_back(std::make_unique<ModConnection>());
+    return conns_.back().get();
+  }
+  HostConnection* PeerConnect(const std::string&,
+                              const std::string&,
+                              HostError*) override {
+    conns_.push_back(std::make_unique<ModConnection>());
+    return conns_.back().get();
+  }
+  bool Fetch(const std::string& url,
+             std::vector<uint8_t>* out,
+             HostError*) override {
+    out->assign(url.begin(), url.end());  // echo the URL bytes as the body
+    return true;
+  }
+
+ private:
+  std::vector<std::unique_ptr<ModConnection>> conns_;
+};
+
+// Wire the injected primitives: real SHA-256, real clocks, the OpenSSL CSPRNG.
+ModuleRuntimeDeps ModDeps(HostGraphBackend* g,
+                          HostCryptoBackend* c,
+                          HostNetworkBackend* n) {
+  ModuleRuntimeDeps d;
+  d.sha256_raw = [](const std::string& s) {
+    return crypto::SHA256HashString(s);
+  };
+  d.graph = g;
+  d.crypto = c;
+  d.network = n;
+  d.now_wallclock_ms = []() -> uint64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+  };
+  d.now_monotonic_ns = []() -> uint64_t {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+  d.random_bytes = [](uint32_t len) {
+    std::vector<uint8_t> v(len);
+    if (len)
+      RAND_bytes(v.data(), static_cast<int>(len));
+    return v;
+  };
+  return d;
+}
+
+}  // namespace
+
+// ---- §4.2 content-addressing (module_manifest.cc) ----
+
+TEST(Module_ContentHash_FormatAndWellFormedness) {
+  const std::string h = FormatModuleContentHash(crypto::SHA256HashString("abc"));
+  EXPECT_EQ(h.size(), size_t(71));               // "sha256-" (7) + 64 hex
+  EXPECT_TRUE(h.compare(0, 7, "sha256-") == 0);
+  EXPECT_TRUE(IsWellFormedContentHash(h));
+  // Deterministic: same binary → same address (§4.2 mutual verifiability).
+  EXPECT_EQ(h, FormatModuleContentHash(crypto::SHA256HashString("abc")));
+
+  EXPECT_FALSE(IsWellFormedContentHash(h.substr(0, 70)));  // 63 hex digits
+  EXPECT_FALSE(IsWellFormedContentHash("sha256-" + std::string(64, 'g')));
+  std::string upper = h;
+  upper[7] = 'A';  // uppercase hex is not lowercase-hex
+  EXPECT_FALSE(IsWellFormedContentHash(upper));
+  EXPECT_FALSE(IsWellFormedContentHash("sha512-" + h.substr(7)));  // wrong prefix
+}
+
+// ---- §8.2 manifest parse ----
+
+TEST(Module_Manifest_ParseValidPopulatesFields) {
+  const std::string ch = ModContentHash(kModWasmA);
+  ModuleManifest m;
+  std::string err;
+  EXPECT_TRUE(ParseModuleManifest(
+      ModManifest("Default Sync", "1.2.0", ch, {"capability", "shape"},
+                  {"graph.read", "graph.write"}),
+      &m, &err));
+  EXPECT_TRUE(m.valid);
+  EXPECT_EQ(m.name, std::string("Default Sync"));
+  EXPECT_EQ(m.version, std::string("1.2.0"));
+  EXPECT_EQ(m.wasm_content_hash, ch);
+  EXPECT_EQ(m.supported_constraint_kinds.size(), size_t(2));
+  EXPECT_EQ(m.capabilities_required.size(), size_t(2));
+
+  // Optional publisher/description are captured when present, ignored when not.
+  ModuleManifest m2;
+  EXPECT_TRUE(ParseModuleManifest(
+      std::string("{\"name\":\"n\",\"version\":\"1\",\"wasmContentHash\":\"") +
+          ch +
+          "\",\"supportedConstraintKinds\":[],\"capabilitiesRequired\":[],"
+          "\"publisher\":\"acme\",\"description\":\"d\"}",
+      &m2, &err));
+  EXPECT_EQ(m2.publisher, std::string("acme"));
+  EXPECT_EQ(m2.description, std::string("d"));
+}
+
+TEST(Module_Manifest_RejectsMalformed) {
+  const std::string ch = ModContentHash(kModWasmA);
+  ModuleManifest m;
+  std::string err;
+  auto reject = [&](const std::string& json) {
+    return !ParseModuleManifest(json, &m, &err) && !m.valid;
+  };
+  // Missing each required field.
+  EXPECT_TRUE(reject(std::string("{\"version\":\"1\",\"wasmContentHash\":\"") +
+                     ch +
+                     "\",\"supportedConstraintKinds\":[],"
+                     "\"capabilitiesRequired\":[]}"));
+  EXPECT_TRUE(reject(std::string("{\"name\":\"n\",\"wasmContentHash\":\"") + ch +
+                     "\",\"supportedConstraintKinds\":[],"
+                     "\"capabilitiesRequired\":[]}"));
+  EXPECT_TRUE(reject(
+      "{\"name\":\"n\",\"version\":\"1\",\"supportedConstraintKinds\":[],"
+      "\"capabilitiesRequired\":[]}"));
+  EXPECT_TRUE(reject(std::string("{\"name\":\"n\",\"version\":\"1\","
+                                 "\"wasmContentHash\":\"") +
+                     ch + "\",\"capabilitiesRequired\":[]}"));
+  EXPECT_TRUE(reject(std::string("{\"name\":\"n\",\"version\":\"1\","
+                                 "\"wasmContentHash\":\"") +
+                     ch + "\",\"supportedConstraintKinds\":[]}"));
+  // Malformed content hash.
+  EXPECT_TRUE(
+      reject("{\"name\":\"n\",\"version\":\"1\",\"wasmContentHash\":\"sha256-xy"
+             "\",\"supportedConstraintKinds\":[],\"capabilitiesRequired\":[]}"));
+  // Wrong-typed array fields.
+  EXPECT_TRUE(reject(std::string("{\"name\":\"n\",\"version\":\"1\","
+                                 "\"wasmContentHash\":\"") +
+                     ch +
+                     "\",\"supportedConstraintKinds\":\"nope\","
+                     "\"capabilitiesRequired\":[]}"));
+  EXPECT_TRUE(reject(std::string("{\"name\":\"n\",\"version\":\"1\","
+                                 "\"wasmContentHash\":\"") +
+                     ch +
+                     "\",\"supportedConstraintKinds\":[],"
+                     "\"capabilitiesRequired\":[1,2]}"));
+}
+
+TEST(Module_Manifest_BindsContentHash) {
+  const std::string ch = ModContentHash(kModWasmA);
+  ModuleManifest m;
+  std::string err;
+  EXPECT_TRUE(ParseModuleManifest(
+      ModManifest("n", "1", ch, {"capability"}, {"graph.read"}), &m, &err));
+  EXPECT_TRUE(ManifestBindsContentHash(m, ch));
+  EXPECT_FALSE(ManifestBindsContentHash(m, ModContentHash(kModWasmB)));
+  EXPECT_FALSE(ManifestBindsContentHash(m, std::string()));
+}
+
+// ---- §7.1 installation ----
+
+TEST(Module_Install_VerifiesContentHashAndCaps) {
+  ModGraphBackend gb(nullptr);
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+
+  // A manifest that binds the exact binary installs, consent pending (§7.2).
+  auto ok = rt.Install(
+      kModWasmA, ModManifest("m", "1", ch, {"capability"}, {"graph.read"}));
+  EXPECT_TRUE(ok.ok);
+  EXPECT_EQ(ok.content_hash, ch);
+  EXPECT_TRUE(rt.IsInstalled(ch));
+  EXPECT_TRUE(rt.ConsentOf(ch) == ConsentDecision::kPending);
+
+  // A manifest binding a DIFFERENT binary is rejected (§8.2/§9.2).
+  auto wrong = rt.Install(
+      kModWasmA,
+      ModManifest("m", "1", ModContentHash(kModWasmB), {"capability"},
+                  {"graph.read"}));
+  EXPECT_FALSE(wrong.ok);
+  EXPECT_TRUE(wrong.error == HostError::kInvalidArgument);
+
+  // An unknown capability token is rejected at install (§7.1 step 3).
+  auto badcap = rt.Install(
+      kModWasmB,
+      ModManifest("m", "1", ModContentHash(kModWasmB), {"capability"},
+                  {"graph.read", "totally.made.up"}));
+  EXPECT_FALSE(badcap.ok);
+  EXPECT_TRUE(badcap.error == HostError::kInvalidArgument);
+}
+
+// ---- §7.2 consent gates instantiation and every surface ----
+
+TEST(Module_Consent_GatesInstantiationAndSurfaces) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(
+      rt.Install(kModWasmA,
+                 ModManifest("m", "1", ch, {"capability"}, {"graph.read"}))
+          .ok);
+
+  // Instantiation before consent is not-authorised (§7.2).
+  EXPECT_TRUE(rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"})
+                  .error == HostError::kNotAuthorised);
+
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"})
+                  .ok);
+  EXPECT_TRUE(rt.ReaderSnapshot(ch, "space://s", "did:graph:g1").ok);
+
+  // Revoking consent immediately closes the surfaces (§8.3 — no forging past).
+  EXPECT_TRUE(rt.DenyConsent(ch));
+  EXPECT_TRUE(rt.ReaderSnapshot(ch, "space://s", "did:graph:g1").error ==
+              HostError::kNotAuthorised);
+}
+
+// ---- §6.3 host-graph: capability + scope + real read/write ----
+
+TEST(Module_HostGraph_CapabilityScopeAndRealIO) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(rt.Install(kModWasmA,
+                         ModManifest("m", "1", ch, {"capability"},
+                                     {"graph.read", "graph.write"}))
+                  .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+
+  // Write a real diff through the writer surface; it lands in Oxigraph.
+  GraphDiff diff;
+  diff.graph_did = "did:graph:g1";
+  DiffTriple dt;
+  dt.triple = MakeLit("urn:note:1", "https://schema.org/name", "Hello");
+  diff.additions.push_back(dt);
+  EXPECT_TRUE(rt.WriterApply(ch, "space://s", "did:graph:g1", diff).ok);
+
+  // Read it back through the reader surface.
+  auto q = rt.ReaderQueryTriples(ch, "space://s", "did:graph:g1", TripleQuery{});
+  EXPECT_TRUE(q.ok);
+  EXPECT_EQ(q.value.size(), size_t(1));
+  EXPECT_EQ(q.value[0].subject, std::string("urn:note:1"));
+
+  // Snapshot and SPARQL are equally real.
+  auto snap = rt.ReaderSnapshot(ch, "space://s", "did:graph:g1");
+  EXPECT_TRUE(snap.ok);
+  EXPECT_EQ(snap.value.size(), size_t(1));
+  auto sr = rt.ReaderQuerySparql(ch, "space://s", "did:graph:g1",
+                                 "SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }");
+  EXPECT_TRUE(sr.ok);
+  EXPECT_GT(sr.value.size(), size_t(0));
+
+  // A graph outside the authorised set is unknown-scope (§5.3), not a read.
+  EXPECT_TRUE(
+      rt.ReaderQueryTriples(ch, "space://s", "did:graph:other", TripleQuery{})
+          .error == HostError::kUnknownScope);
+}
+
+TEST(Module_HostGraph_WriteRequiresGrant) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  // graph.read only — no graph.write.
+  EXPECT_TRUE(
+      rt.Install(kModWasmA,
+                 ModManifest("m", "1", ch, {"capability"}, {"graph.read"}))
+          .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+
+  GraphDiff diff;
+  diff.graph_did = "did:graph:g1";
+  DiffTriple dt;
+  dt.triple = MakeLit("urn:x", "urn:p", "v");
+  diff.additions.push_back(dt);
+  EXPECT_TRUE(rt.WriterApply(ch, "space://s", "did:graph:g1", diff).error ==
+              HostError::kNotAuthorised);
+}
+
+// ---- §5.4 / §9.7 scoped signer ----
+
+TEST(Module_ScopedSigner_CommitLedgerAndVerify) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  DIDKeyProvider sp;
+  auto signer = sp.CreateKey("Signer");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModCryptoBackend cb(&sp, signer->id);
+  ModuleRuntime rt(ModDeps(&gb, &cb, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(rt.Install(kModWasmA,
+                         ModManifest("m", "1", ch, {"capability"},
+                                     {"crypto.commit-sign", "crypto.verify"}))
+                  .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+
+  const std::string commit_id =
+      ToLowerHex(crypto::SHA256HashString("commit-payload-1"));
+
+  // §9.7: a commit-id the module never built cannot be signed.
+  EXPECT_TRUE(rt.SignCommit(ch, "space://s", "did:graph:g1", commit_id).error ==
+              HostError::kSigningRefused);
+
+  // The runtime observes module.commit build the diff → the id becomes eligible.
+  EXPECT_TRUE(rt.RecordCommit(ch, "space://s", "did:graph:g1", commit_id).ok);
+  auto sig = rt.SignCommit(ch, "space://s", "did:graph:g1", commit_id);
+  EXPECT_TRUE(sig.ok);
+  EXPECT_EQ(sig.value.signature.size(), size_t(64));
+
+  // The signature verifies over the commit-id via the verify surface.
+  std::vector<uint8_t> msg(commit_id.begin(), commit_id.end());
+  auto ver = rt.Verify(ch, "space://s", msg, sig.value, signer->did);
+  EXPECT_TRUE(ver.ok);
+  EXPECT_TRUE(ver.value);
+
+  // Recording against a non-authorised graph is unknown-scope; signing a
+  // commit for a graph it was not built on stays refused (exhaustive shapes).
+  EXPECT_TRUE(
+      rt.RecordCommit(ch, "space://s", "did:graph:other", commit_id).error ==
+      HostError::kUnknownScope);
+  EXPECT_TRUE(rt.SignCommit(ch, "space://s", "did:graph:other", commit_id)
+                  .error == HostError::kSigningRefused);
+}
+
+TEST(Module_ScopedSigner_SignalGatedByCapability) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  DIDKeyProvider sp;
+  auto signer = sp.CreateKey("Signer");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModCryptoBackend cb(&sp, signer->id);
+  const std::string ch = ModContentHash(kModWasmA);
+
+  // Without crypto.signal-sign the signal signer is not-authorised.
+  ModuleRuntime ro(ModDeps(&gb, &cb, nullptr));
+  EXPECT_TRUE(ro.Install(kModWasmA, ModManifest("m", "1", ch, {"capability"},
+                                                 {"crypto.commit-sign"}))
+                  .ok);
+  EXPECT_TRUE(ro.GrantConsent(ch));
+  EXPECT_TRUE(
+      ro.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+  EXPECT_TRUE(ro.SignSignal(ch, "space://s", "did:key:peer", {1, 2, 3}).error ==
+              HostError::kNotAuthorised);
+
+  // With it, a signal envelope is signed.
+  ModuleRuntime rw(ModDeps(&gb, &cb, nullptr));
+  EXPECT_TRUE(rw.Install(kModWasmA, ModManifest("m", "1", ch, {"capability"},
+                                                {"crypto.signal-sign"}))
+                  .ok);
+  EXPECT_TRUE(rw.GrantConsent(ch));
+  EXPECT_TRUE(
+      rw.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+  auto s = rw.SignSignal(ch, "space://s", "did:key:peer", {1, 2, 3});
+  EXPECT_TRUE(s.ok);
+  EXPECT_EQ(s.value.signature.size(), size_t(64));
+}
+
+// ---- §8.1 host-storage: quota + per-(module,graph) isolation ----
+
+TEST(Module_HostStorage_QuotaScopeAndIsolation) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+
+  const std::string chA = ModContentHash(kModWasmA);
+  const std::string chB = ModContentHash(kModWasmB);
+  EXPECT_TRUE(rt.Install(kModWasmA, ModManifest("A", "1", chA, {"capability"},
+                                                {"storage.module.64"}))
+                  .ok);
+  EXPECT_TRUE(rt.Install(kModWasmB, ModManifest("B", "1", chB, {"capability"},
+                                                {"storage.module.64"}))
+                  .ok);
+  EXPECT_TRUE(rt.GrantConsent(chA));
+  EXPECT_TRUE(rt.GrantConsent(chB));
+  EXPECT_TRUE(
+      rt.Instantiate(chA, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+  EXPECT_TRUE(
+      rt.Instantiate(chB, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+
+  // Within the 64-byte cap ("k"=1 + 63 value = 64): accepted.
+  EXPECT_TRUE(rt.StorageSet(chA, "space://s", "did:graph:g1", "k",
+                            std::vector<uint8_t>(63, 'x'))
+                  .ok);
+  auto got = rt.StorageGet(chA, "space://s", "did:graph:g1", "k");
+  EXPECT_TRUE(got.ok);
+  EXPECT_TRUE(got.value.has_value());
+  EXPECT_EQ(got.value->size(), size_t(63));
+
+  // One more byte exceeds the declared cap (§8.1).
+  EXPECT_TRUE(rt.StorageSet(chA, "space://s", "did:graph:g1", "k",
+                            std::vector<uint8_t>(64, 'y'))
+                  .error == HostError::kQuotaExceeded);
+
+  // Module B shares the graph but sees NONE of A's keys (§9.5 isolation).
+  auto b = rt.StorageGet(chB, "space://s", "did:graph:g1", "k");
+  EXPECT_TRUE(b.ok);
+  EXPECT_FALSE(b.value.has_value());
+
+  // Storage outside the authorised graph set is unknown-scope.
+  EXPECT_TRUE(rt.StorageSet(chA, "space://s", "did:graph:other", "k", {1})
+                  .error == HostError::kUnknownScope);
+
+  // Delete frees the accounting so subsequent writes fit; list-keys honours
+  // the prefix filter. "k" (64 bytes) must be released before "p1" + "big"
+  // (3 + 53 = 56 bytes) can be admitted under the 64-byte cap.
+  EXPECT_TRUE(rt.StorageDelete(chA, "space://s", "did:graph:g1", "k").ok);
+  EXPECT_TRUE(rt.StorageSet(chA, "space://s", "did:graph:g1", "p1", {1}).ok);
+  EXPECT_TRUE(rt.StorageSet(chA, "space://s", "did:graph:g1", "big",
+                            std::vector<uint8_t>(50, 'z'))
+                  .ok);
+  auto keys = rt.StorageListKeys(chA, "space://s", "did:graph:g1",
+                                 std::optional<std::string>("p"));
+  EXPECT_TRUE(keys.ok);
+  EXPECT_EQ(keys.value.size(), size_t(1));
+  EXPECT_EQ(keys.value[0], std::string("p1"));
+}
+
+// ---- §6.3 host-network: capability gating over a loopback transport ----
+
+TEST(Module_HostNetwork_GatingAndTransport) {
+  ModNetworkBackend nb;
+  ModuleRuntime rt(ModDeps(nullptr, nullptr, &nb));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(
+      rt.Install(kModWasmA,
+                 ModManifest("m", "1", ch, {"capability"},
+                             {"network.relay.wss://relay.example/hub",
+                              "network.peer.lw-sync/1",
+                              "network.fetch.https://cdn.example/"}))
+          .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(rt.Instantiate(ch, "space://s", "did:key:local", {}).ok);
+
+  // Granted relay endpoint: a live connection with real send/receive/close.
+  auto conn = rt.NetworkConnect(ch, "space://s", "wss://relay.example/hub",
+                                RelayProtocol::kWebSocket);
+  EXPECT_TRUE(conn.ok);
+  HostError se = HostError::kNone;
+  EXPECT_TRUE(conn.value->Send({7, 8, 9}, &se));
+  std::vector<uint8_t> rx;
+  bool closed = true;
+  HostError re = HostError::kNone;
+  EXPECT_TRUE(conn.value->Receive(&rx, &closed, &re));
+  EXPECT_EQ(rx.size(), size_t(3));
+  EXPECT_FALSE(closed);
+  conn.value->Close();
+  EXPECT_FALSE(conn.value->IsOpen());
+
+  // Un-granted relay endpoint: not-authorised.
+  EXPECT_TRUE(rt.NetworkConnect(ch, "space://s", "wss://evil.example/",
+                                RelayProtocol::kWebSocket)
+                  .error == HostError::kNotAuthorised);
+
+  // Peer protocol match / mismatch.
+  EXPECT_TRUE(
+      rt.PeerConnect(ch, "space://s", "did:key:peer", "lw-sync/1").ok);
+  EXPECT_TRUE(rt.PeerConnect(ch, "space://s", "did:key:peer", "other/9").error ==
+              HostError::kNotAuthorised);
+
+  // Fetch is origin-scoped: same origin ok, foreign origin denied.
+  auto f = rt.Fetch(ch, "space://s", "https://cdn.example/model.bin");
+  EXPECT_TRUE(f.ok);
+  EXPECT_GT(f.value.size(), size_t(0));
+  EXPECT_TRUE(rt.Fetch(ch, "space://s", "https://evil.example/x").error ==
+              HostError::kNotAuthorised);
+}
+
+// ---- §6.3 host-clock / host-random gating ----
+
+TEST(Module_HostClockRandom_GatingAndCoarsening) {
+  ModuleRuntime rt(ModDeps(nullptr, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(
+      rt.Install(kModWasmA,
+                 ModManifest("m", "1", ch, {"capability"},
+                             {"time.wallclock", "time.monotonic",
+                              "random.csprng"}))
+          .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(rt.Instantiate(ch, "space://s", "did:key:local", {}).ok);
+
+  auto wc = rt.NowWallclockMs(ch, "space://s");
+  EXPECT_TRUE(wc.ok);
+  EXPECT_EQ(wc.value % 1000, uint64_t(0));  // §8 coarsened to 1s
+  EXPECT_TRUE(rt.NowMonotonicNs(ch, "space://s").ok);
+  auto rnd = rt.GetRandomBytes(ch, "space://s", 16);
+  EXPECT_TRUE(rnd.ok);
+  EXPECT_EQ(rnd.value.size(), size_t(16));
+
+  // A module without these grants is denied on every clock/random surface.
+  const std::string ch2 = ModContentHash(kModWasmB);
+  EXPECT_TRUE(
+      rt.Install(kModWasmB,
+                 ModManifest("m", "1", ch2, {"capability"}, {"graph.read"}))
+          .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch2));
+  EXPECT_TRUE(rt.Instantiate(ch2, "space://s", "did:key:local", {}).ok);
+  EXPECT_TRUE(rt.NowWallclockMs(ch2, "space://s").error ==
+              HostError::kNotAuthorised);
+  EXPECT_TRUE(rt.NowMonotonicNs(ch2, "space://s").error ==
+              HostError::kNotAuthorised);
+  EXPECT_TRUE(rt.GetRandomBytes(ch2, "space://s", 8).error ==
+              HostError::kNotAuthorised);
+}
+
+// ---- §7.4 / §7.5 lifecycle: suspend, resume, remove (stores preserved) ----
+
+TEST(Module_Lifecycle_SuspendResumeRemovePreservesStores) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(rt.Install(kModWasmA, ModManifest("m", "1", ch, {"capability"},
+                                                {"storage.module.128"}))
+                  .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+  EXPECT_TRUE(rt.StorageSet(ch, "space://s", "did:graph:g1", "k",
+                            std::vector<uint8_t>{1, 2, 3, 4})
+                  .ok);
+
+  // §7.5 suspension stops surface activity.
+  EXPECT_TRUE(rt.Suspend(ch, "space://s").ok);
+  EXPECT_TRUE(rt.StorageGet(ch, "space://s", "did:graph:g1", "k").error ==
+              HostError::kNotAuthorised);
+  // Resume restores it without re-instantiation.
+  EXPECT_TRUE(rt.Resume(ch, "space://s").ok);
+  auto got = rt.StorageGet(ch, "space://s", "did:graph:g1", "k");
+  EXPECT_TRUE(got.ok);
+  EXPECT_TRUE(got.value.has_value());
+
+  // §7.4 removal drops instances + grants but PRESERVES the per-graph store.
+  EXPECT_TRUE(rt.Remove(ch));
+  EXPECT_FALSE(rt.IsInstalled(ch));
+  EXPECT_EQ(rt.InstanceCount(), size_t(0));
+
+  // Re-install + re-consent + re-mount: the preserved store is still there.
+  EXPECT_TRUE(rt.Install(kModWasmA, ModManifest("m", "1", ch, {"capability"},
+                                                {"storage.module.128"}))
+                  .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://s", "did:key:local", {"did:graph:g1"}).ok);
+  auto revived = rt.StorageGet(ch, "space://s", "did:graph:g1", "k");
+  EXPECT_TRUE(revived.ok);
+  EXPECT_TRUE(revived.value.has_value());
+  EXPECT_EQ(revived.value->size(), size_t(4));
+
+  // Purging after the grace period truly clears it.
+  EXPECT_TRUE(rt.PurgeStorage(ch, "did:graph:g1"));
+  EXPECT_FALSE(
+      rt.StorageGet(ch, "space://s", "did:graph:g1", "k").value.has_value());
+}
+
+// ---- §7.3 fork constraint-kind superset precondition ----
+
+TEST(Module_Fork_ConstraintKindSuperset) {
+  const std::string ch = ModContentHash(kModWasmA);
+  ModuleManifest child;
+  std::string err;
+  EXPECT_TRUE(ParseModuleManifest(
+      ModManifest("child", "2", ch, {"capability", "expiry", "shape"},
+                  {"graph.read"}),
+      &child, &err));
+
+  std::vector<std::string> missing;
+  // Child supports a superset of the parent's in-force kinds → compatible.
+  EXPECT_TRUE(ModuleRuntime::ForkCompatible(child, {"capability", "expiry"},
+                                            &missing));
+  EXPECT_TRUE(missing.empty());
+
+  // A kind the child lacks blocks the fork and is reported.
+  EXPECT_FALSE(ModuleRuntime::ForkCompatible(child, {"capability", "geo"},
+                                             &missing));
+  EXPECT_EQ(missing.size(), size_t(1));
+  EXPECT_EQ(missing[0], std::string("geo"));
+}
+
+// ---- §4.4 instancing + §7.6 introspection ----
+
+TEST(Module_Instancing_PerSpaceScope) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  gb.AddGraph("did:graph:g2");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string ch = ModContentHash(kModWasmA);
+  EXPECT_TRUE(
+      rt.Install(kModWasmA, ModManifest("m", "1", ch, {"capability"},
+                                        {"graph.read", "storage.module.64"}))
+          .ok);
+  EXPECT_TRUE(rt.GrantConsent(ch));
+
+  // One instance per (content-hash, space-uri); each carries its own scope.
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://A", "did:key:local", {"did:graph:g1"}).ok);
+  EXPECT_TRUE(
+      rt.Instantiate(ch, "space://B", "did:key:local", {"did:graph:g2"}).ok);
+  EXPECT_EQ(rt.InstanceCount(), size_t(2));
+
+  // Space A cannot reach graph g2 (authorised only in space B).
+  EXPECT_TRUE(
+      rt.ReaderQueryTriples(ch, "space://A", "did:graph:g2", TripleQuery{})
+          .error == HostError::kUnknownScope);
+  EXPECT_TRUE(
+      rt.ReaderQueryTriples(ch, "space://B", "did:graph:g2", TripleQuery{}).ok);
+}
+
+TEST(Module_ListModules_Introspection) {
+  DIDKeyProvider gp;
+  gp.CreateKey("Human");
+  ModGraphBackend gb(&gp);
+  gb.AddGraph("did:graph:g1");
+  ModuleRuntime rt(ModDeps(&gb, nullptr, nullptr));
+  const std::string chA = ModContentHash(kModWasmA);
+  const std::string chB = ModContentHash(kModWasmB);
+  EXPECT_TRUE(
+      rt.Install(kModWasmA, ModManifest("Alpha", "1", chA, {"capability"},
+                                        {"storage.module.128"}))
+          .ok);
+  EXPECT_TRUE(
+      rt.Install(kModWasmB,
+                 ModManifest("Beta", "1", chB, {"capability"}, {"graph.read"}))
+          .ok);
+  EXPECT_TRUE(rt.GrantConsent(chA));  // Beta stays pending
+
+  EXPECT_TRUE(
+      rt.Instantiate(chA, "space://A", "did:key:local", {"did:graph:g1"}).ok);
+  EXPECT_TRUE(
+      rt.Instantiate(chA, "space://B", "did:key:local", {"did:graph:g1"}).ok);
+  EXPECT_TRUE(rt.StorageSet(chA, "space://A", "did:graph:g1", "k",
+                            std::vector<uint8_t>(10, 'a'))
+                  .ok);
+
+  bool saw_alpha = false, saw_beta = false;
+  for (const ModuleStatus& s : rt.ListModules()) {
+    if (s.content_hash == chA) {
+      saw_alpha = true;
+      EXPECT_TRUE(s.consent == ConsentDecision::kGranted);
+      EXPECT_EQ(s.space_count, size_t(2));
+      EXPECT_GT(s.storage_bytes, uint64_t(0));
+      EXPECT_EQ(s.name, std::string("Alpha"));
+    } else if (s.content_hash == chB) {
+      saw_beta = true;
+      EXPECT_TRUE(s.consent == ConsentDecision::kPending);
+      EXPECT_EQ(s.space_count, size_t(0));
+    }
+  }
+  EXPECT_TRUE(saw_alpha);
+  EXPECT_TRUE(saw_beta);
 }
 
 // ============================================================

@@ -25,6 +25,8 @@
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph/personal_graph_host.h"
 #include "content/browser/graph_sync/sync_backend.h"
+#include "content/browser/module_runtime/module_runtime_backends.h"
+#include "content/browser/module_runtime/module_runtime_host.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -101,6 +103,8 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   static graph::mojom::GraphTrustLevel TrustToMojo(GraphTrustLevel t);
   static GraphTrustLevel TrustFromMojo(graph::mojom::GraphTrustLevel t);
   static graph::mojom::GraphInfoPtr BuildInfo(GraphBackend* backend);
+  // §6.4 ModuleState projection: the runtime's own state enum onto the wire enum.
+  static graph::mojom::ModuleState ModuleStateToMojo(ModuleRuntimeState s);
 
   // Binds |host| (wrapping the graph with internal |id|) into |hosts_| and wires
   // its pipe-disconnect to OnHostDisconnected.
@@ -116,6 +120,15 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   // Declared after |governance_|: SyncBackend borrows &governance_ at
   // construction, so it must be initialised later (and destroyed earlier).
   SyncBackend sync_;
+  // §6 module runtime ([[SYNC-MODULE-ARCHITECTURE]], Spec 06): the capability-
+  // scoped host that owns the realm's installed sync modules and answers §6.4
+  // listModules(). Its host-graph / host-crypto backings are the adapters below
+  // (bound over |backends_| and |identity|); the host-network backing is null in
+  // this branch (see module_runtime_backends.h). |module_runtime_| borrows both
+  // adapters, so it is declared last and destroyed first.
+  ModuleGraphAdapter module_graph_;
+  ModuleCryptoAdapter module_crypto_;
+  ModuleRuntimeHost module_runtime_;
   std::vector<std::unique_ptr<PersonalGraphHost>> hosts_;
   // §6.2 mount table, keyed by mounted graph DID.
   std::map<std::string, MountEntry> mounts_;

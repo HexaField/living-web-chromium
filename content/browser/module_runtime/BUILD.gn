@@ -1,0 +1,73 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Spec 06 — Sync Module Architecture: the browser-process module runtime.
+#
+# A capability-scoped host that installs, consents, instantiates and mediates
+# pluggable WebAssembly sync modules (§6, §7). Every §6.3 host import a module
+# calls — host-graph, host-crypto, host-network, host-storage, host-consent,
+# host-clock, host-random, host-log — is authorised here against the module's
+# §8 capability grants, its per-instance scope, and its §8.1 storage quota; only
+# an already-authorised operation is carried down to the injected backend. This
+# source_set sits directly above the graph and sync layers: it depends on the
+# graph layer ("//content/browser/graph", for the GraphBackend a module reads and
+# writes), the sync layer ("//content/browser/graph_sync", for the GraphDiff a
+# writer module applies and the commitId signature pre-image), and the identity
+# layer ("//content/browser/did:did", for the did:key codec + the DIDKeyProvider
+# scoped signer) — none of which depend back on it, so no cycle forms.
+#
+# ModuleRuntimeHost is a per-graph-realm object owned by PersonalGraphManager
+# (":graph") alongside the graph, governance and sync backends. The Spec 06
+# renderer surface is the §6.4 listModules() view already carried by graph.mojom's
+# SyncModuleInfo (added with the Spec 05 seam), so it is folded into
+# PersonalGraphManager in the ":graph" target rather than exposed through a
+# separate Mojo host here — in the production single //content/browser target the
+# layers co-compile and PersonalGraphManager constructs the host directly (exactly
+# as it constructs SyncBackend across the ":graph"/":graph_sync" boundary).
+#
+# The module-facing ABI this host provides is the normative WIT world
+# `graph-sync-module` (§6.3), checked in verbatim beside this target as
+# graph_sync_module.wit. It is a reference asset, not a compiled source: a .wit
+# is not C++, so it is deliberately absent from `sources` — a component toolchain
+# binds a module against it while this source_set implements the host side of the
+# same seven §6.3 host imports. Keep the two in lockstep (see SPEC_COMPLIANCE).
+#
+# The host-network backing is intentionally absent: a real relay/peer transport is
+# asynchronous and requires the WebAssembly Component Model execution engine's
+# task-suspension bridge (§6.2), which no seam wires up in this branch;
+# PersonalGraphManager constructs the runtime with a null network backend, and the
+# runtime answers every network import with `internal` when it is null (see
+# module_runtime_backends.h and SPEC_COMPLIANCE Spec 06). The Ed25519 verify
+# primitive (third_party/ed25519, used by host-crypto verify) is NOT listed in
+# deps: it is pulled in through its own third_party target by the //content build,
+# and //third_party/boringssl supplies the SHA-256 backing crypto::SHA256HashString
+# and the platform CSPRNG behind crypto::RandBytesAsVector.
+source_set("module_runtime") {
+  sources = [
+    # Chromium-independent byte-critical cores (namespace living_web), shared
+    # verbatim with the standalone conformance harness so every content-hash,
+    # manifest binding, capability-token parse and quota decision is identical
+    # between the two build worlds.
+    "module_capabilities.cc",
+    "module_capabilities.h",
+    "module_manifest.cc",
+    "module_manifest.h",
+
+    # Spec 06 §6/§7/§8/§9 port (namespace content): the enforcement host plus the
+    # concrete graph / crypto browser backings for its host imports.
+    "module_runtime_backends.cc",
+    "module_runtime_backends.h",
+    "module_runtime_host.cc",
+    "module_runtime_host.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/browser/did:did",
+    "//content/browser/graph",
+    "//content/browser/graph_sync",
+    "//crypto",
+    "//third_party/boringssl",
+  ]
+}
