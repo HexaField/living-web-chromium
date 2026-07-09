@@ -142,3 +142,43 @@ partial interface Graph {
   // scalar).
   [CallWith=ScriptState, NewObject] Promise<undefined> removeFromShapeCollection(DOMString shapeName, USVString address, DOMString collection, DOMString value);
 };
+
+// §11 Flow API — added by Graph Flows ([[GRAPH-FLOWS]], Spec 10). A flow is a
+// content-addressed state-machine definition (§4) stored as triples inside this
+// graph (§5.1); registration and every transition are governed writes authored by
+// the browser's current identity, never named by the renderer. Folded onto Graph
+// because a flow is registered on that graph's own host. Registration/removal take
+// the updateFlow governance path (§11.2) and each transition the §6.2 lifecycle
+// (state / §7 guard / §8 temporal / §9 role); getFlows()/getFlowState()/
+// availableTransitions() are reads.
+[Exposed=(Window,Worker), SecureContext]
+partial interface Graph {
+  // §5.2 — register |flowJson| under |name| on this graph. Rejects "SyntaxError"
+  // (malformed flow JSON), "ConstraintError" (name/definition mismatch or
+  // duplicate local name), "NotAllowedError" (no updateFlow capability),
+  // "InvalidStateError".
+  [CallWith=ScriptState, NewObject] Promise<undefined> addFlow(DOMString name, DOMString flowJson);
+  // §5.3 — drop |name|'s registration (requires updateFlow). Existing
+  // FlowInstances are left intact; an unregistered name is a no-op success.
+  // Rejects "NotAllowedError", "InvalidStateError".
+  [CallWith=ScriptState, NewObject] Promise<undefined> removeFlow(DOMString name);
+  // §5.4 — the flows registered on this graph, in registration order.
+  [CallWith=ScriptState, NewObject] Promise<sequence<FlowInfo>> getFlows();
+  // §6.3 — the FlowInstance |instanceUri|'s current state for |flowName|. Rejects
+  // "NotFoundError" (unknown flow or the instance carries no state for it).
+  [CallWith=ScriptState, NewObject] Promise<DOMString> getFlowState(DOMString flowName, USVString instanceUri);
+  // §6.2 / §11.3 — attempt to fire |transitionName| on |instanceUri|. Resolves
+  // with a FlowTransitionResult: on success `success` is true and `newState` is
+  // set; a business rejection resolves with `success` false and a `reason`. A
+  // programming error (unknown flow/transition/instance) also resolves with
+  // `success` false, the matching DOMException name ("NotFoundError",
+  // "InvalidStateError") in `reason` — the promise never rejects.
+  [CallWith=ScriptState, NewObject] Promise<FlowTransitionResult> executeFlowTransition(DOMString flowName, USVString instanceUri, DOMString transitionName);
+  // §11.4 — the names of the transitions that would currently succeed for
+  // |instanceUri| (guard, temporal and role all satisfied). Rejects
+  // "NotFoundError".
+  [CallWith=ScriptState, NewObject] Promise<sequence<DOMString>> availableTransitions(DOMString flowName, USVString instanceUri);
+
+  attribute EventHandler ontransitionfired;
+  attribute EventHandler ontransitiondeadline;
+};

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Graph Flows (Spec 10) — flow registration &amp; instance lifecycle — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 10 — Graph Flows
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md
+//
+// A flow is a content-addressed state-machine definition (§4) stored as ordinary
+// triples inside the graph it governs (§5.1). The §11.1 API — folded onto Graph
+// as addFlow / removeFlow / getFlows / getFlowState / executeFlowTransition /
+// availableTransitions — registers flows (a governed write authored by the
+// browser's current identity, never named by the renderer, taking the §11.2
+// updateFlow path) and drives instances through the §6.2 eight-step transition
+// lifecycle (state → §7 guard → §8 temporal → §9/§14.3 role → §4.4 actions →
+// §10 sub-flows → new state). addFlow() takes the flow as a JSON STRING (unlike
+// addShape, which takes a live object). executeFlowTransition() ALWAYS resolves:
+// a business rejection (wrong state, unheld guard, minDelay not elapsed) and a
+// programming error (unknown flow/transition/instance) both resolve with
+// `success` false and a `reason` — the promise never rejects.
+//
+// The §11.1 surface exposes NO initializeInstance method: the SOLE JS-reachable
+// path that enters a shape instance into a flow is §14.1 shape→flow auto-init —
+// createShapeInstance() applies the initialState of every flow whose §4.1
+// appliesTo equals the new instance's shape targetClass. So getFlowState() /
+// executeFlowTransition() / availableTransitions() are exercised here against
+// instances minted by createShapeInstance(), exactly as a page would.
+// ==========================================================================
+
+// The group's sync module is REQUIRED (GROUP-IDENTITY §4.5); any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// -- §4 flow definitions (mirroring the conformance harness fixtures) --------
+
+// §4 A minimal two-state flow: one unguarded transition into a terminal state.
+const TICKET_FLOW = {
+  name: 'Ticket',
+  namespace: 'https://example.org/flows/ticket',
+  appliesTo: 'https://example.org/Ticket',
+  initialState: 'open',
+  states: [{ name: 'open' }, { name: 'closed', isTerminal: true }],
+  transitions: [{ name: 'close', fromState: 'open', toState: 'closed' }],
+};
+
+// §7 A SPARQL-ASK guard: `publish` fires only once the instance is marked ready.
+const REVIEW_FLOW = {
+  name: 'Review',
+  namespace: 'https://example.org/flows/review',
+  appliesTo: 'https://example.org/Doc',
+  initialState: 'draft',
+  states: [{ name: 'draft' }, { name: 'published' }],
+  transitions: [{
+    name: 'publish', fromState: 'draft', toState: 'published',
+    guard: 'ASK { $this <https://example.org/ready> <https://example.org/yes> }',
+    guardDescription: 'the document must be marked ready',
+  }],
+};
+
+// §8 Two minDelay transitions out of one state: PT0S is immediately eligible,
+// PT1H is not.
+const TIMER_FLOW = {
+  name: 'Timer',
+  namespace: 'https://example.org/flows/timer',
+  appliesTo: 'https://example.org/Timer',
+  initialState: 'waiting',
+  states: [{ name: 'waiting' }, { name: 'elapsed' }],
+  transitions: [
+    { name: 'advanceNow', fromState: 'waiting', toState: 'elapsed',
+      temporal: { minDelay: 'PT0S' } },
+    { name: 'advanceLater', fromState: 'waiting', toState: 'elapsed',
+      temporal: { minDelay: 'PT1H' } },
+  ],
+};
+
+// §10 A composite: the parent's `begin` transition triggers the Shipment sub-flow
+// on the same instance. Shipment carries a DISTINCT appliesTo so it is NOT
+// §14.1 auto-initialised on the Order shape instance — it exists on the instance
+// ONLY once `begin` instantiates it, which is exactly what this exercises.
+const PARENT_FLOW = {
+  name: 'Parent',
+  namespace: 'https://example.org/flows/parent',
+  appliesTo: 'https://example.org/Order',
+  initialState: 'created',
+  states: [{ name: 'created' }, { name: 'processing' }],
+  transitions: [{
+    name: 'begin', fromState: 'created', toState: 'processing',
+    triggersSubFlow: 'Shipment',
+  }],
+};
+const SHIPMENT_FLOW = {
+  name: 'Shipment',
+  namespace: 'https://example.org/flows/shipment',
+  appliesTo: 'https://example.org/ShipmentClass',
+  initialState: 'packing',
+  states: [{ name: 'packing' }, { name: 'delivered', isTerminal: true }],
+  transitions: [{ name: 'ship', fromState: 'packing', toState: 'delivered' }],
+};
+
+// -- §5 shapes whose targetClass matches each flow's §4.1 appliesTo -----------
+//
+// A flow reaches a shape instance only when the instance's shape targetClass
+// equals the flow's appliesTo (§14.1). Each shape's constructor simply stamps the
+// rdf://type discriminator so createShapeInstance() mints a typed instance.
+function typeShape(targetClass) {
+  return {
+    targetClass,
+    properties: [],
+    constructor: [
+      { action: 'shape://actions/addLink', subject: 'this',
+        predicate: 'rdf://type', object: targetClass },
+    ],
+  };
+}
+
+// A fresh group whose creator holds the group DID's capability sections, so an
+// "open"-mode registration is authored by a delegate out of the box.
+async function openGroup(t) {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  return group;
+}
+
+// Register |shape| + |flow| on a fresh graph and mint one instance of the shape,
+// so §14.1 auto-init has entered it into the flow. Returns { g, addr }.
+async function instanceInFlow(t, shape, flow) {
+  const g = (await openGroup(t)).graph;
+  await g.addShape(flow.name + 'Shape', shape);
+  await g.addFlow(flow.name, JSON.stringify(flow));
+  const addr = await g.createShapeInstance(flow.name + 'Shape', '', {});
+  return { g, addr };
+}
+
+// ---- §11.1 surface presence ------------------------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  for (const m of ['addFlow', 'removeFlow', 'getFlows', 'getFlowState',
+                   'executeFlowTransition', 'availableTransitions']) {
+    assert_equals(typeof g[m], 'function',
+      `Graph MUST expose the §11.1 flow method ${m}()`);
+  }
+  for (const h of ['ontransitionfired', 'ontransitiondeadline']) {
+    assert_true(h in g, `Graph MUST expose the §11.1 event handler ${h}`);
+  }
+}, '§11.1 the flow surface MUST be present on Graph');
+
+// ---- §5.2 addFlow + §5.4 getFlows ------------------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addFlow('Ticket', JSON.stringify(TICKET_FLOW));
+
+  const flows = await g.getFlows();
+  const f = flows.find(x => x.name === 'Ticket');
+  assert_true(f !== undefined, 'the registered flow MUST be listed');
+  assert_equals(f.appliesTo, 'https://example.org/Ticket',
+    'the flow MUST report its §4.1 appliesTo targetClass');
+  assert_equals(f.initialState, 'open',
+    'the flow MUST report its §4.2 initialState');
+  assert_array_equals(f.states, ['open', 'closed'],
+    'getFlows() MUST report every state name in definition order');
+  assert_array_equals(f.transitions, ['close'],
+    'getFlows() MUST report every transition name in definition order');
+}, '§5.2/§5.4 addFlow() MUST register and getFlows() MUST list a flow');
+
+// §5.2 step 2 — malformed flow JSON is a "SyntaxError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await promise_rejects_dom(t, 'SyntaxError',
+    g.addFlow('Bad', '{not a flow'),
+    'a malformed flow definition MUST reject with SyntaxError');
+}, '§5.2 addFlow() MUST reject a malformed definition with SyntaxError');
+
+// §5.1 — the registration name MUST equal the definition's own name.
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await promise_rejects_dom(t, 'ConstraintError',
+    g.addFlow('Wrong', JSON.stringify(TICKET_FLOW)),
+    'a name/definition mismatch MUST reject with ConstraintError');
+}, '§5.1 addFlow() MUST reject a name/definition mismatch with ConstraintError');
+
+// §5.2 last line — a duplicate local flow name is a "ConstraintError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addFlow('Ticket', JSON.stringify(TICKET_FLOW));
+  await promise_rejects_dom(t, 'ConstraintError',
+    g.addFlow('Ticket', JSON.stringify(TICKET_FLOW)),
+    'a duplicate local flow name MUST reject with ConstraintError');
+}, '§5.2 addFlow() MUST reject a duplicate name with ConstraintError');
+
+// ---- §5.3 removeFlow -------------------------------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addFlow('Ticket', JSON.stringify(TICKET_FLOW));
+  assert_equals((await g.getFlows()).length, 1, 'the flow MUST be registered');
+  await g.removeFlow('Ticket');
+  assert_equals((await g.getFlows()).length, 0,
+    'removeFlow() MUST drop the registration');
+  // Removing a flow that was never registered is a no-op success.
+  await g.removeFlow('Ghost');
+}, '§5.3 removeFlow() MUST drop a registration and no-op on a missing name');
+
+// ---- §14.1 shape→flow auto-init (the sole JS instance-init path) ------------
+
+promise_test(async t => {
+  const { g, addr } = await instanceInFlow(t, typeShape(TICKET_FLOW.appliesTo),
+                                           TICKET_FLOW);
+  assert_true(addr.startsWith('urn:uuid:'),
+    'createShapeInstance MUST mint a fresh urn:uuid instance');
+  // The instance entered the flow at its initialState with no explicit
+  // initializeInstance call — §14.1 auto-init is the only path that does this.
+  const state = await g.getFlowState('Ticket', addr);
+  assert_equals(state, 'open',
+    'createShapeInstance MUST §14.1 auto-init the instance to initialState');
+  // An instance never entered into the flow has no state (§6.3).
+  await promise_rejects_dom(t, 'NotFoundError',
+    g.getFlowState('Ticket', 'urn:uuid:absent'),
+    'getFlowState on an uninitialised instance MUST reject NotFoundError');
+}, '§14.1 createShapeInstance() MUST auto-init the instance into its class\'s flow');
+
+// ---- §6.2 / §11.3 executeFlowTransition ------------------------------------
+
+promise_test(async t => {
+  const { g, addr } = await instanceInFlow(t, typeShape(TICKET_FLOW.appliesTo),
+                                           TICKET_FLOW);
+  const r = await g.executeFlowTransition('Ticket', addr, 'close');
+  assert_true(r.success, 'a valid transition MUST resolve success:true');
+  assert_equals(r.newState, 'closed',
+    'the result MUST carry the §6.2 step 8 newState');
+  assert_equals(await g.getFlowState('Ticket', addr), 'closed',
+    'the instance MUST have advanced to the new state');
+}, '§6.2/§11.3 executeFlowTransition() MUST fire a valid transition');
+
+promise_test(async t => {
+  const { g, addr } = await instanceInFlow(t, typeShape(TICKET_FLOW.appliesTo),
+                                           TICKET_FLOW);
+  assert_true((await g.executeFlowTransition('Ticket', addr, 'close')).success);
+
+  // The instance is now terminal ("closed"), not the transition's "open"
+  // fromState — a business rejection resolves success:false with a reason, it
+  // does NOT reject the promise (§11.3).
+  const again = await g.executeFlowTransition('Ticket', addr, 'close');
+  assert_false(again.success,
+    'firing from the wrong state MUST resolve success:false');
+  assert_true(typeof again.reason === 'string' && again.reason.length > 0,
+    'a business rejection MUST carry a human-readable reason');
+
+  // An unknown transition is a programming error — it too RESOLVES (never
+  // rejects), success:false with the DOMException name in `reason`.
+  const unknown = await g.executeFlowTransition('Ticket', addr, 'nonexistent');
+  assert_false(unknown.success,
+    'an unknown transition MUST resolve success:false, not reject');
+  assert_equals(unknown.reason, 'NotFoundError',
+    'the programming-error reason MUST be the matching DOMException name');
+}, '§11.3 executeFlowTransition() MUST resolve (never reject) on failure');
+
+// ---- §7 guard: blocks, then allows -----------------------------------------
+
+promise_test(async t => {
+  const { g, addr } = await instanceInFlow(t, typeShape(REVIEW_FLOW.appliesTo),
+                                           REVIEW_FLOW);
+  // Before the instance is marked ready the §7 ASK guard fails.
+  assert_array_equals(await g.availableTransitions('Review', addr), [],
+    'a transition whose guard is unmet MUST NOT be available');
+  const blocked = await g.executeFlowTransition('Review', addr, 'publish');
+  assert_false(blocked.success, 'the guarded transition MUST be blocked');
+  assert_equals(blocked.guardDescription, 'the document must be marked ready',
+    'a §7 guard rejection MUST surface the guardDescription');
+
+  // Marking the instance ready satisfies `ASK { $this ready yes }`.
+  await g.addTriple(new Triple(addr, 'https://example.org/ready',
+                               'https://example.org/yes'));
+  assert_array_equals(await g.availableTransitions('Review', addr), ['publish'],
+    'once the guard holds the transition MUST become available');
+  const ok = await g.executeFlowTransition('Review', addr, 'publish');
+  assert_true(ok.success, 'the transition MUST fire once the guard holds');
+  assert_equals(ok.newState, 'published');
+}, '§7 executeFlowTransition() MUST honour the SPARQL-ASK guard');
+
+// ---- §8 temporal: minDelay gate --------------------------------------------
+
+promise_test(async t => {
+  const { g, addr } = await instanceInFlow(t, typeShape(TIMER_FLOW.appliesTo),
+                                           TIMER_FLOW);
+  // PT0S is immediately eligible; PT1H is not (§8.1).
+  assert_array_equals(await g.availableTransitions('Timer', addr),
+    ['advanceNow'],
+    'only the elapsed-minDelay transition MUST be available');
+  const late = await g.executeFlowTransition('Timer', addr, 'advanceLater');
+  assert_false(late.success, 'a transition inside its minDelay MUST be blocked');
+  assert_true(
+    typeof late.secondsUntilAllowed === 'string' &&
+      Number(late.secondsUntilAllowed) > 0,
+    'a minDelay rejection MUST report secondsUntilAllowed as a decimal string');
+  // The immediately-eligible transition fires.
+  assert_true((await g.executeFlowTransition('Timer', addr, 'advanceNow'))
+                .success);
+}, '§8 executeFlowTransition() MUST enforce the minDelay temporal gate');
+
+// ---- §10 sub-flow instantiation --------------------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('OrderShape', typeShape(PARENT_FLOW.appliesTo));
+  await g.addFlow('Parent', JSON.stringify(PARENT_FLOW));
+  await g.addFlow('Shipment', JSON.stringify(SHIPMENT_FLOW));
+  const addr = await g.createShapeInstance('OrderShape', '', {});
+
+  // §14.1 auto-init entered the Order instance into Parent (appliesTo Order) but
+  // NOT Shipment (appliesTo ShipmentClass) — the sub-flow carries no state yet.
+  assert_equals(await g.getFlowState('Parent', addr), 'created');
+  await promise_rejects_dom(t, 'NotFoundError',
+    g.getFlowState('Shipment', addr),
+    'the sub-flow MUST NOT be auto-initialised (distinct appliesTo)');
+
+  // Firing `begin` advances the parent AND instantiates the sub-flow (§10).
+  assert_true((await g.executeFlowTransition('Parent', addr, 'begin')).success);
+  assert_equals(await g.getFlowState('Parent', addr), 'processing');
+  assert_equals(await g.getFlowState('Shipment', addr), 'packing',
+    'triggersSubFlow MUST instantiate the sub-flow at its initialState');
+
+  // Parent and sub-flow states coexist on one instance via flow-scoped
+  // predicates (the composite-flow amendment) and advance independently.
+  assert_true((await g.executeFlowTransition('Shipment', addr, 'ship')).success);
+  assert_equals(await g.getFlowState('Shipment', addr), 'delivered');
+  assert_equals(await g.getFlowState('Parent', addr), 'processing',
+    'the parent state MUST be untouched by the sub-flow\'s progress');
+}, '§10 a triggersSubFlow transition MUST instantiate the named sub-flow');
+
+// ---- §11.2 updateFlow authorisation under enforcement ----------------------
+
+// A group whose root grants the framework-core actions (NOT updateFlow) and is
+// switched to "enforced" — registration MUST then require the updateFlow
+// extension capability the root does not hold.
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  const g = group.graph;
+  // The first delegation lazily mints the root (framework-core actions only).
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+  await group.delegateCapability({
+    invoker: delegatee.did, actions: ['createLink'], resource: group.did });
+  // Install a capability constraint and enforce it (writes are ungated in open
+  // mode, so seeding needs no prior authority).
+  const cid = 'urn:uuid:' + crypto.randomUUID();
+  await g.addTriple(new Triple(cid, 'governance://entry_type', 'governance://constraint'));
+  await g.addTriple(new Triple(cid, 'governance://constraint_kind', new LiteralValue('capability')));
+  await g.addTriple(new Triple(group.did, 'governance://has_constraint', cid));
+  await g.setEnforcementMode('enforced');
+
+  await promise_rejects_dom(t, 'NotAllowedError',
+    g.addFlow('Ticket', JSON.stringify(TICKET_FLOW)),
+    'registration without updateFlow MUST reject with NotAllowedError (§11.2)');
+}, '§11.2 addFlow() MUST require the updateFlow capability under enforcement');
+</script>

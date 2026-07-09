@@ -1,0 +1,18 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// FlowTransitionResult — the outcome of Graph.executeFlowTransition() (Graph
+// Flows spec §11.3). `success` true carries the §6.2 step 8 `newState` the
+// instance advanced to. On a rejection `success` is false and `reason` explains
+// it; `guardDescription` is the §7 transition's human-readable guard gloss (set
+// when the §7 guard did not hold); `secondsUntilAllowed` is the remaining §8
+// minDelay wait as a decimal string (set only on a minDelay rejection).
+
+dictionary FlowTransitionResult {
+  required boolean success;
+  DOMString? newState;
+  USVString? reason;
+  USVString? guardDescription;
+  DOMString? secondsUntilAllowed;
+};

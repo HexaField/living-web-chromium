@@ -65,12 +65,14 @@ PersonalGraphHost::PersonalGraphHost(
     GovernanceBackend* governance,
     SyncBackend* sync,
     ShapeService* shapes,
+    FlowService* flows,
     mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver)
     : backend_(backend),
       manager_(manager),
       governance_(governance),
       sync_(sync),
       shapes_(shapes),
+      flows_(flows),
       receiver_(this, std::move(receiver)) {}
 
 PersonalGraphHost::~PersonalGraphHost() = default;
@@ -867,6 +869,21 @@ void PersonalGraphHost::CreateShapeInstance(
     std::move(callback).Run(std::nullopt, shapes_->last_error());
     return;
   }
+  // §14.1 shape→flow auto-init: apply the initialState of every flow whose §4.1
+  // appliesTo targetClass matches this shape's targetClass to the freshly created
+  // instance, so the §11 flow lifecycle (getFlowState / executeFlowTransition /
+  // availableTransitions) is reachable on it. This is the SOLE JS-reachable
+  // instance-init path — the §11.1 flow surface exposes no initializeInstance —
+  // and it authors as the current identity like every other instance write. An
+  // unmatched class is a no-op; auto-init never fails the createShapeInstance
+  // write (its result is best-effort, §14.1).
+  for (const ShapeInfo& s : shapes_->GetShapes(backend_)) {
+    if (s.name != shape_name)
+      continue;
+    flows_->AutoInitInstanceForClass(backend_, s.target_class, out_address,
+                                     governance_->ActiveCredentialId());
+    break;
+  }
   std::move(callback).Run(out_address, std::nullopt);
 }
 
@@ -941,6 +958,104 @@ void PersonalGraphHost::RemoveFromShapeCollection(
     return;
   }
   std::move(callback).Run(std::nullopt);
+}
+
+// ---- Spec 10 §5–§11 flow API ----------------------------------------------
+//
+// Every method delegates to the single per-realm FlowService, authoring writes as
+// the browser's *current* credential (governance_->ActiveCredentialId()), exactly
+// like the §11 governance surface and the §5 shape surface. On a rejection
+// FlowService::last_error() carries the DOMException name, forwarded verbatim as
+// the promise-rejecting |error|. executeFlowTransition never rejects: a business
+// rejection or a programming error both come back as a FlowTransitionResult with
+// success == false and the explanation in |reason| (§11.3).
+
+// static
+graph::mojom::FlowInfoPtr PersonalGraphHost::ToMojo(const FlowInfo& f) {
+  auto out = graph::mojom::FlowInfo::New();
+  out->name = f.name;
+  out->applies_to = f.applies_to;
+  out->initial_state = f.initial_state;
+  out->states = f.states;
+  out->transitions = f.transitions;
+  return out;
+}
+
+// static
+graph::mojom::FlowTransitionResultPtr PersonalGraphHost::ToMojo(
+    const FlowTransitionResult& r) {
+  auto out = graph::mojom::FlowTransitionResult::New();
+  out->success = r.success;
+  out->new_state = r.new_state;
+  out->reason = r.reason;
+  out->guard_description = r.guard_description;
+  out->seconds_until_allowed = r.seconds_until_allowed;
+  return out;
+}
+
+void PersonalGraphHost::AddFlow(const std::string& name,
+                                const std::string& flow_json,
+                                AddFlowCallback callback) {
+  if (!flows_->AddFlow(backend_, name, flow_json,
+                       governance_->ActiveCredentialId())) {
+    std::move(callback).Run(flows_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::RemoveFlow(const std::string& name,
+                                   RemoveFlowCallback callback) {
+  if (!flows_->RemoveFlow(backend_, name, governance_->ActiveCredentialId())) {
+    std::move(callback).Run(flows_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::GetFlows(GetFlowsCallback callback) {
+  std::vector<FlowInfo> flows = flows_->GetFlows(backend_);
+  std::vector<graph::mojom::FlowInfoPtr> out;
+  out.reserve(flows.size());
+  for (const FlowInfo& f : flows)
+    out.push_back(ToMojo(f));
+  std::move(callback).Run(std::move(out));
+}
+
+void PersonalGraphHost::GetFlowState(const std::string& flow_name,
+                                     const std::string& instance_uri,
+                                     GetFlowStateCallback callback) {
+  std::string state;
+  if (!flows_->GetFlowState(backend_, flow_name, instance_uri, &state)) {
+    std::move(callback).Run(std::nullopt, flows_->last_error());
+    return;
+  }
+  std::move(callback).Run(state, std::nullopt);
+}
+
+void PersonalGraphHost::ExecuteFlowTransition(
+    const std::string& flow_name,
+    const std::string& instance_uri,
+    const std::string& transition_name,
+    ExecuteFlowTransitionCallback callback) {
+  FlowTransitionResult res = flows_->ExecuteFlowTransition(
+      backend_, flow_name, instance_uri, transition_name,
+      governance_->ActiveCredentialId());
+  std::move(callback).Run(ToMojo(res));
+}
+
+void PersonalGraphHost::AvailableTransitions(
+    const std::string& flow_name,
+    const std::string& instance_uri,
+    AvailableTransitionsCallback callback) {
+  std::vector<std::string> transitions;
+  if (!flows_->AvailableTransitions(backend_, flow_name, instance_uri,
+                                    governance_->ActiveCredentialId(),
+                                    &transitions)) {
+    std::move(callback).Run(std::nullopt, flows_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::move(transitions), std::nullopt);
 }
 
 void PersonalGraphHost::InitAsMount(const std::string& space_uri,

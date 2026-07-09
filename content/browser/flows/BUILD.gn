@@ -1,0 +1,61 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Spec 10 — Graph Flows: the browser-process flow service.
+#
+# A Flow is a declarative state machine stored as content-addressed triples inside
+# the Spec 02 graph it governs (§5.1), driving FlowInstances through §6 transitions
+# whose §7 guards, §8 temporal constraints, and §9 roles are evaluated against that
+# graph. Registering/removing a flow and firing a transition are governed writes,
+# so — like the Spec 07 shape service — this sits at the top of the identity/graph
+# stack: it depends on the graph layer ("//content/browser/graph", for the
+# GraphBackend host, the SPARQL guard evaluation, and the GraphBackendManager), the
+# group layer ("//content/browser/did:group", for the group_detail triple builders
+# reused to author and read the stored flow triples), the identity layer
+# ("//content/browser/did:did", for the credential whose key authors the writes),
+# the governance layer ("//content/browser/governance", for the updateFlow gate,
+# the §9/§14.3 role check, AND the Spec 08 §5.3 timestamp-plausibility engine
+# reused for the §8.2/§8.3 "entered state at" checks), and the sync layer
+# ("//content/browser/graph_sync", for the Spec 09 §8.4 FlowStateWinner tie-break
+# reused for the §13.2 concurrent-transition rule) — none of which depend back on
+# it, so no cycle forms.
+#
+# FlowService is a per-realm object (it operates on whichever GraphBackend is
+# passed to each call) and is owned by PersonalGraphManager alongside the graph,
+# governance, shape, and sync backends. The Spec 10 §5–§11 API is a
+# `partial interface Graph` (every method takes the target Graph first), so those
+# methods are folded into PersonalGraphHost in the ":graph" target rather than
+# exposed through a separate host here — in the production single
+# //content/browser target the two co-compile and PersonalGraphHost calls straight
+# into FlowService with no cross-target boundary.
+#
+# Unlike the shape service, the flow core never hashes (it canonicalises the
+# §5.1 `flow://definition` literal with JCS and defers every write to the shared
+# graph), so this target needs neither //crypto nor //third_party/boringssl.
+source_set("flows") {
+  sources = [
+    # Chromium-independent flow-definition core (namespace living_web::flows),
+    # shared verbatim with the standalone conformance harness so the §4 grammar,
+    # the §5.2 `flow://` vocabulary, the §8.1 ISO 8601 durations, and the §5.1 JCS
+    # canonicalisation never diverge between the two build worlds.
+    "flow_definition.cc",
+    "flow_definition.h",
+
+    # Spec 10 §5–§11 API port + §6 lifecycle / §7 guards / §8 temporal / §10
+    # sub-flows / §13.2 tie-break (namespace content).
+    "flow_service.cc",
+    "flow_service.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/browser/did:did",
+    "//content/browser/did:group",
+    "//content/browser/governance",
+    "//content/browser/graph",
+    "//content/browser/graph_sync",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+  ]
+}

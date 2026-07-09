@@ -27,7 +27,7 @@ to this file** and flips its row to ✅.
 | 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `addShape()`, shape instances | `spec-07-shapes` | ✅ |
 | 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `canAddTriple()`, constraints | `spec-08-governance` | ✅ |
 | 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | CRDT + MLS transport | `spec-09-default-sync` | ✅ |
-| 10 | [Graph Flows](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md) | Reactive flow bindings | `spec-10-flows` | 🔲 |
+| 10 | [Graph Flows](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md) | `addFlow()`, flow state machine on `Graph` | `spec-10-flows` | ✅ |
 
 ---
 
@@ -1276,6 +1276,163 @@ the draft now fully specifies what this branch implements:
   single `crypto.sign` row with the two grammar-correct tokens `crypto.commit-sign` and
   `crypto.signal-sign`, keeping `crypto.verify`. This aligns Spec 09's manifest with
   Spec 06 §8 and with the WIT host imports (`graph_sync_module.wit`).
+
+---
+
+## Spec 10 — Graph Flows ✅
+
+Fully implemented and tested. Spec 10 adds the declarative **flow state machine**
+surface to `Graph`: the six §11.1 methods (`addFlow`, `removeFlow`, `getFlows`,
+`getFlowState`, `executeFlowTransition`, `availableTransitions`) and the two event
+handlers (`ontransitionfired`, `ontransitiondeadline`). A flow is a self-describing part
+of the graph it governs — its definition lives as triples (§5) inside the Spec 02 store —
+so mounting a snapshot installs its flows with no separate registration step. The engine
+composes every prior spec: guards are Spec 07/§7 SPARQL `ASK` queries over the triple
+store, role requirements are Spec 04 ZCAP actions, `updateFlow` is gated by the Spec 08
+governance vocabulary, concurrent transitions reuse the Spec 09 §8.4 tie-break, and the
+§14.1 shape→flow binding auto-initialises an instance's state when a Spec 07
+`createShapeInstance()` matches a flow's `appliesTo`.
+
+The decision core is Chromium-independent (namespace `living_web::flows`, pure-std) —
+`content/browser/flows/flow_definition.{h,cc}`: the §4 definition grammar
+(`ParseFlowDefinition` with strict validation), the §5.1 JCS canonicalisation and the
+`flow://definition` round-trip literal (`CanonicalizeFlowJson`), the §4.4 action
+`source`/`target` ⇆ `subject`/`object` aliasing, the ISO 8601 duration parser
+(`ParseIso8601Duration`), the `flow://<name>` node-IRI convention, and the
+`onDeadline` token set. The full engine is the header-only reference in
+`standalone/flow_provider.h` (`FlowService`) over the shared core + the Oxigraph triple
+store + the Spec 08 governance backend, verified by the **27 `Flow_*` blocks** of the
+standalone harness (`living_web_tests`, **239 tests total, all green**). The browser
+mirror is `content/browser/flows/flow_service.{h,cc}` (namespace `content`, exception-free
+`bool` + out-params + `last_error()`, the `OxigraphStore` pattern), wired into the
+renderer through `content/browser/graph/personal_graph_host.cc` (the six flow methods, two
+mojom converters, and the §14.1 auto-init in `CreateShapeInstance`); it is mirrored by the
+**21 `FlowServiceTest.*` gtests** (`tests/flow_service_unittest.cc`) and pinned at the
+renderer boundary by the WPT (`tests/web_platform_tests/graph/graph-flows.html`).
+
+`executeFlowTransition()` **always resolves, never rejects** (§11.1): a business
+rejection (wrong from-state, unmet guard, unelapsed `minDelay`, missing role) resolves
+`{ success: false, reason, … }`, and a programming error (unknown flow / transition /
+instance) resolves `{ success: false, reason: <DOMException name> }` — the promise is
+reserved for genuine transport failure. `addFlow()` takes the definition as a **JSON
+string** (`JSON.stringify(def)`), not a live object.
+
+### §4 flow definition format (parse / validate / canonicalise)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §4.1 base structure grammar | §4.1 | ✅ | ✅ | ✅ | `ParseFlowDefinition` validates name/appliesTo/initialState/states/transitions; a malformed body is a `SyntaxError`, a structural violation a `ConstraintError`. `Flow_ParseDefinitionValidatesGrammar`, `Flow_AddFlowMalformedSyntaxError`. |
+| §4.2 states & §4.3 transitions | §4.2, §4.3 | ✅ | ✅ | ✅ | Enumerated states (terminal flag) + named transitions with from/to endpoints; `initialState` and every endpoint MUST name a declared state. `Flow_ParseDefinitionValidatesGrammar`. |
+| §4.4 actions (`subject`/`object` + `source`/`target` aliases) | §4.4 | ✅ | ✅ | ✅ | Both spellings parse to one canonical action; `"now"`/`"agent"` object substitution. Amendment (a). `Flow_ActionKeyAliases`, `Flow_ActionsSetSingleTarget`. |
+| §5.1 canonical JSON round-trip | §5.1 | ✅ | ✅ | ✅ | `CanonicalizeFlowJson` (JCS, RFC 8785) is stable across key order and normalises the §4.4 aliases before hashing. `Flow_CanonicalizeStableAcrossKeyOrder`. |
+| ISO 8601 duration parse | §8.1 | ✅ | ✅ | ✅ | `ParseIso8601Duration` covers `PT0S`, `PT48H`, `P30D`, fractional seconds. `Flow_ParseIso8601Duration`. |
+| flow-node IRI convention | §5.1 | ✅ | ✅ | ✅ | `flow://<name>`; state/transition child IRIs derived from it. `Flow_NodeIriConvention`. |
+| §8.1 `onDeadline` tokens | §8.1 | ✅ | ✅ | ✅ | `auto-transition` / `error-state` / `notify`; an unknown token is rejected. `Flow_OnDeadlineTokens`. |
+
+### §5 storage & discovery
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §5.2 `addFlow` stores + `getFlows` projects | §5.2, §11.1 | ✅ | ✅ | ✅ | Flow triples are written into the governed graph; `getFlows` projects each `FlowInfo` (name/appliesTo/initialState/states/transitions) from the parsed `flow://definition`. `Flow_AddFlowStoresAndLists`. |
+| §5.1 `flow://definition` round-trip | §5.1 | ✅ | ✅ | ✅ | The canonical-JSON literal is the round-trip source of truth; `getFlow` reconstructs the definition by parsing it. Amendment (b). `Flow_GetFlowResolvesDefinition`. |
+| §5.2 name-mismatch / duplicate | §5.2 | ✅ | ✅ | ✅ | `addFlow(name, json)` where `json.name ≠ name` → `ConstraintError`; a second `addFlow` of the same name → `ConstraintError`. `Flow_AddFlowNameMismatchConstraintError`, `Flow_AddFlowDuplicateConstraintError`. |
+| §5.3 `removeFlow` | §5.3, §11.1 | ✅ | ✅ | ✅ | Retracts the flow triples; a subsequent `getFlows` omits it. `Flow_RemoveFlow`. |
+| unknown-author rejected | §12 | ✅ | ✅ | ✅ | An `addFlow` from an unregistered author credential → `InvalidStateError`. `Flow_AddFlowUnknownAuthorInvalidState`. |
+
+### §6 / §14.1 instance lifecycle
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §14.1 shape→flow auto-init | §14.1, §6.1 | ✅ | ✅ | ✅ | `createShapeInstance()` applies the `initialState` of every flow whose §4.1 `appliesTo` equals the new instance's shape `targetClass`; the sole JS-reachable instance-init path (no `initializeInstance` method). Idempotent; a non-matching class is a no-op. `Flow_AutoInitForShapeClass`, gtest `AutoInitForShapeClass`. |
+| §6.1 initial state + §6.3 inspection | §6.1, §6.3 | ✅ | ✅ | ✅ | The state-establishing link uses the flow-scoped `flow://<name>/state` predicate; `getFlowState` reads it back, and reports `NotFoundError` for an absent instance. Amendment (c). `Flow_InitializeAndGetState`. |
+| §6.2 transition (happy path) | §6.2 | ✅ | ✅ | ✅ | `executeFlowTransition` verifies from-state, evaluates guard/temporal/role, atomically swaps the state link (fresh reifier) and runs actions, resolves `{ success: true, newState }`. `Flow_ExecuteHappyPath`. |
+| §6.2 wrong-state / unknown-transition resolve false | §6.2, §11.1 | ✅ | ✅ | ✅ | Both resolve `success:false` (never reject): wrong from-state → business reason; unknown transition → `reason:"NotFoundError"`. `Flow_ExecuteWrongStateAndUnknownTransition`. |
+
+### §7 guards / §8 temporal / §9 roles
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §7 SPARQL `ASK` guard | §7 | ✅ | ✅ | ✅ | A transition fires only if its `ASK` guard holds against the live store; `availableTransitions` filters on it and `guardDescription` surfaces on a blocked transition. `Flow_GuardBlocksThenAllows`. |
+| §8 `minDelay` gate | §8.1–§8.3 | ✅ | ✅ | ✅ | Elapsed time is the reifier timestamp on the current `flow://<name>/state` link; a transition inside `minDelay` resolves `success:false` with `secondsUntilAllowed` (decimal string). `Flow_MinDelayGate`. |
+| §8.1 `maxDelay` deadline transition | §8.1, §13.4 | ✅ | ✅ | ✅ | A due `onDeadline:"auto-transition"` fires as system-authored when its window elapses. `Flow_DueDeadlineTransition`. |
+| §6.2/§11.1 `availableTransitions` | §11.1 | ✅ | ✅ | ✅ | Returns only the transitions whose from-state, guard, temporal and role checks currently pass. `Flow_AvailableTransitions`. |
+| §9 role requirement (open vs enforced) | §9, §14.2 | ✅ | ✅ | ✅ | In an ungoverned graph the `transition_role` is advisory; under enforcement it MUST resolve to a held Spec 04 capability (§14.2 ZCAP-guarded roles). `Flow_RoleIgnoredInOpenMode`. |
+
+### §10 composite flows / §13 concurrency
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §10 sub-flow instantiation | §10.1 | ✅ | ✅ | ✅ | A transition's `triggersSubFlow` instantiates the sub-flow on the same instance; parent and sub-flow coexist under disjoint flow-scoped predicates. Amendment (c). `Flow_SubFlowInstantiation`. |
+| §13.2 concurrent-transition tie-break | §13.2 | ✅ | ✅ | ✅ | Reuses the Spec 09 §8.4 rule verbatim (smaller reifier hash wins). `Flow_ConcurrentTransitionWinner`. |
+| §11.2 `addFlow` requires `updateFlow` capability | §11.2, §12 | ✅ | ✅ | ✅ | Writing a flow definition requires the `updateFlow` capability ([[CAPABILITY-FRAMEWORK]] §4.5.3); without it `addFlow` → `NotAllowedError`, with it `addFlow` + auto-init + `close` transition all succeed. `Flow_UpdateFlowRequiredUnderEnforcement`, `Flow_UpdateFlowGrantedUnderEnforcement`. |
+
+### §11 renderer surface (WPT)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §11.1 method + event-handler surface | §11.1 | ✅ | — | ✅ | All six methods and both event handlers present on `Graph`. WPT `§11.1 surface`. |
+| §5.2 `addFlow`/`getFlows` projection | §5.2 | ✅ | — | ✅ | `FlowInfo` states/transitions asserted with `assert_array_equals`. WPT `§5.2 addFlow + getFlows`. |
+| §14.1 auto-init via `createShapeInstance` | §14.1 | ✅ | — | ✅ | New instance reports `getFlowState → 'open'`; absent instance → `NotFoundError`. WPT `§14.1 auto-init`. |
+| §7/§8/§10 guard, minDelay, sub-flow | §7, §8, §10 | ✅ | — | ✅ | Guard blocks-then-allows; `minDelay` surfaces `secondsUntilAllowed`; a distinct-`appliesTo` sub-flow appears only when the parent's transition fires. WPT `§7 guard`, `§8 minDelay`, `§10 sub-flow`. |
+| §11.2 `addFlow` gated by `updateFlow` capability | §11.2 | ✅ | — | ✅ | `NotAllowedError` without the capability under enforcement. WPT `§11.2 updateFlow`. |
+
+### Normative parameters
+
+- **Flow-node IRI** (§5.1): `flow://<name>`; state and transition child IRIs are
+  `flow://<name>/state/<state>` and `flow://<name>/transition/<name>`.
+- **Current-state predicate** (§5.2, Amendment (c)): **flow-scoped**
+  `flow://<name>/state` (e.g. `flow://Proposal/state`) — so a parent flow and a
+  triggered sub-flow on one instance never collide, and a transition in one flow can
+  never conflict with a concurrent transition in another (§13.1).
+- **Canonical definition literal** (§5.1, Amendment (b)): each flow node carries one
+  `flow://definition` literal holding the JCS (RFC 8785) canonicalisation of the §4
+  object; it is the round-trip source of truth for `getFlows`/`getFlow` and the §5.1
+  hash pre-image, and normalises the §4.4 `source`/`target` aliases away before hashing.
+- **`executeFlowTransition` resolution** (§11.1): always resolves — business rejection
+  → `success:false` + `reason`; unknown flow/transition/instance → `success:false` +
+  the DOMException *name* in `reason`; the promise rejects only on transport failure.
+  `secondsUntilAllowed` and `guardDescription` are decimal-string / text projections.
+- **`addFlow` argument shape** (§11.1): a JSON **string** (`JSON.stringify(def)`),
+  unlike `addShape` which takes a live object.
+- **§14.1 auto-init**: the only JS-reachable instance-init path — `createShapeInstance`
+  applies the `initialState` of every flow whose `appliesTo` equals the new instance's
+  shape `targetClass`; there is no `initializeInstance` method. Idempotent.
+- **Governance seam**: writing a flow (`addFlow`/`removeFlow`) resolves the `updateFlow`
+  action ([[CAPABILITY-FRAMEWORK]] §4.5.3) through the same `GovernanceBackend` the
+  standalone and browser worlds share; in an ungoverned graph flow edits and transition
+  roles are advisory (§9, §12).
+- Authoritative reference impl: `standalone/flow_provider.h` (`FlowService`) over the
+  shared `content/browser/flows/flow_definition.*`, verified by the 27 `Flow_*` tests;
+  the browser backend (`content/browser/flows/flow_service.{h,cc}` +
+  `personal_graph_host.cc` wiring) mirrors it against the same Oxigraph store and
+  governance backend.
+
+### Amendments
+
+Gaps surfaced while implementing Spec 10 have been **folded back into the draft on
+`w3c-living-web-proposals` `main`** (commit
+[`3e02d6d`](https://github.com/HexaField/w3c-living-web-proposals/commit/3e02d6d)), so
+the draft now fully specifies what this branch implements:
+
+- **(a) §4.4 action key aliases.** The draft defined actions only under
+  `subject`/`predicate`/`object`, but the §16/§17 worked examples used the
+  `source`/`target` spelling. The amendment makes `source`/`target` accepted aliases for
+  `subject`/`object`, requires an implementation to parse both to one canonical action,
+  and requires re-serialisation for `flow://definition` to normalise to `subject`/`object`
+  so the §5.1 JCS pre-image is spelling-independent.
+- **(b) §5.1 `flow://definition` canonical-JSON literal.** The draft stored a flow only as
+  decomposed triples, leaving no normative round-trip source and no stable hash pre-image
+  for a definition whose triples a consumer might reorder. The amendment adds a single
+  `flow://definition` literal (JCS, RFC 8785) as the authoritative round-trip form —
+  `getFlows` projects from it, the §5.1 content hash is computed over it — and adds RFC
+  8785 to the normative references.
+- **(c) flow-scoped `flow://<name>/state` state predicate.** The draft recorded an
+  instance's current state under a single generic `flow://state` predicate, which would
+  collide when one entity is governed by several flows at once — exactly the §10 sub-flow
+  case, where a parent and its triggered sub-flow both track state on the same instance.
+  The amendment scopes the predicate to `flow://<name>/state`, updates the §8.3 elapsed-time
+  query and the §13 conflict-detection rule accordingly, and adds a §10 note that flows on
+  one instance advance independently under disjoint predicates.
 
 ---
 

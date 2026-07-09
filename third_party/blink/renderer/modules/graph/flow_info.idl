@@ -1,0 +1,16 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// FlowInfo — a registered flow as read back by Graph.getFlows() (Graph Flows
+// spec §11.1). `appliesTo` is the §4.1 targetClass the flow governs; `initialState`
+// is the §4.2 entry state. `states` and `transitions` are the state and transition
+// names in definition order (§4.2/§4.3).
+
+dictionary FlowInfo {
+  DOMString name;
+  USVString appliesTo;
+  USVString initialState;
+  sequence<DOMString> states;
+  sequence<DOMString> transitions;
+};

@@ -16,6 +16,8 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_capability_info.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_capability_proof_input.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_flow_info.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_flow_transition_result.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_get_shapes_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_governance_validation_result.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_graph_constraint.h"
@@ -34,6 +36,7 @@
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
 #include "third_party/blink/renderer/modules/graph/diff_event.h"
+#include "third_party/blink/renderer/modules/graph/flow_transition_event.h"
 #include "third_party/blink/renderer/modules/graph/graph_diff.h"
 #include "third_party/blink/renderer/modules/graph/graph_triple_event.h"
 #include "third_party/blink/renderer/modules/graph/literal_value.h"
@@ -311,6 +314,35 @@ ShapeInfo* ShapeInfoFromMojo(
   for (const auto& property : shape->properties)
     properties.push_back(ShapePropertyInfoFromMojo(property));
   out->setProperties(std::move(properties));
+  return out;
+}
+
+// §11.1 FlowInfo (Mojo -> IDL dictionary).
+FlowInfo* FlowInfoFromMojo(const graph::mojom::blink::FlowInfoPtr& flow) {
+  auto* out = MakeGarbageCollected<FlowInfo>();
+  out->setName(flow->name);
+  out->setAppliesTo(flow->applies_to);
+  out->setInitialState(flow->initial_state);
+  out->setStates(flow->states);
+  out->setTransitions(flow->transitions);
+  return out;
+}
+
+// §11.1 FlowTransitionResult (Mojo -> IDL dictionary). The nullable reject fields
+// are absent in Mojo (null) when they do not apply; leave the member unset then so
+// the dictionary reports them as absent.
+FlowTransitionResult* FlowTransitionResultFromMojo(
+    const graph::mojom::blink::FlowTransitionResultPtr& result) {
+  auto* out = MakeGarbageCollected<FlowTransitionResult>();
+  out->setSuccess(result->success);
+  if (result->new_state && !result->new_state->empty())
+    out->setNewState(*result->new_state);
+  if (result->reason && !result->reason->empty())
+    out->setReason(*result->reason);
+  if (result->guard_description && !result->guard_description->empty())
+    out->setGuardDescription(*result->guard_description);
+  if (result->seconds_until_allowed && !result->seconds_until_allowed->empty())
+    out->setSecondsUntilAllowed(*result->seconds_until_allowed);
   return out;
 }
 
@@ -1527,6 +1559,182 @@ ScriptPromise<IDLUndefined> Graph::removeFromShapeCollection(
   return promise;
 }
 
+ScriptPromise<IDLUndefined> Graph::addFlow(ScriptState* script_state,
+                                           const String& name,
+                                           const String& flow_json) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->AddFlow(
+      name, flow_json,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLUndefined>* resolver,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve();
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLUndefined> Graph::removeFlow(ScriptState* script_state,
+                                              const String& name) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->RemoveFlow(
+      name, WTF::BindOnce(
+                [](ScriptPromiseResolver<IDLUndefined>* resolver,
+                   const String& error) {
+                  if (!error.IsNull()) {
+                    RejectWithName(resolver, error);
+                    return;
+                  }
+                  resolver->Resolve();
+                },
+                WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<FlowInfo>> Graph::getFlows(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<FlowInfo>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->GetFlows(WTF::BindOnce(
+      [](ScriptPromiseResolver<IDLSequence<FlowInfo>>* resolver,
+         Vector<graph::mojom::blink::FlowInfoPtr> flows) {
+        HeapVector<Member<FlowInfo>> out;
+        out.ReserveInitialCapacity(flows.size());
+        for (const auto& flow : flows)
+          out.push_back(FlowInfoFromMojo(flow));
+        resolver->Resolve(std::move(out));
+      },
+      WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLString> Graph::getFlowState(ScriptState* script_state,
+                                             const String& flow_name,
+                                             const String& instance_uri) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLString>>(script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->GetFlowState(
+      flow_name, instance_uri,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLString>* resolver, const String& state,
+             const String& error) {
+            if (!error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(state);
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<FlowTransitionResult> Graph::executeFlowTransition(
+    ScriptState* script_state,
+    const String& flow_name,
+    const String& instance_uri,
+    const String& transition_name) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<FlowTransitionResult>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  // §6.2 / §11.3: the transition attempt always resolves with a
+  // FlowTransitionResult — a business rejection (wrong state, guard, temporal,
+  // role) carries success == false and a reason; a programming error (unknown
+  // flow / transition / uninitialised instance) surfaces the DOMException name in
+  // the result's reason with success == false. The browser fires `transitionfired`
+  // out-of-band on success.
+  host_->ExecuteFlowTransition(
+      flow_name, instance_uri, transition_name,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<FlowTransitionResult>* resolver,
+             graph::mojom::blink::FlowTransitionResultPtr result) {
+            resolver->Resolve(FlowTransitionResultFromMojo(result));
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
+ScriptPromise<IDLSequence<IDLString>> Graph::availableTransitions(
+    ScriptState* script_state,
+    const String& flow_name,
+    const String& instance_uri) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<IDLString>>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  if (dissolved_ || !host_.is_bound()) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     "The graph has been dissolved");
+    return promise;
+  }
+
+  host_->AvailableTransitions(
+      flow_name, instance_uri,
+      WTF::BindOnce(
+          [](ScriptPromiseResolver<IDLSequence<IDLString>>* resolver,
+             std::optional<Vector<String>> transitions, const String& error) {
+            if (!transitions || !error.IsNull()) {
+              RejectWithName(resolver, error);
+              return;
+            }
+            resolver->Resolve(*transitions);
+          },
+          WrapPersistent(resolver)));
+
+  return promise;
+}
+
 void Graph::OnTripleAdded(graph::mojom::blink::TriplePtr triple) {
   // §5.2: the IRI advanced with this write; refresh the cached value.
   OnMutationSettled();
@@ -1566,6 +1774,18 @@ void Graph::OnSignal(graph::mojom::blink::PeerPtr from,
 void Graph::OnDiff(graph::mojom::blink::GraphDiffPtr diff) {
   DispatchEvent(
       *DiffEvent::Create(event_type_names::kDiff, GraphDiff::FromMojo(diff)));
+}
+
+// Graph Flows §6.2 step 8 / §13.4 — fire ontransitionfired / ontransitiondeadline.
+// |type| is event_type_names::kTransitionfired or kTransitiondeadline; |new_state|
+// is a null String for a deadline notification (surfaced as IDL null).
+void Graph::DispatchFlowTransition(const AtomicString& type,
+                                   const String& flow_name,
+                                   const String& instance_uri,
+                                   const String& transition_name,
+                                   const String& new_state) {
+  DispatchEvent(*FlowTransitionEvent::Create(type, flow_name, instance_uri,
+                                             transition_name, new_state));
 }
 
 void Graph::OnMutationSettled() {

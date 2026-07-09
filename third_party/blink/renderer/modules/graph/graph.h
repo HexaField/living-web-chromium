@@ -40,6 +40,8 @@ namespace blink {
 class CapabilityInfo;
 class CapabilityProofInput;
 class ExecutionContext;
+class FlowInfo;
+class FlowTransitionResult;
 class GetShapesOptions;
 class GovernanceValidationResult;
 class GraphConstraint;
@@ -175,6 +177,28 @@ class Graph final : public EventTarget,
                                                         const String& collection,
                                                         const String& value);
 
+  // §11 flow API — added by Graph Flows (Spec 10). Each round-trips to the graph's
+  // own host, which runs the per-realm FlowService against the graph's identity,
+  // governance, and store. Registration and transition writes author as the
+  // browser's current identity, never named by the renderer.
+  ScriptPromise<IDLUndefined> addFlow(ScriptState*,
+                                      const String& name,
+                                      const String& flow_json);
+  ScriptPromise<IDLUndefined> removeFlow(ScriptState*, const String& name);
+  ScriptPromise<IDLSequence<FlowInfo>> getFlows(ScriptState*);
+  ScriptPromise<IDLString> getFlowState(ScriptState*,
+                                        const String& flow_name,
+                                        const String& instance_uri);
+  ScriptPromise<FlowTransitionResult> executeFlowTransition(
+      ScriptState*,
+      const String& flow_name,
+      const String& instance_uri,
+      const String& transition_name);
+  ScriptPromise<IDLSequence<IDLString>> availableTransitions(
+      ScriptState*,
+      const String& flow_name,
+      const String& instance_uri);
+
   // EventTarget overrides.
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
@@ -190,6 +214,11 @@ class Graph final : public EventTarget,
   DEFINE_ATTRIBUTE_EVENT_LISTENER(signal, kSignal)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(diff, kDiff)
 
+  // §11 flow event handlers (Spec 10). transitionfired fires after a §6.2
+  // transition commits; transitiondeadline fires when a §13.4 maxDelay elapses.
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(transitionfired, kTransitionfired)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(transitiondeadline, kTransitiondeadline)
+
   // graph::mojom::blink::PersonalGraphClient — pushed by the browser in commit
   // order (§4.2, §4.4).
   void OnTripleAdded(graph::mojom::blink::TriplePtr triple) override;
@@ -202,6 +231,16 @@ class Graph final : public EventTarget,
   void OnSignal(graph::mojom::blink::PeerPtr from,
                 const Vector<uint8_t>& payload) override;
   void OnDiff(graph::mojom::blink::GraphDiffPtr diff) override;
+
+  // §11 flow event dispatch (Spec 10). Builds a FlowTransitionEvent and fires it
+  // on this Graph: |type| is event_type_names::kTransitionfired (after a §6.2
+  // transition commits, |new_state| set) or kTransitiondeadline (a §13.4 maxDelay
+  // elapsed, |new_state| null). Mirrors the SyncStateEvent dispatch path.
+  void DispatchFlowTransition(const AtomicString& type,
+                              const String& flow_name,
+                              const String& instance_uri,
+                              const String& transition_name,
+                              const String& new_state);
 
   // Maps a browser-returned DOMException name to the matching code and rejects
   // |resolver|. Empty/unknown names reject with a generic error. Shared with

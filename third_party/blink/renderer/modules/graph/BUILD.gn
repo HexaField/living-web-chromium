@@ -6,16 +6,18 @@ import("//third_party/blink/renderer/modules/modules.gni")
 
 # Spec 01 — Decentralised Identity, Spec 02 — Personal Linked Data Graphs,
 # Spec 03 — Decentralised Group Identity, Spec 04 — Graph Capability Framework,
-# Spec 05 — Graph Synchronisation Protocol, and Spec 07 — Dynamic Graph Shape
-# Validation. The renderer-side surfaces (DIDCredential; navigator.graph ->
-# GraphManager / Graph / Group and their value and event objects) and their
-# supporting types. Spec 04 folds its governance API onto Graph and adds only IDL
-# dictionaries (no new .cc/.h); Spec 05 adds the sync value objects (Peer,
+# Spec 05 — Graph Synchronisation Protocol, Spec 07 — Dynamic Graph Shape
+# Validation, and Spec 10 — Graph Flows. The renderer-side surfaces (DIDCredential;
+# navigator.graph -> GraphManager / Graph / Group and their value and event objects)
+# and their supporting types. Spec 04 folds its governance API onto Graph and adds
+# only IDL dictionaries (no new .cc/.h); Spec 05 adds the sync value objects (Peer,
 # GraphDiff, PublishedGraph, CapabilityProof) and the events Graph / GraphManager
 # dispatch; Spec 07 folds its §5 shape API onto Graph and, like Spec 04, adds only
 # IDL dictionaries (ShapeInfo, ShapePropertyInfo, GetShapesOptions — no new
 # .cc/.h; the shape-instance data crosses as record<DOMString, sequence<DOMString>>
-# and initialValues as record<DOMString, DOMString>).
+# and initialValues as record<DOMString, DOMString>); Spec 10 folds its §11 flow API
+# onto Graph (FlowInfo / FlowTransitionResult IDL dictionaries) and adds the
+# FlowTransitionEvent dispatched for ontransitionfired / ontransitiondeadline.
 #
 # IDL files are intentionally not listed here — they are wired separately during
 # full-tree integration; only .cc/.h sources belong in blink_modules_sources.
@@ -71,6 +73,12 @@ blink_modules_sources("graph") {
     "subscription_event.h",
     "sync_state_event.cc",
     "sync_state_event.h",
+
+    # Spec 10 — Graph Flows. Folds its §11 flow API onto Graph (no new .cc/.h for
+    # the methods; FlowInfo / FlowTransitionResult are IDL dictionaries) and adds
+    # the FlowTransitionEvent dispatched for ontransitionfired / ontransitiondeadline.
+    "flow_transition_event.cc",
+    "flow_transition_event.h",
   ]
 
   deps = [

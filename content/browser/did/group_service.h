@@ -31,10 +31,12 @@
 #include "content/browser/did/group_backend.h"
 #include "content/browser/did/group_backend_manager.h"
 #include "content/browser/did/group_host.h"
+#include "content/browser/flows/flow_service.h"
 #include "content/browser/governance/governance_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph/personal_graph_host.h"
 #include "content/browser/graph_sync/sync_backend.h"
+#include "content/browser/shapes/shape_service.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/mojom/graph/graph.mojom.h"
@@ -43,19 +45,22 @@ namespace content {
 
 class GroupService : public graph::mojom::GroupManager {
  public:
-  // |identity|, |graphs|, |governance|, and |sync| are the realm's shared
-  // identity provider, graph store, Spec 04 governance backend, and Spec 05 sync
-  // backend (the same objects the realm's PersonalGraphManager owns/uses). All
-  // four outlive this service. The governance backend is threaded into every
-  // PersonalGraphHost this service binds (so the §11 surface + enforcement gate
-  // share one registry) and into every GroupHost (for §8.1.5
-  // delegateCapability); the sync backend is threaded into every
-  // PersonalGraphHost so a group's host graph shares the realm's single §6/§9
-  // sync surface (§9.3 sync-blocking runs against one chain view).
+  // |identity|, |graphs|, |governance|, |sync|, |shapes|, and |flows| are the
+  // realm's shared identity provider, graph store, Spec 04 governance backend,
+  // Spec 05 sync backend, Spec 07 shape service, and Spec 10 flow service (the
+  // same objects the realm's PersonalGraphManager owns/uses). All outlive this
+  // service. The governance backend is threaded into every PersonalGraphHost this
+  // service binds (so the §11 surface + enforcement gate share one registry) and
+  // into every GroupHost (for §8.1.5 delegateCapability); the sync, shape, and
+  // flow backends are threaded into every PersonalGraphHost so a group's host
+  // graph exposes the same §5 shape and §5–§11 flow surface as any personal graph
+  // against the realm's single view (§9.3 sync-blocking, §7.2 one dataset).
   GroupService(DIDKeyProvider* identity,
                GraphBackendManager* graphs,
                GovernanceBackend* governance,
-               SyncBackend* sync);
+               SyncBackend* sync,
+               ShapeService* shapes,
+               FlowService* flows);
 
   GroupService(const GroupService&) = delete;
   GroupService& operator=(const GroupService&) = delete;
@@ -115,6 +120,8 @@ class GroupService : public graph::mojom::GroupManager {
   raw_ptr<GraphBackendManager> graphs_;    // The realm's shared graph store.
   raw_ptr<GovernanceBackend> governance_;  // The realm's Spec 04 registry.
   raw_ptr<SyncBackend> sync_;              // The realm's Spec 05 sync backend.
+  raw_ptr<ShapeService> shapes_;           // The realm's Spec 07 shape service.
+  raw_ptr<FlowService> flows_;             // The realm's Spec 10 flow service.
   GroupBackendManager groups_;
   std::vector<std::unique_ptr<GroupHost>> group_hosts_;
   std::vector<std::unique_ptr<PersonalGraphHost>> graph_hosts_;

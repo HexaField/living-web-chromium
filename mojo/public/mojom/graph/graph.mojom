@@ -360,6 +360,49 @@ interface PersonalGraphHost {
                             string address,
                             string collection,
                             string value) => (string? error);
+
+  // ---- Spec 10 §5–§11 flow API (folded into this host; see the Spec 10 section
+  // below). Every call runs against the single per-realm FlowService the browser
+  // shares across all graphs, which composes the per-realm identity, Spec 04
+  // governance (the §11.2 updateFlow gate + the §9/§14.3 role requirement), and
+  // graph manager. Registration/removal (AddFlow/RemoveFlow) and every
+  // transition write (ExecuteFlowTransition) author as the *current* identity;
+  // the returned |error| is the DOMException name (SyntaxError/ConstraintError/
+  // NotAllowedError/NotFoundError/InvalidStateError, §5/§6/§11). GetFlows/
+  // GetFlowState/AvailableTransitions are reads. ----
+
+  // §5.2 addFlow: register |flow_json| under |name| into this graph. Requires the
+  // updateFlow capability (§11.2). |error|: "SyntaxError" (malformed flow JSON),
+  // "ConstraintError" (name/definition mismatch or duplicate local name),
+  // "NotAllowedError", "InvalidStateError".
+  AddFlow(string name, string flow_json) => (string? error);
+  // §5.3 removeFlow: drop |name|'s registration (requires updateFlow). Existing
+  // FlowInstances are not reset; an unregistered name is a no-op success. |error|:
+  // "NotAllowedError", "InvalidStateError".
+  RemoveFlow(string name) => (string? error);
+  // §5.4 getFlows: the flows registered on this graph, in registration order.
+  GetFlows() => (array<FlowInfo> flows);
+  // §6.3 getFlowState: the FlowInstance |instance_uri|'s current state for
+  // |flow_name|. |state| is null on failure; |error| "NotFoundError" (unknown flow
+  // or the instance carries no state for it).
+  GetFlowState(string flow_name, string instance_uri)
+      => (string? state, string? error);
+  // §6.2 / §11.3 executeFlowTransition: attempt to fire |transition_name| on
+  // |instance_uri|. Business rejections (wrong state, guard, temporal, role) come
+  // back as a result with success == false and a populated reason; a programming
+  // error (bad flow/transition/instance) also surfaces in |result.reason| as the
+  // DOMException name (the renderer still resolves the promise). On success the
+  // browser fires `transitionfired`.
+  ExecuteFlowTransition(string flow_name,
+                        string instance_uri,
+                        string transition_name)
+      => (FlowTransitionResult result);
+  // §11.4 availableTransitions: the names of the transitions that would currently
+  // succeed for |instance_uri| — guard, temporal and role all satisfied against
+  // the present graph state. |transitions| is null on failure; |error|
+  // "NotFoundError" (unknown flow or the instance carries no state for it).
+  AvailableTransitions(string flow_name, string instance_uri)
+      => (array<string>? transitions, string? error);
 };
 
 // PersonalGraphClient — the renderer sink for graph events (§4.2, §4.4). The
@@ -953,4 +996,48 @@ struct ShapeInstanceEntry {
 struct ShapeInitialValue {
   string name;
   string value;
+};
+
+// ============================================================
+// Spec 10 — Graph Flows
+//
+// A flow is a content-addressed state-machine definition (§4) stored as triples
+// inside the Spec 02 graph it governs (§5.1). The browser owns one per-realm
+// FlowService (the C++ port of living_web::flows::FlowService) shared across all
+// graphs; it composes the realm's identity, Spec 04 governance (the §11.2
+// updateFlow gate + the §9/§14.3 role requirement), and graph manager. The §11
+// API is a `partial interface Graph`, so it is folded into PersonalGraphHost above
+// because that host already owns the browser-side graph the flows are registered
+// on. Registration and every transition write use the Spec 01 identity in the
+// browser, never the renderer. Guard evaluation (§7), temporal constraints (§8),
+// and the §13.2 concurrent-transition tie-break reuse the Spec 08 timestamp
+// engine and the Spec 09 default-sync tie-break verbatim, so a flow engine and its
+// underlying store never disagree.
+// ============================================================
+
+// §11.1 FlowInfo — a registered flow as read back by getFlows. |applies_to| is
+// the §4.1 targetClass the flow governs; |initial_state| is the §4.2 entry state;
+// |states| and |transitions| are the state and transition names in definition
+// order (§4.2/§4.3).
+struct FlowInfo {
+  string name;
+  string applies_to;
+  string initial_state;
+  array<string> states;       // state names, definition order
+  array<string> transitions;  // transition names, definition order
+};
+
+// §11.1 FlowTransitionResult — the outcome of executeFlowTransition. |success|
+// true carries the §6.2 step 8 |new_state| the instance advanced to. On a
+// rejection |success| is false and |reason| explains it; |guard_description| is
+// the §7 transition's human-readable guard gloss (set when the §7 guard did not
+// hold); |seconds_until_allowed| is the remaining §8 minDelay wait as a decimal
+// string (set only on a minDelay rejection). A hard/programming error surfaces
+// the DOMException name in |reason| with |success| false.
+struct FlowTransitionResult {
+  bool success;
+  string? new_state;
+  string? reason;
+  string? guard_description;
+  string? seconds_until_allowed;
 };
