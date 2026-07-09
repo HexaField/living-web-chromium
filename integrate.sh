@@ -1,473 +1,364 @@
 #!/bin/bash
-# ==========================================================================
-# Living Web Chromium Integration Script
-# ==========================================================================
-# This script integrates the Living Web APIs into a Chromium source checkout.
-# Run from the Chromium src/ directory after `fetch chromium` and `gclient sync`.
+# integrate.sh — overlay the Living Web browser onto a full Chromium checkout so
+# `autoninja -C out/LivingWeb chrome` builds the real browser with
+# navigator.graph, decentralised groups, and DID credentials native. The overlay
+# lives in this repo (the source of truth); this script projects it onto a
+# throwaway Chromium tree and never edits this repo.
 #
-# Usage:
-#   cd ~/workspaces/chromium/src
-#   bash ~/workspaces/hexafield/living-web-chromium/integrate.sh
+# It is PAYLOAD-TOLERANT: this script and integrate_patches.py are the
+# spec-agnostic build harness that lives on `main`. Every spec branch stacks its
+# overlay on top of `main`, so a given branch tip carries only the cumulative
+# subset of overlay files for the specs that have landed there. This script
+# discovers what is actually present and integrates exactly that:
+#   * bare main (no overlay) => a clean no-op.
+#   * a spec-NN tip          => integrates specs 01..NN's cumulative overlay.
+#   * the full stack         => integrates all ten specs.
 #
-# What it does:
-#   1. Copies Living Web source files into the Chromium tree
-#   2. Patches existing BUILD.gn files to include Living Web modules
-#   3. Registers Mojo interfaces
-#   4. Registers Blink IDL files
-#   5. Registers the browser-side service factory
-# ==========================================================================
+# It does three kinds of work:
+#   * copy   — brand-new files (mojom, blink graph module, browser services,
+#              FFI crates) are rsync'd into the Chromium tree.
+#   * generate — two GN files that are pure functions of what was copied:
+#              content/browser/living_web_sources.gni (the folded browser
+#              source list) and third_party/<crate>/BUILD.gn (prebuilt
+#              staticlib wrappers). Rewritten every run.
+#   * patch  — integrate_patches.py makes the in-place edits to shared
+#              Chromium files, each fenced by a LIVING_WEB:<TAG> sentinel. It is
+#              itself payload-tolerant (derives every edit from the overlay that
+#              is present, and no-ops when the graph IDL overlay is absent).
+#
+# All three are idempotent, so the script is safe to re-run after pulling new
+# overlay code.
+#
+# Usage:  integrate.sh <chromium-src-dir> [overlay-src-dir]
+#   overlay-src-dir defaults to this script's own directory.
 
 set -euo pipefail
 
-CHROMIUM_SRC="${1:-$(pwd)}"
-LIVING_WEB="${2:-$HOME/workspaces/hexafield/living-web-chromium}"
+die() { echo "integrate: $*" >&2; exit 1; }
 
-if [ ! -f "$CHROMIUM_SRC/BUILD.gn" ]; then
-  echo "ERROR: Run from Chromium src/ directory, or pass it as first arg"
-  echo "Usage: $0 [chromium_src_dir] [living_web_dir]"
-  exit 1
+[ $# -ge 1 ] || die "usage: integrate.sh <chromium-src-dir> [overlay-src-dir]"
+DEST="$(cd "$1" 2>/dev/null && pwd)" || die "cannot cd to chromium src: $1"
+SRC="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+
+[ -f "$DEST/BUILD.gn" ] && [ -e "$DEST/.gn" ] || die "$DEST is not a Chromium src/ checkout"
+[ -f "$SRC/integrate_patches.py" ] || die "$SRC/integrate_patches.py missing"
+
+# ---------------------------------------------------------------------------
+# 0. Discover the overlay payload actually present in SRC. Every browser dir,
+#    crate, and shared surface is optional: a spec branch only carries the
+#    subset its specs introduced. Crate presence is gated on the crate SOURCE
+#    (Cargo.toml), not just the dir, so a leftover cargo target/ tree on an
+#    overlay-free branch does not register as payload.
+# ---------------------------------------------------------------------------
+ALL_BROWSER_DIRS=(did flows governance graph graph_sync living_web module_runtime shapes)
+ALL_CRATES=(oxigraph_ffi mls_ffi)
+
+BROWSER_DIRS=()
+for d in "${ALL_BROWSER_DIRS[@]}"; do
+  [ -d "$SRC/content/browser/$d" ] && BROWSER_DIRS+=("$d")
+done
+CRATES=()
+for c in "${ALL_CRATES[@]}"; do
+  [ -f "$SRC/third_party/$c/Cargo.toml" ] && CRATES+=("$c")
+done
+
+HAS_MOJOM=0;    [ -d "$SRC/mojo/public/mojom/graph" ] && HAS_MOJOM=1
+HAS_BLINK=0;    [ -d "$SRC/third_party/blink/renderer/modules/graph" ] && HAS_BLINK=1
+HAS_ED25519=0;  [ -d "$SRC/third_party/ed25519" ] && HAS_ED25519=1
+HAS_OXIGRAPH=0; printf '%s\n' "${CRATES[@]:-}" | grep -qxF oxigraph_ffi && HAS_OXIGRAPH=1
+HAS_MLS=0;      printf '%s\n' "${CRATES[@]:-}" | grep -qxF mls_ffi && HAS_MLS=1
+
+echo "== Living Web overlay integration =="
+echo "   DEST (chromium): $DEST"
+echo "   SRC  (overlay) : $SRC"
+
+# No overlay at all => this is bare main (the harness with no spec code). Nothing
+# to integrate; leave the Chromium tree untouched and exit clean.
+if [ "${#BROWSER_DIRS[@]}" -eq 0 ] && [ "$HAS_MOJOM" -eq 0 ] && [ "$HAS_BLINK" -eq 0 ]; then
+  echo "-- no overlay present in SRC — nothing to integrate (bare harness)"
+  echo "== integration complete (no-op) =="
+  exit 0
 fi
 
-echo "=== Living Web Chromium Integration ==="
-echo "Chromium: $CHROMIUM_SRC"
-echo "Living Web: $LIVING_WEB"
-echo ""
+echo "   overlay dirs   : ${BROWSER_DIRS[*]:-(none)}"
+echo "   FFI crates     : ${CRATES[*]:-(none)}"
+echo "   mojom/blink/ed : $HAS_MOJOM/$HAS_BLINK/$HAS_ED25519"
 
-# ------------------------------------------------------------------
-# Step 1: Copy source files
-# ------------------------------------------------------------------
-echo "[1/6] Copying source files..."
-
-# Mojo interfaces
-mkdir -p "$CHROMIUM_SRC/mojo/public/mojom/graph"
-cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph.mojom" \
-      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph_sync.mojom" \
-      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-cp -fv "$LIVING_WEB/mojo/public/mojom/graph/graph_governance.mojom" \
-      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-cp -fv "$LIVING_WEB/mojo/public/mojom/graph/BUILD.gn" \
-      "$CHROMIUM_SRC/mojo/public/mojom/graph/"
-
-# Browser-process graph store
-mkdir -p "$CHROMIUM_SRC/content/browser/graph"
-cp -fv "$LIVING_WEB/content/browser/graph/"*.{cc,h} \
-      "$CHROMIUM_SRC/content/browser/graph/"
-cp -fv "$LIVING_WEB/content/browser/graph/BUILD.gn" \
-      "$CHROMIUM_SRC/content/browser/graph/"
-
-# Browser-process DID provider
-mkdir -p "$CHROMIUM_SRC/content/browser/did"
-cp -fv "$LIVING_WEB/content/browser/did/"*.{cc,h} \
-      "$CHROMIUM_SRC/content/browser/did/"
-cp -fv "$LIVING_WEB/content/browser/did/BUILD.gn" \
-      "$CHROMIUM_SRC/content/browser/did/"
-
-# Browser-process graph sync
-mkdir -p "$CHROMIUM_SRC/content/browser/graph_sync"
-cp -fv "$LIVING_WEB/content/browser/graph_sync/"*.{cc,h} \
-      "$CHROMIUM_SRC/content/browser/graph_sync/"
-cp -fv "$LIVING_WEB/content/browser/graph_sync/BUILD.gn" \
-      "$CHROMIUM_SRC/content/browser/graph_sync/"
-
-# Browser-process governance
-mkdir -p "$CHROMIUM_SRC/content/browser/graph_governance"
-cp -fv "$LIVING_WEB/content/browser/graph_governance/"*.{cc,h} \
-      "$CHROMIUM_SRC/content/browser/graph_governance/"
-cp -fv "$LIVING_WEB/content/browser/graph_governance/BUILD.gn" \
-      "$CHROMIUM_SRC/content/browser/graph_governance/"
-
-# Blink renderer modules
-mkdir -p "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph"
-cp -fv "$LIVING_WEB/third_party/blink/renderer/modules/graph/"*.{cc,h,idl} \
-      "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph/"
-cp -fv "$LIVING_WEB/third_party/blink/renderer/modules/graph/BUILD.gn" \
-      "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph/"
-
-echo ""
-
-# ------------------------------------------------------------------
-# Step 1b: Patch event_type_names.json5 with Living Web event types
-# ------------------------------------------------------------------
-echo "[1b/6] Patching event_type_names.json5..."
-
-EVENT_NAMES="$CHROMIUM_SRC/third_party/blink/renderer/core/events/event_type_names.json5"
-if [ -f "$EVENT_NAMES" ] && ! grep -q '"tripleadded"' "$EVENT_NAMES"; then
-  python3 -c "
-import re
-
-with open('$EVENT_NAMES', 'r') as f:
-    content = f.read()
-
-# These need to be inserted alphabetically into the data array
-new_events = ['peerjoined', 'peerleft', 'signal', 'syncstatechange', 'tripleadded', 'tripleremoved']
-
-# Parse out existing entries
-entries = re.findall(r'\"([^\"]+)\"', content.split('data: [')[1].split(']')[0])
-
-# Add new events
-for evt in new_events:
-    if evt not in entries:
-        entries.append(evt)
-
-entries.sort()
-
-# Rebuild the data array
-data_str = ',\n'.join(f'    \"{e}\"' for e in entries)
-content = re.sub(
-    r'(data:\s*\[)\s*\n.*?\n(\s*\])',
-    r'\1\n' + data_str + ',\n  ]',
-    content,
-    flags=re.DOTALL
+# The shared spec kernel. These <dir>/<name> stems are the exact .cc set the
+# standalone CMake harness compiles (see CMakeLists.txt add_library(living_web
+# ...)); each also has a paired .h. They are base-free portable C++ and are
+# compiled identically in both build worlds, so in the Chromium overlay they
+# must NOT face the //base-only plugins (chromium-style complex-class,
+# raw_ptr/raw_ref, unsafe-buffer-usage) — those flag idioms the harness has no
+# way to satisfy. So they are split into their own source_set("living_web_core")
+# with those plugin configs removed (see integrate_patches.py CORETARGET).
+# Everything else under BROWSER_DIRS is the overlay (full Chromium code) folded
+# into source_set("browser"). Stems for specs not present are simply never
+# matched, so this list is a stable superset across all branch tips.
+LIVING_WEB_CORE_STEMS=(
+  did/did_key_codec did/did_graph did/jcs
+  graph/rdf_serialization graph/oxigraph_store graph/sparql_results
+  governance/zcap governance/constraint_vocabulary
+  graph_sync/graph_diff graph_sync/cbor graph_sync/default_sync_module
+  module_runtime/module_capabilities module_runtime/module_manifest
+  shapes/shape_definition
+  flows/flow_definition
 )
 
-with open('$EVENT_NAMES', 'w') as f:
-    f.write(content)
-print('  Patched event_type_names.json5 with Living Web events')
-"
-else
-  echo "  Already patched or file not found"
+# ---------------------------------------------------------------------------
+# 1. FFI staticlibs. Each crate builds a self-contained cargo staticlib that
+#    bundles the Rust std and any native backend (Oxigraph bundles RocksDB), so
+#    the final Chromium link needs only the one archive per crate plus libstdc++
+#    (for RocksDB's C++). Build in SRC only when the archive is missing, so a
+#    warm worktree is a no-op. Skipped entirely when no crate is present.
+# ---------------------------------------------------------------------------
+if [ "${#CRATES[@]}" -gt 0 ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+  command -v cargo >/dev/null || die "cargo not on PATH (need ~/.cargo/bin)"
+  for c in "${CRATES[@]}"; do
+    lib="$SRC/third_party/$c/target/release/lib$c.a"
+    if [ ! -f "$lib" ]; then
+      echo "-- cargo build --release ($c)"
+      cargo build --release --manifest-path "$SRC/third_party/$c/Cargo.toml"
+    fi
+    [ -f "$lib" ] || die "missing staticlib after build: $lib"
+  done
 fi
 
-echo ""
+# ---------------------------------------------------------------------------
+# 2. Copy overlay files into the Chromium tree. Every step is guarded on the
+#    presence of its source, so each spec tip copies only its own subset.
+# ---------------------------------------------------------------------------
+echo "-- copying overlay sources"
+# 2a. Mojo IPC module (graph.mojom + its BUILD.gn).
+if [ "$HAS_MOJOM" -eq 1 ]; then
+  rsync -a "$SRC/mojo/public/mojom/graph/" "$DEST/mojo/public/mojom/graph/"
+fi
+# 2b. Blink renderer module (all .cc/.h/.idl + BUILD.gn).
+if [ "$HAS_BLINK" -eq 1 ]; then
+  rsync -a "$SRC/third_party/blink/renderer/modules/graph/" \
+           "$DEST/third_party/blink/renderer/modules/graph/"
+fi
+# 2c. Browser-process services — per-dir BUILD.gn dropped (sources are folded,
+#     see step 3 + integrate_patches.py BROWSERFOLD).
+for d in "${BROWSER_DIRS[@]}"; do
+  rsync -a --exclude='BUILD.gn' "$SRC/content/browser/$d/" "$DEST/content/browser/$d/"
+done
+# 2c'. Ed25519 C shim (third_party) — the folded browser services call its
+#      lowercase ed25519_{create_keypair,sign,verify} C ABI (extern "C"). Its
+#      BUILD.gn is a real committed target (not generated), so copy the dir
+#      as-is, BUILD.gn included.
+if [ "$HAS_ED25519" -eq 1 ]; then
+  rsync -a "$SRC/third_party/ed25519/" "$DEST/third_party/ed25519/"
+fi
+# 2d. FFI crates: sources (skip the bulky target/ tree) plus the one prebuilt
+#     self-contained archive per crate, placed where the generated BUILD.gn
+#     lib_dirs expects it.
+for c in "${CRATES[@]}"; do
+  rsync -a --exclude='target' "$SRC/third_party/$c/" "$DEST/third_party/$c/"
+  mkdir -p "$DEST/third_party/$c/target/release"
+  cp -f "$SRC/third_party/$c/target/release/lib$c.a" \
+        "$DEST/third_party/$c/target/release/lib$c.a"
+done
 
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-echo "[2/6] Patching content/browser/BUILD.gn..."
+# ---------------------------------------------------------------------------
+# 3. Generate content/browser/living_web_sources.gni — the browser source list
+#    folded into source_set("browser"), plus the extra deps that fold needs.
+#    Globbed from DEST after the copy so it is exactly what is on disk.
+# ---------------------------------------------------------------------------
+echo "-- generating content/browser/living_web_sources.gni"
+GNI="$DEST/content/browser/living_web_sources.gni"
 
-CONTENT_BROWSER_GN="$CHROMIUM_SRC/content/browser/BUILD.gn"
-if ! grep -q "content/browser/graph" "$CONTENT_BROWSER_GN"; then
-  # Find the deps = [ section in the main "browser" source_set and add our deps
-  # We add after the last existing dep in the main browser target
-  python3 -c "
-import re
-
-with open('$CONTENT_BROWSER_GN', 'r') as f:
-    content = f.read()
-
-# Add our source_sets as deps in the main browser target
-# Look for the 'deps = [' block and add our entries
-living_web_deps = '''
-    # Living Web APIs
-    \"//content/browser/graph\",
-    \"//content/browser/did\",
-    \"//content/browser/graph_sync\",
-    \"//content/browser/graph_governance\",'''
-
-# Find the first 'deps = [' in a source_set(\"browser\") context
-# We'll add our deps right after 'deps = ['
-if '# Living Web APIs' not in content:
-    # Find the 'browser' source_set's deps
-    # Strategy: find 'source_set(\"browser\")' then its 'deps = [' 
-    pattern = r'(source_set\(\"browser\"\).*?deps\s*=\s*\[)'
-    match = re.search(pattern, content, re.DOTALL)
-    if match:
-        insert_pos = match.end()
-        content = content[:insert_pos] + living_web_deps + content[insert_pos:]
-        with open('$CONTENT_BROWSER_GN', 'w') as f:
-            f.write(content)
-        print('  Patched content/browser/BUILD.gn')
-    else:
-        print('  WARNING: Could not find browser source_set deps. Manual patching needed.')
-else:
-    print('  Already patched')
-"
-else
-  echo "  Already patched"
+# Partition every copied browser source into the shared kernel (core) and the
+# overlay, by exact <dir>/<name> stem match against LIVING_WEB_CORE_STEMS.
+core_lines=""
+browser_lines=""
+if [ "${#BROWSER_DIRS[@]}" -gt 0 ]; then
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rel="${path#"$DEST"/content/browser/}"   # e.g. graph/oxigraph_store.h
+    stem="${rel%.*}"                          # e.g. graph/oxigraph_store
+    line="  \"//${path#"$DEST"/}\","
+    if printf '%s\n' "${LIVING_WEB_CORE_STEMS[@]}" | grep -qxF -- "$stem"; then
+      core_lines+="$line"$'\n'
+    else
+      browser_lines+="$line"$'\n'
+    fi
+  done < <(
+    for d in "${BROWSER_DIRS[@]}"; do
+      find "$DEST/content/browser/$d" -type f \( -name '*.cc' -o -name '*.h' \)
+    done | LC_ALL=C sort
+  )
 fi
 
-echo ""
+# Deps are conditional on what the overlay actually pulls in. boringssl is always
+# available in the Chromium tree; the FFI staticlibs and the graph mojom target
+# only exist when their payload is present, so referencing them unconditionally
+# would break gn on a partial tip.
+core_dep_lines="  \"//third_party/boringssl\","$'\n'
+[ "$HAS_ED25519" -eq 1 ]  && core_dep_lines+="  \"//third_party/ed25519\","$'\n'
+[ "$HAS_OXIGRAPH" -eq 1 ] && core_dep_lines+="  \"//third_party/oxigraph_ffi\","$'\n'
 
-# ------------------------------------------------------------------
-# Step 3: Register Blink IDL files in modules
-# ------------------------------------------------------------------
-echo "[3/6] Registering Blink modules..."
+browser_dep_lines=""
+[ "$HAS_MOJOM" -eq 1 ]    && browser_dep_lines+="  \"//mojo/public/mojom/graph\","$'\n'
+[ "$HAS_OXIGRAPH" -eq 1 ] && browser_dep_lines+="  \"//third_party/oxigraph_ffi\","$'\n'
+[ "$HAS_MLS" -eq 1 ]      && browser_dep_lines+="  \"//third_party/mls_ffi\","$'\n'
+[ "$HAS_ED25519" -eq 1 ]  && browser_dep_lines+="  \"//third_party/ed25519\","$'\n'
+[ -n "$core_lines" ]      && browser_dep_lines+="  \":living_web_core\","$'\n'
 
-# Add 'graph' to the list of blink modules
-MODULES_GN="$CHROMIUM_SRC/third_party/blink/renderer/modules/BUILD.gn"
-if ! grep -q '"graph"' "$MODULES_GN" 2>/dev/null; then
-  python3 -c "
-with open('$MODULES_GN', 'r') as f:
-    content = f.read()
+{
+  echo "# Generated by integrate.sh — do not edit."
+  echo "#"
+  echo "# The Living Web browser is built as two GN targets:"
+  echo "#"
+  echo "#   living_web_core_sources     — the base-free spec kernel. Built by"
+  echo "#     source_set(\"living_web_core\") with the //base-only clang plugins"
+  echo "#     removed (see integrate_patches.py CORETARGET), so the exact bytes"
+  echo "#     the standalone CMake harness compiles also compile here."
+  echo "#"
+  echo "#   living_web_browser_sources  — the overlay (full Chromium code). The"
+  echo "#     overlay dirs form a cyclic include graph, so their non-kernel"
+  echo "#     sources are folded into content/browser's source_set(\"browser\")"
+  echo "#     (one target => no cycle). See integrate_patches.py BROWSERFOLD."
+  echo "living_web_core_sources = ["
+  printf '%s' "$core_lines"
+  echo "]"
+  echo ""
+  echo "living_web_browser_sources = ["
+  printf '%s' "$browser_lines"
+  echo "]"
+  echo ""
+  echo "# Deps the kernel needs to compile+link on its own (it does not inherit"
+  echo "# content/browser's deps): BoringSSL for the Ed25519 EVP backend, the"
+  echo "# Ed25519 C shim, and the Oxigraph quad-store FFI staticlib — each"
+  echo "# included only when its payload is present at this tip."
+  echo "living_web_core_deps = ["
+  printf '%s' "$core_dep_lines"
+  echo "]"
+  echo ""
+  echo "# Extra deps the folded overlay sources need beyond what"
+  echo "# source_set(\"browser\") already links: the graph Mojo C++ bindings, the"
+  echo "# Rust FFI staticlibs (Oxigraph quad store, OpenMLS group crypto), the"
+  echo "# Ed25519 C shim, and the kernel target itself — each included only when"
+  echo "# its payload is present at this tip."
+  echo "living_web_browser_deps = ["
+  printf '%s' "$browser_dep_lines"
+  echo "]"
+} > "$GNI"
 
-# The modules BUILD.gn has a list of module subdirectories as deps
-# Add our 'graph' module
-if '\"//third_party/blink/renderer/modules/graph\"' not in content:
-    # Find the deps section and add our module
-    # Usually looks like: deps = [ ... \"//third_party/blink/renderer/modules/foo\", ... ]
-    import re
-    # Find last module dep and add after it
-    pattern = r'(\"//third_party/blink/renderer/modules/\w+\",)'
-    matches = list(re.finditer(pattern, content))
-    if matches:
-        last = matches[-1]
-        insert = last.end()
-        content = content[:insert] + '\n    \"//third_party/blink/renderer/modules/graph\",' + content[insert:]
-        with open('$MODULES_GN', 'w') as f:
-            f.write(content)
-        print('  Added graph module to modules/BUILD.gn')
-    else:
-        print('  WARNING: Could not find module deps pattern')
-else:
-    print('  Already registered')
-"
-else
-  echo "  Already registered"
+# ---------------------------------------------------------------------------
+# 4. Generate third_party/<crate>/BUILD.gn — a GN wrapper for each prebuilt
+#    cargo staticlib. Both archives bundle their own copy of the Rust std, so
+#    the final link needs --allow-multiple-definition (same toolchain =>
+#    first-definition-wins is safe; this is the project's established two-
+#    staticlib link pattern). The header is included by full src-root path, so
+#    no include config is required — the wrappers are link-only, except that
+#    oxigraph_ffi additionally carries the host-toolchain shims RocksDB needs.
+# ---------------------------------------------------------------------------
+if [ "${#CRATES[@]}" -gt 0 ]; then
+  echo "-- generating FFI BUILD.gn wrappers"
+
+  # The oxigraph archive bundles RocksDB (C++), whose objects cargo compiled
+  # against the host glibc (2.43) + host libstdc++. The browser links the older
+  # bullseye sysroot (glibc 2.31, no libstdc++), so RocksDB's C23 number parsers
+  # (__isoc23_*), __libc_single_threaded, and the newer libstdc++ ABI symbols are
+  # undefined at the final link. We keep the browser on its tested sysroot and
+  # resolve just those: living_web_libc_compat.c forwards the glibc symbols, and
+  # the link pulls the host libstdc++.so.6 by absolute path (its SONAME makes the
+  # runtime loader select the same host library the binary runs against anyway).
+  # Only needed when oxigraph_ffi is present.
+  HOST_LIBSTDCXX=""
+  if [ "$HAS_OXIGRAPH" -eq 1 ]; then
+    HOST_LIBSTDCXX="$(cc -print-file-name=libstdc++.so.6 2>/dev/null || true)"
+    case "$HOST_LIBSTDCXX" in
+      /*) HOST_LIBSTDCXX="$(realpath "$HOST_LIBSTDCXX" 2>/dev/null || echo "$HOST_LIBSTDCXX")" ;;
+      *)  HOST_LIBSTDCXX=/usr/lib/x86_64-linux-gnu/libstdc++.so.6 ;;
+    esac
+    [ -e "$HOST_LIBSTDCXX" ] || die "host libstdc++.so.6 not found (needed for the oxigraph_ffi RocksDB link): $HOST_LIBSTDCXX"
+  fi
+
+  for c in "${CRATES[@]}"; do
+    if [ "$c" = oxigraph_ffi ]; then
+      cat > "$DEST/third_party/$c/BUILD.gn" <<EOF
+# Generated by integrate.sh — do not edit.
+# Prebuilt cargo staticlib wrapper (oxigraph_ffi) with host-toolchain shims.
+# The archive is self-contained (bundles the Rust std and RocksDB) and is
+# produced by 'cargo build --release'; --allow-multiple-definition covers the
+# two archives' duplicated libstd (same toolchain => first-definition-wins).
+# RocksDB was built against the host glibc/libstdc++, so the browser's bullseye
+# sysroot cannot satisfy its C23 parsers (__isoc23_*), __libc_single_threaded,
+# or the newer libstdc++ ABI symbols: living_web_libc_compat.c forwards the
+# former, and the host libstdc++.so.6 (linked by absolute path; resolved to the
+# host copy at runtime via its SONAME) supplies the latter.
+config("${c}_link") {
+  lib_dirs = [ rebase_path("target/release", root_build_dir) ]
+  libs = [ "$c" ]
+  ldflags = [
+    "-Wl,--allow-multiple-definition",
+    "$HOST_LIBSTDCXX",
+  ]
+}
+
+# Carries the libc compat shim as its single source; all_dependent_configs
+# propagates the link flags transitively to whichever component/binary finally
+# links the browser.
+source_set("$c") {
+  sources = [ "living_web_libc_compat.c" ]
+  all_dependent_configs = [ ":${c}_link" ]
+}
+EOF
+    else
+      cat > "$DEST/third_party/$c/BUILD.gn" <<EOF
+# Generated by integrate.sh — do not edit.
+# Prebuilt cargo staticlib wrapper ($c). The archive is self-contained
+# (bundles the Rust std and any native backend); it is produced by
+# 'cargo build --release' and copied in by integrate.sh. Both Living Web FFI
+# archives bundle libstd, so --allow-multiple-definition is required at the
+# final link (same toolchain => first-definition-wins is safe). Any libstdc++
+# ABI it needs is supplied by the host libstdc++ the oxigraph_ffi wrapper links
+# into the same final binary.
+config("${c}_link") {
+  lib_dirs = [ rebase_path("target/release", root_build_dir) ]
+  libs = [ "$c" ]
+  ldflags = [ "-Wl,--allow-multiple-definition" ]
+}
+
+# Link-only: no sources. all_dependent_configs propagates the link flags
+# transitively to whichever component/binary finally links the browser.
+source_set("$c") {
+  all_dependent_configs = [ ":${c}_link" ]
+}
+EOF
+    fi
+  done
 fi
 
-# Register IDL files in idl_in_modules.gni (the central list of all module IDL files)
-IDL_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/idl_in_modules.gni"
-if [ -f "$IDL_LIST" ]; then
-  python3 -c "
-with open('$IDL_LIST', 'r') as f:
-    content = f.read()
+# ---------------------------------------------------------------------------
+# 5. Patch shared Chromium files (idempotent, sentinel-fenced). integrate_patches
+#    is itself payload-tolerant: it derives every binder/event/IDL edit from the
+#    overlay present and no-ops when the graph IDL overlay is absent.
+# ---------------------------------------------------------------------------
+echo "-- patching shared Chromium files"
+python3 "$SRC/integrate_patches.py" "$DEST"
 
-idl_entries = '''  \"//third_party/blink/renderer/modules/graph/content_proof.idl\",
-  \"//third_party/blink/renderer/modules/graph/did_credential.idl\",
-  \"//third_party/blink/renderer/modules/graph/graph_diff.idl\",
-  \"//third_party/blink/renderer/modules/graph/navigator_graph.idl\",
-  \"//third_party/blink/renderer/modules/graph/peer_event.idl\",
-  \"//third_party/blink/renderer/modules/graph/personal_graph.idl\",
-  \"//third_party/blink/renderer/modules/graph/personal_graph_manager.idl\",
-  \"//third_party/blink/renderer/modules/graph/semantic_triple.idl\",
-  \"//third_party/blink/renderer/modules/graph/shared_graph.idl\",
-  \"//third_party/blink/renderer/modules/graph/signal_event.idl\",
-  \"//third_party/blink/renderer/modules/graph/signed_triple.idl\",
-  \"//third_party/blink/renderer/modules/graph/sync_state_event.idl\",
-  \"//third_party/blink/renderer/modules/graph/triple_event.idl\",'''
-
-if 'graph/did_credential.idl' not in content:
-    import re
-    # First remove any existing graph IDL entries to re-add the complete set
-    import re as re2
-    content = re2.sub(r'  \"//third_party/blink/renderer/modules/graph/[^\"]+\.idl\",\n', '', content)
-    # Find last entry before closing ] in static_idl_files_in_modules
-    pattern = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)\s*\]'
-    match = re.search(pattern, content)
-    if match:
-        insert = match.start(1) + len(match.group(1))
-        content = content[:insert] + '\n' + idl_entries + content[insert:]
-        with open('$IDL_LIST', 'w') as f:
-            f.write(content)
-        print('  Added IDL files to idl_in_modules.gni')
-    else:
-        # Fallback: find last .idl entry anywhere
-        pattern2 = r'(\"//third_party/blink/renderer/modules/\S+\.idl\",)'
-        matches = list(re.finditer(pattern2, content))
-        if matches:
-            last = matches[-1]
-            insert = last.end()
-            content = content[:insert] + '\n' + idl_entries + content[insert:]
-            with open('$IDL_LIST', 'w') as f:
-                f.write(content)
-            print('  Added IDL files to idl_in_modules.gni (fallback)')
-        else:
-            print('  WARNING: Could not find IDL entries in idl_in_modules.gni')
-else:
-    print('  Already added')
-"
-elif [ ! -f "$IDL_LIST" ]; then
-  echo "  WARNING: idl_in_modules.gni not found — IDL registration may need manual patching"
-fi
-
-# Register generated V8 binding files in generated_in_modules.gni
-GENERATED_LIST="$CHROMIUM_SRC/third_party/blink/renderer/bindings/generated_in_modules.gni"
-if [ -f "$GENERATED_LIST" ]; then
-  python3 -c "
-with open('$GENERATED_LIST', 'r') as f:
-    content = f.read()
-
-import re
-
-# Add enumeration entries (GraphSyncState, SyncState)
-RGD = chr(36) + 'root_gen_dir'
-
-# Remove old graph entries first to be idempotent
-content = re.sub(r'  \"[^\"]*v8_graph_sync_state[^\"]*\",\n', '', content)
-content = re.sub(r'  \"[^\"]*v8_sync_state\.[ch][^\"]*\",\n', '', content)
-content = re.sub(r'  \"[^\"]*v8_(content_proof|did_credential|graph_diff|navigator_graph|peer_event|personal_graph|personal_graph_manager|semantic_triple|shared_graph|signal_event|signed_triple|sync_state_event|triple_event)[^\"]*\",\n', '', content)
-
-enum_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_sync_state.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state.h\",'''
-
-# Find last entry in generated_enumeration_sources_in_modules
-pattern = r'(generated_enumeration_sources_in_modules\s*=\s*\[.*?)(^\])'
-match = re.search(pattern, content, re.DOTALL | re.MULTILINE)
-if match:
-    insert = match.start(2)
-    content = content[:insert] + enum_entries + '\n' + content[insert:]
-
-# Add interface entries
-iface_entries = f'''  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_content_proof.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_did_credential.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_graph_diff.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_peer_event.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_personal_graph_manager.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_semantic_triple.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_shared_graph.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signal_event.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signal_event.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_signed_triple.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state_event.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_sync_state_event.h\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_triple_event.cc\",
-  \"{RGD}/third_party/blink/renderer/bindings/modules/v8/v8_triple_event.h\",'''
-
-# Find last entry in generated_interface_sources_in_modules
-pattern2 = r'(generated_interface_sources_in_modules\s*=\s*\[.*?)(^\])'
-match2 = re.search(pattern2, content, re.DOTALL | re.MULTILINE)
-if match2:
-    insert2 = match2.start(2)
-    content = content[:insert2] + iface_entries + '\n' + content[insert2:]
-
-with open('$GENERATED_LIST', 'w') as f:
-    f.write(content)
-print('  Added generated V8 bindings to generated_in_modules.gni')
-"
-else
-  echo "  Generated bindings already registered or file not found"
-fi
-
+# ---------------------------------------------------------------------------
+# 6. Report + next steps.
+# ---------------------------------------------------------------------------
+ncore=$(sed -n '/^living_web_core_sources = \[/,/^\]/p' "$GNI" | grep -c '\.cc",\|\.h",' || true)
+nover=$(sed -n '/^living_web_browser_sources = \[/,/^\]/p' "$GNI" | grep -c '\.cc",\|\.h",' || true)
 echo ""
-
-# ------------------------------------------------------------------
-# Step 4: Register Mojo graph mojom in mojo's BUILD.gn
-# ------------------------------------------------------------------
-echo "[4/6] Registering Mojo interfaces..."
-
-MOJO_PARENT_GN="$CHROMIUM_SRC/mojo/public/mojom/BUILD.gn"
-if [ -f "$MOJO_PARENT_GN" ] && ! grep -q "graph" "$MOJO_PARENT_GN"; then
-  python3 -c "
-with open('$MOJO_PARENT_GN', 'r') as f:
-    content = f.read()
-
-if '\"//mojo/public/mojom/graph\"' not in content:
-    import re
-    # Find a deps or public_deps list and add our module
-    pattern = r'(\"//mojo/public/mojom/\w+\",)'
-    matches = list(re.finditer(pattern, content))
-    if matches:
-        last = matches[-1]
-        insert = last.end()
-        content = content[:insert] + '\n    \"//mojo/public/mojom/graph\",' + content[insert:]
-        with open('$MOJO_PARENT_GN', 'w') as f:
-            f.write(content)
-        print('  Registered graph mojom')
-    else:
-        print('  WARNING: Could not find mojom deps pattern — may need manual registration')
-else:
-    print('  Already registered')
-"
-else
-  echo "  Already registered (or parent BUILD.gn not found — will work anyway via direct deps)"
-fi
-
+echo "== integration complete =="
+echo "   kernel sources (living_web_core) : $ncore"
+echo "   folded overlay sources (browser) : $nover"
+echo "   generated              : content/browser/living_web_sources.gni"
+for c in "${CRATES[@]}"; do echo "                            third_party/$c/BUILD.gn"; done
 echo ""
-
-# ------------------------------------------------------------------
-# Step 5: Register browser interface binder for PersonalGraphService
-# ------------------------------------------------------------------
-echo "[5/6] Registering browser interface binder..."
-
-# The browser process needs to know how to create PersonalGraphService
-# when a renderer requests it via Mojo. This is done in
-# content/browser/browser_interface_binders.cc
-
-BINDERS_CC="$CHROMIUM_SRC/content/browser/browser_interface_binders.cc"
-if [ -f "$BINDERS_CC" ] && ! grep -q "PersonalGraphService" "$BINDERS_CC"; then
-  python3 -c "
-import re
-
-with open('$BINDERS_CC', 'r') as f:
-    content = f.read()
-
-# --- Add includes ---
-# Place Living Web includes just before 'namespace blink {' (which is always
-# outside any #if guards), so they are unconditionally compiled on all platforms.
-include_block = '''// Living Web: Personal Graph
-#include \"content/browser/graph/graph_manager.h\"
-#include \"mojo/public/mojom/graph/graph.mojom.h\"
-'''
-
-if '#include \"content/browser/graph/graph_manager.h\"' not in content:
-    anchor = 'namespace blink {'
-    idx = content.find(anchor)
-    if idx != -1:
-        content = content[:idx] + include_block + '\n' + content[idx:]
-    else:
-        # Fallback: add after last top-level #endif before first namespace
-        m = list(re.finditer(r'^#endif', content, re.MULTILINE))
-        if m:
-            pos = m[-1].end()
-            content = content[:pos] + '\n\n' + include_block + content[pos:]
-
-# --- Add binder registrations ---
-# Insert just before the '// This should be last to allow overrides' comment
-# inside PopulateBinderMapWithContext(RenderFrameHost*).
-binder_code = '''
-  // Living Web: Personal Graph Service
-  map->Add<graph::mojom::PersonalGraphService>(
-      base::BindRepeating(
-          [](RenderFrameHost* host,
-             mojo::PendingReceiver<graph::mojom::PersonalGraphService> receiver) {
-            content::GraphManager::GetInstance().BindReceiver(std::move(receiver));
-          }));
-
-  // Living Web: DID Credential Service
-  map->Add<graph::mojom::DIDCredentialService>(
-      base::BindRepeating(
-          [](RenderFrameHost* host,
-             mojo::PendingReceiver<graph::mojom::DIDCredentialService> receiver) {
-            content::GraphManager::GetInstance().BindDIDReceiver(std::move(receiver));
-          }));
-'''
-
-if 'PersonalGraphService' not in content:
-    anchor = '  // This should be last to allow overrides of any interface.'
-    idx = content.find(anchor)
-    if idx != -1:
-        content = content[:idx] + binder_code + '\n' + content[idx:]
-    else:
-        print('WARNING: Could not find insertion anchor for binder registration')
-
-with open('$BINDERS_CC', 'w') as f:
-    f.write(content)
-print('  Registered PersonalGraphService binder')
-"
-else
-  echo "  Already registered or file not yet available (will patch after gclient sync)"
-fi
-
-echo ""
-
-# ------------------------------------------------------------------
-# Step 6: Summary
-# ------------------------------------------------------------------
-echo "[6/6] Integration complete!"
-echo ""
-echo "Files copied:"
-find "$CHROMIUM_SRC/mojo/public/mojom/graph" -type f 2>/dev/null | wc -l | xargs echo "  Mojo interfaces:"
-find "$CHROMIUM_SRC/content/browser/graph" "$CHROMIUM_SRC/content/browser/did" \
-     "$CHROMIUM_SRC/content/browser/graph_sync" "$CHROMIUM_SRC/content/browser/graph_governance" \
-     -type f 2>/dev/null | wc -l | xargs echo "  Browser-process files:"
-find "$CHROMIUM_SRC/third_party/blink/renderer/modules/graph" -type f 2>/dev/null | wc -l | xargs echo "  Blink renderer files:"
-echo ""
-echo "Next steps:"
-echo "  1. cd $CHROMIUM_SRC"
-echo "  2. gn gen out/LivingWeb --args='is_debug=false target_cpu=\"arm64\" is_component_build=true symbol_level=0 blink_symbol_level=0 enable_nacl=false'"
-echo "  3. autoninja -C out/LivingWeb chrome"
-echo ""
-echo "Build will take 2-4 hours on first run. Use -j flag to control parallelism."
-echo "With 14 CPUs and 48GB RAM: autoninja -C out/LivingWeb chrome"
+echo "Next:"
+echo "  cd $DEST"
+echo "  gn gen out/LivingWeb --args='is_debug=false is_component_build=true \\"
+echo "      symbol_level=0 blink_symbol_level=0 use_remoteexec=false'"
+echo "  # validate the binding codegen output lists before the multi-hour build:"
+echo "  autoninja -C out/LivingWeb \\"
+echo "      third_party/blink/renderer/bindings:generate_bindings_all"
+echo "  # then the browser:"
+echo "  autoninja -C out/LivingWeb chrome"
