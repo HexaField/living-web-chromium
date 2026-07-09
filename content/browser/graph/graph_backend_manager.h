@@ -62,6 +62,15 @@ class GraphBackendManager {
   // nullptr if no such graph is owned here.
   GraphBackend* Find(const std::string& id);
 
+  // Resolves a live graph by its stable DID (did().value_or(id())) or its
+  // current content-address IRI, or nullptr if no such graph is owned here.
+  // Mirrors GroupBackendManager::LookupHost but resolves over every graph the
+  // realm owns, not just groups: Spec 07 §7 shape inheritance follows a graph's
+  // context://participates_in edges up to their target graphs, and the target of
+  // a participation edge is any graph (group or not) — this is the authority that
+  // maps that edge's DID/IRI object to the parent backend to inherit shapes from.
+  GraphBackend* LookupHost(const std::string& key);
+
   // Drops the graph with internal |id| (called when the renderer's Graph is gone
   // or dissolved). Returns true if a graph was removed.
   bool Remove(const std::string& id);

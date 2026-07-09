@@ -1,0 +1,13 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// GetShapesOptions — options for Graph.getShapes() (Dynamic Graph Shape
+// Validation spec §5.4). When `includeInherited` is true (the default) the
+// result includes the accepted shapes inherited from §7 participates_in parent
+// graphs, with local shapes shadowing inherited shapes of the same name (§7.3);
+// when false only the shapes registered directly on this graph are returned.
+
+dictionary GetShapesOptions {
+  boolean includeInherited = true;
+};

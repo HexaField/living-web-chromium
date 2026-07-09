@@ -26,6 +26,7 @@
 #include "content/browser/graph/graph_backend.h"
 #include "content/browser/graph/graph_backend_manager.h"
 #include "content/browser/graph_sync/sync_backend.h"
+#include "content/browser/shapes/shape_service.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -37,15 +38,16 @@ namespace content {
 class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
  public:
   // |backend| is owned by |manager|; both outlive this host, as do the per-realm
-  // |governance| (Spec 04) and |sync| (Spec 05) backends — owned by
-  // PersonalGraphManager and shared with the Spec 03 GroupService. The host binds
-  // itself to |receiver| and pushes tripleadded/tripleremoved and the §6.3 sync
-  // events to the client supplied via Subscribe.
+  // |governance| (Spec 04), |sync| (Spec 05), and |shapes| (Spec 07) backends —
+  // owned by PersonalGraphManager and shared with the Spec 03 GroupService. The
+  // host binds itself to |receiver| and pushes tripleadded/tripleremoved and the
+  // §6.3 sync events to the client supplied via Subscribe.
   PersonalGraphHost(
       GraphBackend* backend,
       GraphBackendManager* manager,
       GovernanceBackend* governance,
       SyncBackend* sync,
+      ShapeService* shapes,
       mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver);
 
   PersonalGraphHost(const PersonalGraphHost&) = delete;
@@ -122,6 +124,40 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   void Broadcast(const std::vector<uint8_t>& payload,
                  BroadcastCallback callback) override;
 
+  // ---- Spec 07 §5 shape API (folded into this host) ----
+  void AddShape(const std::string& name,
+                const std::string& shape_json,
+                AddShapeCallback callback) override;
+  void RemoveShape(const std::string& name,
+                   RemoveShapeCallback callback) override;
+  void GetShapes(bool include_inherited, GetShapesCallback callback) override;
+  void CreateShapeInstance(
+      const std::string& shape_name,
+      const std::string& address,
+      std::vector<graph::mojom::ShapeInitialValuePtr> initial_values,
+      CreateShapeInstanceCallback callback) override;
+  void GetShapeInstances(const std::string& shape_name,
+                         GetShapeInstancesCallback callback) override;
+  void GetShapeInstanceData(const std::string& shape_name,
+                            const std::string& address,
+                            GetShapeInstanceDataCallback callback) override;
+  void SetShapeProperty(const std::string& shape_name,
+                        const std::string& address,
+                        const std::string& property,
+                        const std::string& value,
+                        SetShapePropertyCallback callback) override;
+  void AddToShapeCollection(const std::string& shape_name,
+                            const std::string& address,
+                            const std::string& collection,
+                            const std::string& value,
+                            AddToShapeCollectionCallback callback) override;
+  void RemoveFromShapeCollection(
+      const std::string& shape_name,
+      const std::string& address,
+      const std::string& collection,
+      const std::string& value,
+      RemoveFromShapeCollectionCallback callback) override;
+
   // §6.2 mount initialisation. Called by PersonalGraphManager::Mount right after
   // the host is bound to open the graph as a live sync session: records the
   // resolved space + module addressing, marks the session active (and writable
@@ -182,6 +218,10 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   // onsyncstatechange (§6.3).
   void SetSyncState(graph::mojom::GraphSyncState state);
 
+  // ---- Spec 07 §5 result converters ----
+  static graph::mojom::ShapePropertyInfoPtr ToMojo(const ShapePropertyInfo& p);
+  static graph::mojom::ShapeInfoPtr ToMojo(const ShapeInfo& s);
+
   // §6.3 signalling gate: "InvalidStateError" when the graph is not
   // published/mounted, else nullopt (a no-op success — the payload is dropped
   // until a sync module supplies transport, Spec 06).
@@ -204,6 +244,7 @@ class PersonalGraphHost : public graph::mojom::PersonalGraphHost {
   raw_ptr<GraphBackendManager> manager_;   // Not owned.
   raw_ptr<GovernanceBackend> governance_;  // Per-realm; owned by the manager.
   raw_ptr<SyncBackend> sync_;              // Per-realm; owned by the manager.
+  raw_ptr<ShapeService> shapes_;           // Per-realm; owned by the manager.
   mojo::Receiver<graph::mojom::PersonalGraphHost> receiver_;
   mojo::Remote<graph::mojom::PersonalGraphClient> client_;
 

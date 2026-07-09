@@ -1,0 +1,21 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// ShapePropertyInfo — one property of a shape's §4.2 definition, as read back by
+// Graph.getShapes() (Dynamic Graph Shape Validation spec §5.1). `datatype` is
+// absent when the property carries no datatype constraint; `maxCount` is absent
+// when the property is unbounded. `writable` mirrors the §4.2 sh:writable flag
+// (false only when the definition explicitly disables constructor/setter
+// authoring); `readOnly` mirrors the §4.2 read-only marker used by the §5.7
+// setter guards.
+
+dictionary ShapePropertyInfo {
+  required DOMString name;
+  required USVString path;
+  USVString datatype;
+  required unsigned long minCount;
+  unsigned long maxCount;
+  required boolean writable;
+  required boolean readOnly;
+};

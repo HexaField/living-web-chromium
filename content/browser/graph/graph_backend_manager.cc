@@ -151,6 +151,23 @@ GraphBackend* GraphBackendManager::Find(const std::string& id) {
   return it == graphs_.end() ? nullptr : it->second.get();
 }
 
+GraphBackend* GraphBackendManager::LookupHost(const std::string& key) {
+  // Fast path: |key| is a graph's stable id (the map key). A graph with a DID is
+  // keyed in |graphs_| by its internal id, not its DID, so the map hit only
+  // covers a lookup by id — the DID/IRI cases fall to the scan below.
+  auto it = graphs_.find(key);
+  if (it != graphs_.end())
+    return it->second.get();
+  for (const auto& [id, g] : graphs_) {
+    if (g->did().value_or(g->id()) == key)
+      return g.get();
+    std::string iri;
+    if (g->GetIri(&iri) && iri == key)
+      return g.get();
+  }
+  return nullptr;
+}
+
 bool GraphBackendManager::Remove(const std::string& id) {
   return graphs_.erase(id) > 0;
 }

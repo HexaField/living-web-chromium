@@ -6,8 +6,8 @@ and this Chromium implementation.
 
 **Legend:** ✅ Implemented & tested · 🔀 In review (PR open) · 🔲 Not yet started
 
-The specs are implemented one-per-branch in dependency order (01 → 06, then
-07–10), each independently auditable and landed as a staggered pull request.
+The specs are implemented one-per-branch in dependency order (01 → 07, then
+08–10), each independently auditable and landed as a staggered pull request.
 This `main` branch is the base — no spec code — so every row below is pending
 until its branch lands. **Each spec PR adds its own detailed compliance section
 to this file** and flips its row to ✅.
@@ -24,7 +24,7 @@ to this file** and flips its row to ✅.
 | 04 | [Graph Capability Framework](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/04_graph-capability-framework.md) | ZCAP-LD capabilities | `spec-04-capabilities` | ✅ |
 | 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `Graph.publish()`, `GraphManager.mount()` | `spec-05-sync` | ✅ |
 | 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | `GraphManager.listModules()`, module runtime | `spec-06-sync-modules` | ✅ |
-| 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `addShape()`, shape instances | `spec-07-shapes` | 🔲 |
+| 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `addShape()`, shape instances | `spec-07-shapes` | ✅ |
 | 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `canAddTriple()`, constraints | `spec-08-governance` | 🔲 |
 | 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | CRDT + MLS transport | `spec-09-default-sync` | 🔲 |
 | 10 | [Graph Flows](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md) | Reactive flow bindings | `spec-10-flows` | 🔲 |
@@ -783,6 +783,161 @@ converged until a module attaches. The gating, scoping and quota decisions the
 host makes are unaffected — an un-null test transport (`LoopbackNetwork` in the
 gtest, `ModNetworkBackend` in the harness) exercises the full network path
 against the same grant algebra.
+
+## Spec 07 — Dynamic Graph Shape Validation ✅
+
+Fully implemented and tested. Spec 07 makes a graph **self-describing**: a
+*shape* is a content-addressed constraint definition (§4) — a target class, a set
+of typed property definitions, and an ordered constructor — stored as ordinary
+triples *inside the very graph it governs* (§6), so it is mounted, snapshotted and
+synced with that graph and needs no separate schema registry. The §5 API is a
+`partial interface Graph`: register a shape (`addShape`), enumerate the shapes in
+force (`getShapes`, local + inherited), stamp out a conforming entity by running a
+shape's constructor (`createShapeInstance`), read instances back
+(`getShapeInstances` / `getShapeInstanceData`), and mutate them through the
+generated scalar/collection setters (`setShapeProperty`,
+`addToShapeCollection`, `removeFromShapeCollection`). Registration and every
+instance write are **governed writes** (§10.4): registration requires the
+`updateSHACL` capability, and each constructor/setter triple is authorised by the
+Spec 04 governance engine exactly as a hand-written triple would be. Shapes
+**inherit across graphs** (§7): a child that declares `context://participates_in`
+a parent may use the parent's shapes, but only if the parent has *accepted* the
+child (§10.5 tamper defence), and a local shape strictly narrowing an inherited one
+shadows it (§7.3).
+
+The browser owns one per-realm `content::ShapeService` (constructed by
+`PersonalGraphManager` beside the §04 governance and §05 sync backends, borrowing
+the realm identity, `GovernanceBackend`, and `GraphBackendManager`), shared with
+every `PersonalGraphHost` so the folded §5 methods run against one view of the
+realm's identity, governance and store; each call targets whichever
+`GraphBackend` the host wraps. Because the §5 surface is per-graph it folds onto
+the existing `PersonalGraphHost` mojo interface (the same seam Spec 04 §11 and
+Spec 05 §6 used) rather than a new host — nine methods + four small structs added
+to `graph.mojom`, nine folded overrides in `personal_graph_host.*`, nine
+`partial interface Graph` methods in `graph.{idl,h,cc}`, and three IDL
+dictionaries (`ShapeInfo`, `ShapePropertyInfo`, `GetShapesOptions`; instance data
+crosses as `record<DOMString, sequence<DOMString>>`, `initialValues` as
+`record<DOMString, DOMString>`).
+
+The byte-critical core is Chromium-independent (namespace `living_web`, pure-std):
+`content/browser/shapes/shape_definition.{h,cc}` — the §4 grammar parser
+(`ParseShapeDefinition`, including the deprecated §12 `source`/`target`
+constructor-key aliases), the §6.3 JCS canonicalisation
+(`CanonicalizeShapeJson`) and the `sha256:`+lowercase-hex content address
+(`FormatShapeAddress`), the §4.4/§10.3 datatype normalisation + lexical validation
+(`NormalizeDatatype`/`IsUriDatatype`/`ValidateLexicalForDatatype`), the §4.2
+setter classification (`SetterKindFor`) and the §4.6 narrowing predicate
+(`ShapeNarrows`). It is shared **byte-for-byte** by the standalone provider
+(`standalone/shape_provider.h`, `living_web::ShapeService`) and the browser port
+(`content/browser/shapes/shape_service.{h,cc}`, `content::ShapeService`); the port
+substitutes `GraphBackend*`/`GovernanceBackend`/`GraphBackendManager` for the
+standalone `Graph*`/`GovernanceEngine`/`GroupManager` but calls the identical core,
+so a shape parsed, an address derived, and a value validated never diverge between
+the two build worlds. Following the shared-core rule the core **never hashes** —
+the caller canonicalises, hashes with its build world's SHA-256
+(`crypto::SHA256HashString` in the browser, `standalone/crypto_sha2.h` in the
+harness), and injects the digest into `FormatShapeAddress`. Normative behaviour is
+exercised by the 24 `Shape_*` blocks of the C++ harness (`living_web_tests`, 161
+tests total, all green) and mirrored by the 16 browser gtests
+(`tests/shape_service_unittest.cc`, `ShapeServiceTest.*`, bound to the real
+`DIDKeyProvider` + `GovernanceBackend` + `GraphBackendManager` +
+`GroupBackendManager`); the §5 renderer surface is pinned by the WPT
+(`tests/web_platform_tests/graph/personal-graph-shapes.html`).
+
+### §4 shape-definition format (the shared `shape_definition` core)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §4.1/§4.2 grammar parse | §4.1, §4.2 | ✅ | ✅ | ✅ | Required `targetClass`; each property REQUIRES `path`+`name` (`name` matches `[a-zA-Z_][a-zA-Z0-9_]*`); optional `datatype`/`minCount`/`maxCount`/`writable`/`readOnly`; a malformed definition is rejected. `Shape_ParseValidDefinition`, `Shape_ParseRejectsMalformed`, `Shape_PropertyNameGrammar`. |
+| §4.2 datatype normalisation | §4.2 | ✅ | ✅ | ✅ | Accepts a full XSD URI, an `xsd:`-prefixed name (expanded to the XSD namespace), or the literal `"URI"` (an IRI-valued property → object term is a link, not a typed literal); forms (a)/(b) produce the same object term. Amendment (iii); `Shape_NormalizeAndValidateDatatype`. |
+| §4.2 setter classification | §4.2 | ✅ | ✅ | ✅ | `maxCount=1` ∧ writable → scalar `set_{name}`; `maxCount` absent/>1 ∧ writable → collection `add/remove_{name}`; `writable:false` ∨ `readOnly:true` → no setter. `Shape_SetterClassification`. |
+| §4.3 constructor actions + key aliases | §4.3, §12 | ✅ | ✅ | ✅ | Canonical keys `subject`/`predicate`/`object`; the deprecated §12 `source`/`target` aliases parse to `subject`/`object`. `addLink` always yields an IRI object (§4.3.1/§4.5), the target setters type by the referenced property. Amendment (i); `Shape_ConstructorKeyAliases`. |
+| §4.6 narrowing predicate | §4.6, §7.1 | ✅ | ✅ | ✅ | A child (via `extends` or a same-name local override) may only tighten: raise `minCount`, lower `maxCount`, narrow `datatype`, or clear `writable`. Loosening any → `ConstraintError`. `Shape_NarrowingRule`, `Shape_ExtendsNarrowingEnforced`. |
+| §6.3 content address (stable across formatting) | §6.3 | ✅ | ✅ | ✅ | `"sha256:" + hex(SHA-256(JCS(shapeJson)))`; two byte-different but JCS-equal definitions share one address. `Shape_ContentAddressStableAcrossFormatting`. |
+
+### §5 API (folded `partial interface Graph`)
+
+| API | Spec | IDL | C++ | WPT | Status | Notes |
+|-----|------|-----|-----|-----|--------|-------|
+| `addShape(name, shapeDefinition)` | §5.2 | ✅ | ✅ | ✅ | ✅ | Requires `updateSHACL` (§10.4). Malformed → `SyntaxError`; duplicate local name → `ConstraintError`; a narrowing/`extends`-resolution failure → `ConstraintError`; no capability → `NotAllowedError`. Stores the §6.4 triple shape authored by the current identity. `Shape_AddShapeStoresAndLists`, `Shape_DuplicateNameConstraintError`, `Shape_MalformedSyntaxError`, `Shape_UnknownAuthorInvalidState`. |
+| `removeShape(name)` | §5.3 | ✅ | ✅ | ✅ | ✅ | Requires `updateSHACL`. Drops the `has_shape` link + the definition triples (re-deriving the stored JCS literal to remove the exact bytes); existing instances are left intact; an unregistered name is a no-op success. `Shape_RemoveShape`. |
+| `getShapes(options)` | §5.4 | ✅ | ✅ | ✅ | ✅ | Local shapes + (unless `includeInherited:false`) the §7 accepted inherited shapes; local shadows inherited of the same name (§7.3); each `ShapeInfo` carries `sourceGraphDid`. `Shape_AddShapeStoresAndLists`, `Shape_LocalOverridesInherited`. |
+| `createShapeInstance(shapeName, address, initialValues)` | §5.5 | ✅ | ✅ | ✅ | ✅ | Resolves the shape locally or by §7 inheritance (unknown → `NotFoundError`); empty `address` mints a `urn:uuid`; a required property with no value and no constructor default → `TypeError`; a datatype-invalid value → `TypeError`; each constructor triple is governed (§5.5 step 4) and lands in *this* graph; resolves the instance address. `Shape_CreateInstanceExecutesConstructor`, `…RequiredMissingTypeError`, `…DatatypeTypeError`, `…UnknownShapeNotFound`. |
+| `getShapeInstances(shapeName)` | §5.6 | ✅ | ✅ | ✅ | ✅ | Addresses of every entity in this graph whose §4.5 `rdf://type` discriminator matches the shape's `targetClass` (deduplicated). `Shape_CreateInstanceExecutesConstructor`, `Shape_InheritanceRequiresAcceptance`. |
+| `getShapeInstanceData(shapeName, address)` | §5.6 | ✅ | ✅ | ✅ | ✅ | The full property dictionary (each property `name` → its ordered object values, IRI or literal lexical). `Shape_CreateInstanceExecutesConstructor`. |
+| `setShapeProperty(shapeName, address, property, value)` | §5.7 | ✅ | ✅ | ✅ | ✅ | The scalar setter: replaces any existing value. No setter → `NoModificationAllowedError`; a collection property → `InvalidAccessError`; datatype failure → `TypeError`; write is governed. `Shape_ScalarSetterAndGuards`. |
+| `addToShapeCollection` / `removeFromShapeCollection(shapeName, address, collection, value)` | §5.7 | ✅ | ✅ | ✅ | ✅ | Collection add/remove. A scalar property → `InvalidAccessError`; add validates the datatype (→ `TypeError`) and is governed; remove drops the exact object term. `Shape_CollectionAddRemove`. |
+
+### §6 storage convention
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §6.2 `has_shape` link subject | §6.2 | ✅ | ✅ | ✅ | The `shape://has_shape` link's subject is the graph's **stable identifier** — its `did:graph` DID if groupified, else its stable graph id (`did ?? id`), never the volatile `graph://` IRI. Amendment (ii). |
+| §6.4 stored triple shape | §6.4 | ✅ | ✅ | ✅ | `rdf://type shape://Shape` + `shape://name` + `shape://targetClass` + `shape://definition` (the JCS-canonical literal), all authored by the caller. `Shape_AddShapeStoresAndLists`. |
+
+### §7 inheritance + §10 authorisation & tamper defence
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §10.4 `updateSHACL` gate under enforcement | §5.2, §10.4 | ✅ | ✅ | ✅ | With a capability constraint installed, registration without `updateSHACL` → `NotAllowedError`; a root granted `updateSHACL` registers and instantiates. `Shape_UpdateShaclRequiredUnderEnforcement`, `Shape_UpdateShaclGrantedUnderEnforcement`. |
+| §7.1/§7.2 inheritance + resolution | §7.1, §7.2 | ✅ | ✅ | ✅ | A child resolves a shape by walking its `context://participates_in` parents depth-first (cycle-guarded, depth-capped); construction triples land in the *child*, not the parent. `Shape_InheritanceRequiresAcceptance`. |
+| §10.5 inheritance-tamper defence | §10.5, §7 | ✅ | ✅ | ✅ | A child's unilateral `participates_in` is not enough: the parent MUST carry a `context://accepts_participation` reifier whose author is one of the parent's `capabilityDelegation` delegates, else the inherited shape is invisible and instantiation → `NotFoundError`. `Shape_InheritanceRequiresAcceptance`. |
+| §7.3 local-overrides-inherited | §7.3 | ✅ | ✅ | ✅ | A same-name local shape that strictly narrows the inherited one shadows it within the child (its `sourceGraphDid` is the child). `Shape_LocalOverridesInherited`. |
+
+### Normative parameters
+
+- **Content address** (§6.3): `"sha256:"` prefix + 64 lowercase hex = one 32-byte
+  SHA-256 digest of the JCS-canonical shape JSON — a 71-char URI. Note the **colon**
+  (`sha256:`), distinct from the hyphenated `sha256-<hex>` WASM content-hash of
+  Spec 06 §4.2. The SHA-256 primitive resolves per build world; the JCS + format
+  core is shared.
+- **Datatype** (§4.2): a full XSD URI, an `xsd:`-prefixed name (expanded against
+  `http://www.w3.org/2001/XMLSchema#`), or `"URI"` (IRI-valued → a link object term).
+- **Error vocabulary** (§5): `SyntaxError` (malformed) and `TypeError` (datatype /
+  missing-required) are ECMAScript-native — the blink layer rejects them as native
+  errors, not `DOMException`; `ConstraintError`, `NotAllowedError`, `NotFoundError`,
+  `NoModificationAllowedError`, `InvalidAccessError`, `InvalidStateError` map to
+  their `DOMException` codes (`Graph::RejectWithName`).
+- **Authorship** (§5.2/§5.5/§5.7, §10.4): registration and every instance write are
+  authored by the browser's *current* identity (`GovernanceBackend::
+  ActiveCredentialId()` in the port; the acting credential in the harness), never a
+  renderer-named author — the same rule as the §11 governance surface.
+- Authoritative reference impl: `standalone/shape_provider.h`
+  (`living_web::ShapeService`) over the shared `shape_definition.*`, verified by the
+  24 `Shape_*` tests; the browser port
+  (`content/browser/shapes/shape_service.{h,cc}`) mirrors it against the real
+  graph/identity/governance backends and is folded onto `PersonalGraphHost`.
+
+### Amendments
+
+Three under-specified areas surfaced while implementing Spec 07 have been **folded
+back into the draft on `w3c-living-web-proposals` `main`** (commits
+[`22c844a`](https://github.com/HexaField/w3c-living-web-proposals/commit/22c844a),
+[`12c8b65`](https://github.com/HexaField/w3c-living-web-proposals/commit/12c8b65)),
+so the draft now fully specifies what this branch implements:
+
+- **(i) Canonical constructor-action keys (§4.3, §12).** §4.3 normatively names the
+  action fields `subject`/`predicate`/`object`, but the §12 examples used the
+  aliases `source`/`target`, which no `subject`/`object` reader would accept. The
+  amendment rewrites the §12 examples to the canonical keys and adds a §4.3 note:
+  the canonical keys are `subject`/`predicate`/`object`, and for backward
+  compatibility an implementation MAY additionally accept the deprecated
+  `source`/`target` aliases (mapping to `subject`/`object`). The parser does exactly
+  this (`Shape_ConstructorKeyAliases`). The amendment also switches the examples'
+  `rdf://type` action to `addLink` so the discriminator is an IRI (§4.5), matching
+  the type-discriminator rule.
+- **(ii) Content address + storage subject (§6.3, §6.4, §6.2).** §6.3 said only "the
+  SHA-256 of the … canonical form"; the amendment pins the address to the URI
+  `"sha256:" + lowercaseHex(SHA-256(JCS(shapeJson)))` (colon separator, 71 chars),
+  and reconciles the §6.2 `<graph-did>` / §6.4 `<graph-id>` mismatch by pinning the
+  `has_shape` link subject to the graph's stable identifier (its `did:graph` DID if
+  groupified, else its stable graph id; `did ?? id`), never the volatile `graph://`
+  IRI — so the link survives mutation.
+- **(iii) Datatype forms (§4.2).** §4.2 said "an XSD URI or `"URI"`" but every
+  example used the `xsd:`-prefixed form. The amendment states the three accepted
+  forms explicitly — a full XSD URI, an `xsd:`-prefixed name (expanded to the XSD
+  namespace and treated identically to its full-URI form), or `"URI"` — matching
+  `NormalizeDatatype` (`Shape_NormalizeAndValidateDatatype`).
 
 ---
 

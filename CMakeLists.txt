@@ -74,6 +74,7 @@ add_library(living_web STATIC
     content/browser/graph_sync/graph_diff.cc
     content/browser/module_runtime/module_capabilities.cc
     content/browser/module_runtime/module_manifest.cc
+    content/browser/shapes/shape_definition.cc
 )
 add_dependencies(living_web oxigraph_ffi_build)
 target_include_directories(living_web PUBLIC

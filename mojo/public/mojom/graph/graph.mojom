@@ -300,6 +300,66 @@ interface PersonalGraphHost {
                       string session_id,
                       array<uint8> payload) => (string? error);
   Broadcast(array<uint8> payload) => (string? error);
+
+  // ---- Spec 07 §5 shape API (folded into this host; see the Spec 07 section
+  // below). Every call runs against the single per-realm ShapeService the browser
+  // shares across all graphs, which composes the per-realm identity, governance,
+  // and graph-manager backends. Registration/removal (AddShape/RemoveShape) and
+  // every instance write (CreateShapeInstance/SetShapeProperty/{Add,Remove}
+  // ShapeCollection) author as the *current* identity; the returned |error| is the
+  // DOMException name (SyntaxError/ConstraintError/NotAllowedError/TypeError/
+  // NotFoundError/NoModificationAllowedError/InvalidAccessError/InvalidStateError,
+  // §5). GetShapes/GetShapeInstances/GetShapeInstanceData are reads. ----
+
+  // §5.2 addShape: register |shape_json| under |name| into this graph. Requires
+  // the updateSHACL capability (§10.4). |error|: "SyntaxError" (malformed shape),
+  // "ConstraintError" (duplicate local name or invalid narrowing), "NotAllowedError".
+  AddShape(string name, string shape_json) => (string? error);
+  // §5.3 removeShape: drop |name|'s registration (requires updateSHACL). Existing
+  // instances are not deleted; an unregistered name is a no-op success.
+  RemoveShape(string name) => (string? error);
+  // §5.4 getShapes: the shapes registered on this graph plus, when
+  // |include_inherited|, the accepted shapes inherited from parent graphs (§7);
+  // local shapes shadow inherited shapes of the same name (§7.3).
+  GetShapes(bool include_inherited) => (array<ShapeInfo> shapes);
+  // §5.5 createShapeInstance: execute |shape_name|'s constructor into this graph.
+  // |address| empty mints a fresh urn:uuid. |initial_values| maps property names
+  // to single lexical/IRI values (the IDL record<DOMString, DOMString>). Resolves
+  // the instance address in |address_out|. |error|: "NotFoundError" (unknown
+  // shape), "TypeError" (missing required property or datatype failure),
+  // "NotAllowedError".
+  CreateShapeInstance(string shape_name,
+                      string address,
+                      array<ShapeInitialValue> initial_values)
+      => (string? address_out, string? error);
+  // §5.6 getShapeInstances: the addresses of every entity whose §4.5 rdf://type
+  // discriminator matches the shape's targetClass. |error| "NotFoundError".
+  GetShapeInstances(string shape_name)
+      => (array<string>? addresses, string? error);
+  // §5.6 getShapeInstanceData: the full property dictionary of |address| (each
+  // property name → its ordered object values). |error| "NotFoundError".
+  GetShapeInstanceData(string shape_name, string address)
+      => (array<ShapeInstanceEntry>? data, string? error);
+  // §5.7 setShapeProperty: the scalar setter (replace any existing value).
+  // |error|: "NotFoundError", "NoModificationAllowedError" (no setter),
+  // "InvalidAccessError" (collection property), "TypeError", "NotAllowedError".
+  SetShapeProperty(string shape_name,
+                   string address,
+                   string property,
+                   string value) => (string? error);
+  // §5.7 addToShapeCollection: add a value to a collection property. |error|:
+  // "NotFoundError", "InvalidAccessError" (scalar property), "TypeError",
+  // "NotAllowedError".
+  AddToShapeCollection(string shape_name,
+                       string address,
+                       string collection,
+                       string value) => (string? error);
+  // §5.7 removeFromShapeCollection: remove a value from a collection property.
+  // |error|: "NotFoundError", "InvalidAccessError" (scalar property).
+  RemoveFromShapeCollection(string shape_name,
+                            string address,
+                            string collection,
+                            string value) => (string? error);
 };
 
 // PersonalGraphClient — the renderer sink for graph events (§4.2, §4.4). The
@@ -834,4 +894,63 @@ struct SyncModuleInfo {
   uint32 space_count;
   ModuleState state;
   uint64 storage_bytes;
+};
+
+// ============================================================
+// Spec 07 — Dynamic Graph Shape Validation
+//
+// A shape is a content-addressed constraint definition (§4) stored as triples
+// inside the Spec 02 graph it governs (§6). The browser owns one per-realm
+// ShapeService (the C++ port of living_web::ShapeService) shared across all
+// graphs; it composes the realm's identity, Spec 04 governance (the §10.4
+// updateSHACL gate + the per-write §5.5/§5.7 governance), and graph manager (to
+// resolve context://participates_in parents for §7 inheritance). The §5 API is a
+// `partial interface Graph`, so it is folded into PersonalGraphHost above because
+// that host already owns the browser-side graph the shapes are registered on. All
+// registration/instance writes use the Spec 01 identity in the browser, never the
+// renderer.
+// ============================================================
+
+// §5.1 PropertyInfo — one property of a shape's §4.2 definition, as read back by
+// getShapes. |datatype| absent means no datatype constraint; |max_count| absent
+// means unbounded (the IDL `unsigned long?`).
+struct ShapePropertyInfo {
+  string name;
+  string path;
+  string? datatype;
+  uint64 min_count;
+  uint64? max_count;
+  bool writable;
+  bool read_only;
+};
+
+// §5.1 ShapeInfo — a registered shape as read back by getShapes. |source_graph_did|
+// is the graph the shape is registered on (this graph, or a §7 parent it was
+// inherited from); |definition_address| is the §6.3 "sha256:<hex>" content address.
+struct ShapeInfo {
+  string name;
+  string target_class;
+  string definition_address;
+  string source_graph_did;
+  array<ShapePropertyInfo> properties;
+};
+
+// One property of a shape instance's dictionary: a property |name| mapped to its
+// ordered object |values| (IRI or literal lexical form; a scalar carries one, a
+// collection carries many). Mirrors the IDL record<DOMString, sequence<DOMString>>
+// getShapeInstanceData return; mojo has no map/record type, so it crosses the
+// boundary as an ordered array of these entries (blink represents the record as a
+// vector of name→values pairs).
+struct ShapeInstanceEntry {
+  string name;
+  array<string> values;
+};
+
+// One entry of the createShapeInstance initialValues map: a property |name| mapped
+// to a single |value| (the IDL record<DOMString, DOMString> — each property's
+// constructor takes one lexical/IRI value). Mojo has no map/record type, so the
+// map crosses the boundary as an ordered array of these entries.
+struct ShapeInitialValue {
+  string name;
+  string value;
 };

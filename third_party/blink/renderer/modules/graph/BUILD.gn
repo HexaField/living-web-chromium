@@ -6,12 +6,16 @@ import("//third_party/blink/renderer/modules/modules.gni")
 
 # Spec 01 — Decentralised Identity, Spec 02 — Personal Linked Data Graphs,
 # Spec 03 — Decentralised Group Identity, Spec 04 — Graph Capability Framework,
-# and Spec 05 — Graph Synchronisation Protocol. The renderer-side surfaces
-# (DIDCredential; navigator.graph -> GraphManager / Graph / Group and their value
-# and event objects) and their supporting types. Spec 04 folds its governance API
-# onto Graph and adds only IDL dictionaries (no new .cc/.h); Spec 05 adds the sync
-# value objects (Peer, GraphDiff, PublishedGraph, CapabilityProof) and the events
-# Graph / GraphManager dispatch.
+# Spec 05 — Graph Synchronisation Protocol, and Spec 07 — Dynamic Graph Shape
+# Validation. The renderer-side surfaces (DIDCredential; navigator.graph ->
+# GraphManager / Graph / Group and their value and event objects) and their
+# supporting types. Spec 04 folds its governance API onto Graph and adds only IDL
+# dictionaries (no new .cc/.h); Spec 05 adds the sync value objects (Peer,
+# GraphDiff, PublishedGraph, CapabilityProof) and the events Graph / GraphManager
+# dispatch; Spec 07 folds its §5 shape API onto Graph and, like Spec 04, adds only
+# IDL dictionaries (ShapeInfo, ShapePropertyInfo, GetShapesOptions — no new
+# .cc/.h; the shape-instance data crosses as record<DOMString, sequence<DOMString>>
+# and initialValues as record<DOMString, DOMString>).
 #
 # IDL files are intentionally not listed here — they are wired separately during
 # full-tree integration; only .cc/.h sources belong in blink_modules_sources.

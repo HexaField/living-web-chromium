@@ -1,0 +1,58 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Spec 07 — Dynamic Graph Shape Validation: the browser-process shape service.
+#
+# Shapes are content-addressed constraint definitions stored as triples inside
+# the Spec 02 graph they govern (§6). Registering, removing, and instantiating a
+# shape are governed writes: like the Spec 04 §11 governance API, this sits at the
+# top of the identity/graph stack — it depends on the graph layer
+# ("//content/browser/graph"), the group layer ("//content/browser/did:group",
+# for the group_detail triple builders + DID-document projection reused to author
+# and read the stored shape triples and to check accepted participation), the
+# identity layer ("//content/browser/did:did", for the did:key/did:graph codec
+# used by the §10.5 reifier-author check), and the governance layer
+# ("//content/browser/governance", for the updateSHACL gate and the per-write
+# §5.5/§5.7 governance) — none of which depend back on it, so no cycle forms.
+#
+# ShapeService is a per-realm object (it operates on whichever GraphBackend is
+# passed to each call) and is owned by PersonalGraphManager alongside the graph,
+# governance, and sync backends. The Spec 07 §5 API is a `partial interface Graph`
+# (every method takes the target Graph first), so those methods are folded into
+# PersonalGraphHost in the ":graph" target rather than exposed through a separate
+# host here — in the production single //content/browser target the two
+# co-compile and PersonalGraphHost calls straight into ShapeService with no
+# cross-target boundary.
+#
+# The SHA-256 content-address primitive is //crypto's crypto::SHA256HashString,
+# backed by //third_party/boringssl; the shared shape-definition core never
+# hashes (it canonicalises with JCS via "//content/browser/did:did" and formats
+# the raw digest), so this target adds only //crypto over the governance deps.
+source_set("shapes") {
+  sources = [
+    # Chromium-independent shape-definition core (namespace living_web), shared
+    # verbatim with the standalone conformance harness so the shape grammar, the
+    # JCS content address, the datatype lexical space, and the narrowing rule
+    # never diverge between the two build worlds.
+    "shape_definition.cc",
+    "shape_definition.h",
+
+    # Spec 07 §5 API port + §7 inheritance / §10.5 tamper defence (namespace
+    # content).
+    "shape_service.cc",
+    "shape_service.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/browser/did:did",
+    "//content/browser/did:group",
+    "//content/browser/governance",
+    "//content/browser/graph",
+    "//crypto",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+    "//third_party/boringssl",
+  ]
+}

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Dynamic Graph Shape Validation (Spec 07) — shapes &amp; instances — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 07 — Dynamic Graph Shape Validation
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md
+//
+// A shape is a content-addressed constraint definition (§4) stored as ordinary
+// triples inside the graph it governs (§6). The §5 API — folded onto Graph as
+// addShape / removeShape / getShapes / createShapeInstance / getShapeInstances /
+// getShapeInstanceData / setShapeProperty / addToShapeCollection /
+// removeFromShapeCollection — registers shapes, runs their §5.5 constructors as
+// governed writes authored by the browser's current identity (never named by the
+// renderer), and reads instances back. Registration/removal take the §10.4
+// updateSHACL capability; on a DID-less / "open" graph (Spec 02) there is nothing
+// to enforce, so writes are ungated. A same-named override MUST strictly narrow
+// what it shadows (§4.6/§7.3); an `extends` parent MUST resolve and be narrowed
+// (§4.6). §7 lets a child graph that declares context://participates_in a parent
+// inherit that parent's shapes, but only once the parent's governance ACCEPTS the
+// participation (§10.5): an adversarial child that merely declares participation
+// sees nothing.
+// ==========================================================================
+
+// The group's sync module is REQUIRED (GROUP-IDENTITY §4.5); any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// §4 A Person shape: a required scalar (name), an optional scalar (age), and an
+// unbounded IRI collection (knows), with a full §5.5 constructor. Passed to
+// addShape() as a live object (the IDL takes `object shapeDefinition`).
+const PERSON_SHAPE = {
+  targetClass: 'http://schema.org/Person',
+  properties: [
+    { path: 'http://schema.org/name', name: 'name', datatype: 'xsd:string', minCount: 1, maxCount: 1 },
+    { path: 'http://schema.org/age', name: 'age', datatype: 'xsd:integer', maxCount: 1 },
+    { path: 'http://schema.org/knows', name: 'knows', datatype: 'URI' },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'http://schema.org/Person' },
+    { action: 'shape://actions/setSingleTarget', subject: 'this', predicate: 'http://schema.org/name', object: 'name' },
+    { action: 'shape://actions/setSingleTarget', subject: 'this', predicate: 'http://schema.org/age', object: 'age' },
+    { action: 'shape://actions/addCollectionTarget', subject: 'this', predicate: 'http://schema.org/knows', object: 'knows' },
+  ],
+};
+
+// §4.2 A Thing shape exercising every setter classification: `title` scalar,
+// `locked` read-only (no setter), `tag` unbounded collection.
+const THING_SHAPE = {
+  targetClass: 'http://example.org/Thing',
+  properties: [
+    { path: 'http://example.org/title', name: 'title', datatype: 'xsd:string', minCount: 1, maxCount: 1 },
+    { path: 'http://example.org/locked', name: 'locked', datatype: 'xsd:string', maxCount: 1, readOnly: true },
+    { path: 'http://example.org/tag', name: 'tag', datatype: 'xsd:string' },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'http://example.org/Thing' },
+    { action: 'shape://actions/setSingleTarget', subject: 'this', predicate: 'http://example.org/title', object: 'title' },
+  ],
+};
+
+// §4 An Animal shape (legs optional) and two would-be refinements of it: Dog
+// tightens legs to required (a valid §4.6 narrowing), Cat loosens maxCount 1 → 4
+// (an invalid §4.6 extension).
+const ANIMAL_SHAPE = {
+  targetClass: 'http://example.org/Animal',
+  properties: [
+    { path: 'http://example.org/legs', name: 'legs', datatype: 'xsd:integer', minCount: 0, maxCount: 1 },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'http://example.org/Animal' },
+  ],
+};
+const DOG_SHAPE = {
+  targetClass: 'http://example.org/Dog',
+  extends: 'Animal',
+  properties: [
+    { path: 'http://example.org/legs', name: 'legs', datatype: 'xsd:integer', minCount: 1, maxCount: 1 },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'http://example.org/Dog' },
+  ],
+};
+const CAT_SHAPE = {
+  targetClass: 'http://example.org/Cat',
+  extends: 'Animal',
+  properties: [
+    { path: 'http://example.org/legs', name: 'legs', datatype: 'xsd:integer', minCount: 0, maxCount: 4 },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'http://example.org/Cat' },
+  ],
+};
+
+// §7.3 A same-name "Animal" shape that strictly narrows the inherited Animal
+// (legs minCount 0 → 1) WITHOUT `extends` — a local override that shadows the
+// inherited definition.
+const ANIMAL_NARROWED_SHAPE = {
+  targetClass: 'http://example.org/Animal',
+  properties: [
+    { path: 'http://example.org/legs', name: 'legs', datatype: 'xsd:integer', minCount: 1, maxCount: 1 },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'http://example.org/Animal' },
+  ],
+};
+
+// A well-formed §6.4 shape address: the literal "sha256:" prefix followed by
+// exactly 64 lowercase hex characters (colon delimiter, not hyphen).
+function isWellFormedShapeAddress(s) {
+  return typeof s === 'string' && /^sha256:[0-9a-f]{64}$/.test(s);
+}
+
+// A fresh group whose creator holds the group DID's capability sections, so an
+// "open"-mode registration is authored by a delegate out of the box.
+async function openGroup(t) {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  return group;
+}
+
+// ---- §5 surface presence ---------------------------------------------------
+
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  for (const m of ['addShape', 'removeShape', 'getShapes', 'createShapeInstance',
+                   'getShapeInstances', 'getShapeInstanceData', 'setShapeProperty',
+                   'addToShapeCollection', 'removeFromShapeCollection']) {
+    assert_equals(typeof g[m], 'function',
+      `Graph MUST expose the §5 shape method ${m}()`);
+  }
+}, '§5 the shape surface MUST be present on Graph');
+
+// ---- §5.2 addShape + §5.4 getShapes ----------------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Person', PERSON_SHAPE);
+
+  const shapes = await g.getShapes();
+  const p = shapes.find(s => s.name === 'Person');
+  assert_true(p !== undefined, 'the registered shape MUST be listed');
+  assert_equals(p.targetClass, 'http://schema.org/Person',
+    'the shape MUST report its §4 targetClass');
+  assert_true(isWellFormedShapeAddress(p.definitionAddress),
+    'the shape MUST carry a §6.4 sha256: content address');
+  assert_equals(p.properties.length, 3,
+    'getShapes() MUST report every declared property');
+  assert_true(p.properties.some(pr => pr.name === 'name'),
+    'the property projection MUST include declared properties by name');
+}, '§5.2/§5.4 addShape() MUST register and getShapes() MUST list a shape');
+
+// §5.2 last line — a duplicate local shape name is a "ConstraintError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Person', PERSON_SHAPE);
+  await promise_rejects_dom(t, 'ConstraintError',
+    g.addShape('Person', PERSON_SHAPE),
+    'a duplicate local shape name MUST reject with ConstraintError');
+}, '§5.2 addShape() MUST reject a duplicate name with ConstraintError');
+
+// §5.2 step 2 — malformed shape JSON is a "SyntaxError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await promise_rejects_dom(t, 'SyntaxError',
+    g.addShape('Bad', { targetClass: 42 }),
+    'a malformed shape definition MUST reject with SyntaxError');
+}, '§5.2 addShape() MUST reject a malformed definition with SyntaxError');
+
+// §4.6 — an override/extension MUST strictly narrow; loosening or an unresolvable
+// `extends` parent is a "ConstraintError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Animal', ANIMAL_SHAPE);
+  await g.addShape('Dog', DOG_SHAPE);  // valid narrowing (legs → required)
+  await promise_rejects_dom(t, 'ConstraintError',
+    g.addShape('Cat', CAT_SHAPE),
+    'an extension that loosens a constraint MUST reject with ConstraintError');
+  await promise_rejects_dom(t, 'ConstraintError',
+    g.addShape('Ghost', { targetClass: 'G', extends: 'Nonexistent', properties: [], constructor: [] }),
+    'extending an unresolvable parent MUST reject with ConstraintError');
+}, '§4.6 addShape() MUST enforce the strict-narrowing rule for extends');
+
+// ---- §5.3 removeShape ------------------------------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Person', PERSON_SHAPE);
+  assert_equals((await g.getShapes()).length, 1, 'the shape MUST be registered');
+  await g.removeShape('Person');
+  assert_equals((await g.getShapes()).length, 0,
+    'removeShape() MUST drop the registration');
+  // Removing a shape that was never registered is a no-op success.
+  await g.removeShape('Ghost');
+}, '§5.3 removeShape() MUST drop a registration and no-op on a missing name');
+
+// ---- §5.5 createShapeInstance + §5.6 query ---------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Person', PERSON_SHAPE);
+
+  const addr = await g.createShapeInstance('Person', '', {
+    name: 'Ada Lovelace', age: '36', knows: 'did:example:bob' });
+  assert_true(addr.startsWith('urn:uuid:'),
+    'an empty address MUST mint a fresh urn:uuid instance (§5.5)');
+
+  const instances = await g.getShapeInstances('Person');
+  assert_equals(instances.length, 1,
+    'getShapeInstances() MUST return the constructed instance');
+  assert_equals(instances[0], addr,
+    'the instance MUST be discovered via its rdf://type discriminator (§5.6)');
+
+  // §5.6 getShapeInstanceData maps each property to its ordered value array.
+  const data = await g.getShapeInstanceData('Person', addr);
+  assert_array_equals(data.name, ['Ada Lovelace'],
+    'a scalar property MUST carry its single value');
+  assert_array_equals(data.age, ['36']);
+  assert_array_equals(data.knows, ['did:example:bob'],
+    'a URI-typed value MUST round-trip as its IRI lexical form');
+}, '§5.5/§5.6 createShapeInstance() MUST run the constructor and be queryable');
+
+// §5.5 step 3 — a missing required property is a "TypeError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Person', PERSON_SHAPE);
+  await promise_rejects_js(t, TypeError,
+    g.createShapeInstance('Person', '', { age: '36' }),
+    'omitting a required property MUST reject with TypeError');
+}, '§5.5 createShapeInstance() MUST reject a missing required property with TypeError');
+
+// §4.4/§10.3 — a value that fails datatype validation is a "TypeError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Person', PERSON_SHAPE);
+  await promise_rejects_js(t, TypeError,
+    g.createShapeInstance('Person', '', { name: 'X', age: 'notanumber' }),
+    'a value failing datatype validation MUST reject with TypeError');
+}, '§4.4/§10.3 createShapeInstance() MUST reject a datatype failure with TypeError');
+
+// §5.5 — an unknown shape name is a "NotFoundError".
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await promise_rejects_dom(t, 'NotFoundError',
+    g.createShapeInstance('Nope', '', { name: 'X' }),
+    'instantiating an unknown shape MUST reject with NotFoundError');
+}, '§5.5 createShapeInstance() MUST reject an unknown shape with NotFoundError');
+
+// ---- §5.7 setters + collection operations ----------------------------------
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Thing', THING_SHAPE);
+  const addr = await g.createShapeInstance('Thing', '', { title: 'Hello' });
+
+  // The scalar setter replaces the single value.
+  await g.setShapeProperty('Thing', addr, 'title', 'World');
+  const data = await g.getShapeInstanceData('Thing', addr);
+  assert_array_equals(data.title, ['World'],
+    'the scalar setter MUST replace the existing value');
+
+  // A read-only property has no setter (§4.2).
+  await promise_rejects_dom(t, 'NoModificationAllowedError',
+    g.setShapeProperty('Thing', addr, 'locked', 'x'),
+    'setting a read-only property MUST reject with NoModificationAllowedError');
+
+  // A collection property rejects the scalar setter (wrong accessor).
+  await promise_rejects_dom(t, 'InvalidAccessError',
+    g.setShapeProperty('Thing', addr, 'tag', 'x'),
+    'the scalar setter on a collection MUST reject with InvalidAccessError');
+}, '§5.7 setShapeProperty() MUST replace scalars and honour the setter classification');
+
+promise_test(async t => {
+  const g = (await openGroup(t)).graph;
+  await g.addShape('Thing', THING_SHAPE);
+  const addr = await g.createShapeInstance('Thing', '', { title: 'T' });
+
+  await g.addToShapeCollection('Thing', addr, 'tag', 'red');
+  await g.addToShapeCollection('Thing', addr, 'tag', 'blue');
+  let data = await g.getShapeInstanceData('Thing', addr);
+  assert_equals(data.tag.length, 2, 'both collection members MUST be present');
+
+  await g.removeFromShapeCollection('Thing', addr, 'tag', 'red');
+  data = await g.getShapeInstanceData('Thing', addr);
+  assert_array_equals(data.tag, ['blue'],
+    'removeFromShapeCollection() MUST drop exactly the named value');
+
+  // The scalar `title` rejects collection operations.
+  await promise_rejects_dom(t, 'InvalidAccessError',
+    g.addToShapeCollection('Thing', addr, 'title', 'x'),
+    'a collection op on a scalar property MUST reject with InvalidAccessError');
+}, '§5.7 addToShapeCollection()/removeFromShapeCollection() MUST manage collections');
+
+// ---- §10.4 updateSHACL authorisation under enforcement ---------------------
+
+// A group whose root grants the framework-core actions (NOT updateSHACL) and is
+// switched to "enforced" — registration MUST then require the updateSHACL
+// extension capability the root does not hold.
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  const g = group.graph;
+  // The first delegation lazily mints the root (framework-core actions only).
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+  await group.delegateCapability({
+    invoker: delegatee.did, actions: ['createLink'], resource: group.did });
+  // Install a capability constraint and enforce it (writes are ungated in open
+  // mode, so seeding needs no prior authority).
+  const cid = 'urn:uuid:' + crypto.randomUUID();
+  await g.addTriple(new Triple(cid, 'governance://entry_type', 'governance://constraint'));
+  await g.addTriple(new Triple(cid, 'governance://constraint_kind', new LiteralValue('capability')));
+  await g.addTriple(new Triple(group.did, 'governance://has_constraint', cid));
+  await g.setEnforcementMode('enforced');
+
+  await promise_rejects_dom(t, 'NotAllowedError',
+    g.addShape('Person', PERSON_SHAPE),
+    'registration without updateSHACL MUST reject with NotAllowedError (§10.4)');
+}, '§10.4 addShape() MUST require the updateSHACL capability under enforcement');
+
+// ---- §7 cross-graph inheritance + §10.5 tamper defence ---------------------
+
+promise_test(async t => {
+  // The parent context registers a shape.
+  const parent = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => parent.graph.dissolve());
+  await parent.graph.addShape('Person', PERSON_SHAPE);
+
+  // A child context that unilaterally declares participation in the parent.
+  const child = await navigator.graph.createGroup({
+    syncModule: SYNC, participatesIn: parent.did });
+  t.add_cleanup(() => child.graph.dissolve());
+  const C = child.graph;
+
+  // §10.5: without the parent's acceptance the inherited shape is invisible, and
+  // instantiating it fails as if unknown.
+  assert_equals((await C.getShapes()).length, 0,
+    'an unaccepted participation MUST NOT expose the parent\'s shapes (§10.5)');
+  await promise_rejects_dom(t, 'NotFoundError',
+    C.createShapeInstance('Person', '', { name: 'X' }),
+    'an unaccepted inherited shape MUST be unresolvable (NotFoundError)');
+
+  // The parent accepts the child (an §6.2 capabilityDelegation-authored link).
+  await parent.invite(child.did);
+
+  // Now the shape is inherited (sourced from the parent) and instantiable in the
+  // child, and construction triples land in the CHILD graph (§5.5 step 4 / §7.4).
+  const shapes = await C.getShapes();
+  const p = shapes.find(s => s.name === 'Person');
+  assert_true(p !== undefined, 'the accepted inherited shape MUST become visible');
+  assert_equals(p.sourceGraphDid, parent.did,
+    'the inherited shape MUST report the parent as its source graph');
+  const addr = await C.createShapeInstance('Person', '', { name: 'X' });
+  assert_true(addr.startsWith('urn:uuid:'));
+  assert_equals((await C.getShapeInstances('Person')).length, 1,
+    'the instance MUST be created in the child graph');
+  assert_equals((await parent.graph.getShapeInstances('Person')).length, 0,
+    'the parent graph MUST hold no instances of its own');
+}, '§7/§10.5 inheritance MUST require the parent\'s accepted participation');
+
+promise_test(async t => {
+  const parent = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => parent.graph.dissolve());
+  await parent.graph.addShape('Animal', ANIMAL_SHAPE);
+
+  const child = await navigator.graph.createGroup({
+    syncModule: SYNC, participatesIn: parent.did });
+  t.add_cleanup(() => child.graph.dissolve());
+  const C = child.graph;
+  await parent.invite(child.did);
+
+  // The child registers a same-name shape that strictly narrows the inherited one.
+  await C.addShape('Animal', ANIMAL_NARROWED_SHAPE);
+
+  const a = (await C.getShapes()).find(s => s.name === 'Animal');
+  assert_true(a !== undefined, 'the local shape MUST be listed');
+  assert_equals(a.sourceGraphDid, child.did,
+    'a local shape MUST shadow the inherited one of the same name (§7.3)');
+  const legs = a.properties.find(pr => pr.name === 'legs');
+  assert_true(legs !== undefined);
+  assert_equals(legs.minCount, 1,
+    'the local override MUST expose the child\'s tightened constraint');
+}, '§7.3 a local shape MUST shadow an inherited shape of the same name');
+</script>

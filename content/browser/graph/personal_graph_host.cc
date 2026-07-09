@@ -64,11 +64,13 @@ PersonalGraphHost::PersonalGraphHost(
     GraphBackendManager* manager,
     GovernanceBackend* governance,
     SyncBackend* sync,
+    ShapeService* shapes,
     mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver)
     : backend_(backend),
       manager_(manager),
       governance_(governance),
       sync_(sync),
+      shapes_(shapes),
       receiver_(this, std::move(receiver)) {}
 
 PersonalGraphHost::~PersonalGraphHost() = default;
@@ -781,6 +783,164 @@ void PersonalGraphHost::SendSignalToSession(
 void PersonalGraphHost::Broadcast(const std::vector<uint8_t>& payload,
                                   BroadcastCallback callback) {
   std::move(callback).Run(SignalGate());
+}
+
+// ---- Spec 07 §5 shape API -------------------------------------------------
+//
+// Registration and every instance write author as the *current* identity, exactly
+// like the §11 governance surface and §5.2 mutation hook: the acting credential is
+// the browser's active credential (governance_->ActiveCredentialId()), never a
+// renderer-named author. ShapeService::last_error() carries the DOMException name
+// on rejection, which is forwarded verbatim as the promise-rejecting |error|.
+
+// static
+graph::mojom::ShapePropertyInfoPtr PersonalGraphHost::ToMojo(
+    const ShapePropertyInfo& p) {
+  auto out = graph::mojom::ShapePropertyInfo::New();
+  out->name = p.name;
+  out->path = p.path;
+  out->datatype = p.datatype;
+  out->min_count = p.min_count;
+  if (p.max_count.has_value())
+    out->max_count = *p.max_count;
+  out->writable = p.writable;
+  out->read_only = p.read_only;
+  return out;
+}
+
+// static
+graph::mojom::ShapeInfoPtr PersonalGraphHost::ToMojo(const ShapeInfo& s) {
+  auto out = graph::mojom::ShapeInfo::New();
+  out->name = s.name;
+  out->target_class = s.target_class;
+  out->definition_address = s.definition_address;
+  out->source_graph_did = s.source_graph_did;
+  out->properties.reserve(s.properties.size());
+  for (const ShapePropertyInfo& p : s.properties)
+    out->properties.push_back(ToMojo(p));
+  return out;
+}
+
+void PersonalGraphHost::AddShape(const std::string& name,
+                                 const std::string& shape_json,
+                                 AddShapeCallback callback) {
+  if (!shapes_->AddShape(backend_, name, shape_json,
+                         governance_->ActiveCredentialId())) {
+    std::move(callback).Run(shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::RemoveShape(const std::string& name,
+                                    RemoveShapeCallback callback) {
+  if (!shapes_->RemoveShape(backend_, name,
+                            governance_->ActiveCredentialId())) {
+    std::move(callback).Run(shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::GetShapes(bool include_inherited,
+                                  GetShapesCallback callback) {
+  std::vector<ShapeInfo> shapes = shapes_->GetShapes(backend_, include_inherited);
+  std::vector<graph::mojom::ShapeInfoPtr> out;
+  out.reserve(shapes.size());
+  for (const ShapeInfo& s : shapes)
+    out.push_back(ToMojo(s));
+  std::move(callback).Run(std::move(out));
+}
+
+void PersonalGraphHost::CreateShapeInstance(
+    const std::string& shape_name,
+    const std::string& address,
+    std::vector<graph::mojom::ShapeInitialValuePtr> initial_values,
+    CreateShapeInstanceCallback callback) {
+  std::map<std::string, std::string> values;
+  for (const auto& e : initial_values)
+    values[e->name] = e->value;
+  std::string out_address;
+  if (!shapes_->CreateShapeInstance(backend_, shape_name, address, values,
+                                    governance_->ActiveCredentialId(),
+                                    &out_address)) {
+    std::move(callback).Run(std::nullopt, shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(out_address, std::nullopt);
+}
+
+void PersonalGraphHost::GetShapeInstances(const std::string& shape_name,
+                                          GetShapeInstancesCallback callback) {
+  std::vector<std::string> addresses;
+  if (!shapes_->GetShapeInstances(backend_, shape_name, &addresses)) {
+    std::move(callback).Run(std::nullopt, shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::move(addresses), std::nullopt);
+}
+
+void PersonalGraphHost::GetShapeInstanceData(
+    const std::string& shape_name,
+    const std::string& address,
+    GetShapeInstanceDataCallback callback) {
+  ShapeInstanceData data;
+  if (!shapes_->GetShapeInstanceData(backend_, shape_name, address, &data)) {
+    std::move(callback).Run(std::nullopt, shapes_->last_error());
+    return;
+  }
+  std::vector<graph::mojom::ShapeInstanceEntryPtr> out;
+  out.reserve(data.size());
+  for (const auto& kv : data) {
+    auto entry = graph::mojom::ShapeInstanceEntry::New();
+    entry->name = kv.first;
+    entry->values = kv.second;
+    out.push_back(std::move(entry));
+  }
+  std::move(callback).Run(std::move(out), std::nullopt);
+}
+
+void PersonalGraphHost::SetShapeProperty(const std::string& shape_name,
+                                         const std::string& address,
+                                         const std::string& property,
+                                         const std::string& value,
+                                         SetShapePropertyCallback callback) {
+  if (!shapes_->SetShapeProperty(backend_, shape_name, address, property, value,
+                                 governance_->ActiveCredentialId())) {
+    std::move(callback).Run(shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::AddToShapeCollection(
+    const std::string& shape_name,
+    const std::string& address,
+    const std::string& collection,
+    const std::string& value,
+    AddToShapeCollectionCallback callback) {
+  if (!shapes_->AddToShapeCollection(backend_, shape_name, address, collection,
+                                     value,
+                                     governance_->ActiveCredentialId())) {
+    std::move(callback).Run(shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
+}
+
+void PersonalGraphHost::RemoveFromShapeCollection(
+    const std::string& shape_name,
+    const std::string& address,
+    const std::string& collection,
+    const std::string& value,
+    RemoveFromShapeCollectionCallback callback) {
+  if (!shapes_->RemoveFromShapeCollection(backend_, shape_name, address,
+                                          collection, value,
+                                          governance_->ActiveCredentialId())) {
+    std::move(callback).Run(shapes_->last_error());
+    return;
+  }
+  std::move(callback).Run(std::nullopt);
 }
 
 void PersonalGraphHost::InitAsMount(const std::string& space_uri,
