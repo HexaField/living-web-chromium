@@ -941,6 +941,180 @@ so the draft now fully specifies what this branch implements:
 
 ---
 
+## Spec 08 — Governance Constraint Vocabulary ✅
+
+Fully implemented and tested. Spec 08 is not a new subsystem but a **standard
+vocabulary** layered on the Spec 04 Graph Capability Framework. Spec 04 supplies the
+plug-in seams (`ConstraintKindHandler`, `CaveatHandler`) and evaluates the
+`capability` constraint kind plus the built-in `expiry` caveat; Spec 08 defines
+*what other constraints and caveats exist* — three constraint kinds (**credential**
+§4, **temporal** §5, **content** §6) and ten caveat types (**predicate**,
+**property**, **subject**, **object**, **rateLimit**, **cardinality**,
+**authorOnly**, **shape**, **content**, **credential**; §7) — and registers a handler
+for each. A single call, `RegisterConstraintVocabulary(engine, options)`, installs
+the whole vocabulary against a realm's `GovernanceBackend`; because Spec 04 already
+fails closed on unknown kinds/types (§13.8/§13.9), this call is the layer that turns
+those closed doors into live policy.
+
+Constraint kinds and caveats bite at different points of the *same* decision, and
+that distinction is preserved byte-for-byte across the two build worlds. A
+**constraint kind** is graph-scoped policy: it is collected from the scope chain
+(Spec 04 §6.2) and evaluated on every write **regardless of enforcement mode** —
+`open` mode gates only the `capability`/ZCAP check, so credential / temporal /
+content constraints deny-win even in an open graph. A **caveat** attenuates one ZCAP
+delegation: it is reached only in `enforced` mode, when a capability constraint is in
+force and the write is authorised through a delegation that carries the caveat. The
+renderer surface reflects this split: `canAddTriple(triple)` evaluates the *active*
+identity's write against the graph's constraints and returns
+`{allowed, mode, constraintKind}`; caveat behaviour is exercised by delegating a
+capability under caveats, switching the graph to `enforced`, and setting the
+delegatee the active identity.
+
+The decision core is Chromium-independent (namespace `living_web::constraint_vocab`,
+pure-std): `content/browser/governance/constraint_vocabulary.{h,cc}` — the §11
+`governance://` predicate + kind/caveat token vocabulary, §7.4 glob matching, the
+§7.2/§7.3 deny-wins allow/deny decision, RFC 3339 → epoch conversion and the §5.3
+timestamp-plausibility partial order (future bound, causal + per-author
+monotonicity), the §6.2 content policy over already-resolved object text (with the
+regex engine **injected** so the §9.3 DoS-timeout semantics are identical while the
+matcher differs per world), and the living-web VC profile's parse
+(`ParseLivingWebVc`) + Ed25519 pre-image (`BuildVcProofPreimage`). It performs **no
+hashing, no regex evaluation, and no graph I/O** — those resolve to per-build-world
+primitives — so it compiles verbatim in the standalone provider
+(`standalone/constraint_vocabulary_provider.h`) and the browser backend
+(`content/browser/governance/constraint_vocabulary_backend.{h,cc}`,
+`content::RegisterConstraintVocabulary`). The browser wires the vocabulary in the
+`PersonalGraphManager` constructor beside the §04/§05/§07 backends, binding the §7.8
+shape caveat to the Spec 07 `content::ShapeService::Conforms` so the vocabulary never
+re-implements SHACL; the standalone injects an equivalent conformance lambda. Both
+fail closed on an unresolvable shape (§9.6). Normative behaviour is exercised by the
+25 `Gov_*` blocks of the C++ harness (`living_web_tests`, **186 tests total, all
+green**) and mirrored by the 25 browser gtests
+(`tests/constraint_vocabulary_unittest.cc`, `ConstraintVocabulary*Test.*`, bound to
+the real `DIDKeyProvider` + `GovernanceBackend` + `GraphBackendManager`); the
+renderer surface is pinned by the WPT
+(`tests/web_platform_tests/graph/governance-constraint-vocabulary.html`).
+
+### §4 credential constraints (living-web VC profile)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §4.2 credential match vs stranger | §4.1, §4.2 | ✅ | ✅ | ✅ | A constraint requiring a VC type accepts an author who holds a matching credential and rejects one who does not; a held credential that fails any sub-check simply does not count (REJECT only when *no* held credential matches). `Gov_CredentialConstraintHolderVsStranger`. |
+| §4.1 living-web VC profile | §4.1 | ✅ | ✅ | ✅ | The VC is a JSON object stored **JCS-canonical inline** at its own `sha256:` content address via `governance://credential_body` (content-address integrity enforced — a body that does not hash to its address is rejected); `issuer` is a `did:key`; `proof.proofValue` is a multibase Ed25519 signature over the versioned `BuildVcProofPreimage` field projection. Amendment (i); `Gov_CoreVcPreimageDeterministic`. |
+| §4.2 issuer glob + freshness + revocation | §4.2 | ✅ | ✅ | ✅ | Issuer matched by §7.4 glob; `credential_min_age_hours` requires `issuanceDate` at least N hours in the past; revocation read from **local state** — the `credentialStatus.id` subject bearing `governance://revoked "true"` revokes, absence means live. Amendment (ii); `Gov_CredentialConstraintIssuerFreshnessRevocation`. |
+
+### §5 temporal constraints
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §5.2 minimum interval | §5.1, §5.2 | ✅ | ✅ | ✅ | `temporal_min_interval_seconds` rejects a matching write that follows the author's previous one too soon; `temporal_applies_to_predicates` scopes the rule. `Gov_TemporalConstraintInterval`. |
+| §5.2 window count | §5.1, §5.2 | ✅ | ✅ | ✅ | `temporal_max_count_per_window` rejects the write that would exceed the count within the sliding `temporal_window_seconds` window (default 60). `Gov_TemporalConstraintWindowCount`. |
+| §5.3 timestamp plausibility | §5.3 | ✅ | ✅ | ✅ | Before a diff timestamp is admissible: future bound (`t − now ≤ 300 s`, fixed), causal monotonicity (`t ≥` every resolved parent), per-author monotonicity (`t ≥` every same-author prior on a causal path). Any failure is fail-closed. `Gov_CorePlausibility`, `Gov_CoreRfc3339ToEpoch`. |
+
+### §6 content constraints
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §6.2 maximum length | §6.2 | ✅ | ✅ | ✅ | `content_max_length` counted in **UTF-8 code points** (`Utf8Length`), not bytes. `Gov_ContentConstraintLength`, `Gov_CoreContentPolicyOrder`. |
+| §6.2 blocked patterns (regex) | §6.2, §9.3 | ✅ | ✅ | ✅ | `content_blocked_patterns` (pipe-separated) matched by the injected §9.3 matcher; a timeout is a REJECT and a malformed pattern is `kNoMatch` (blocks nothing) in both worlds. `Gov_ContentConstraintBlockedPattern`, `Gov_StdRegexMatcherMatchNoMatchTimeout` (browser gtest `Re2MatcherMatchNoMatch`). |
+| §6.2 URL policy + domain + media type | §6.2 | ✅ | ✅ | ✅ | `content_allow_urls:false` rejects any `http(s)` URL; `content_allowed_domains` glob-matched against the URL **host** (authority minus userinfo/port); `content_allow_media_types` glob-matched against an RFC 2397 `data:` URL's media type (default `text/plain`). Amendment (iii); `Gov_ContentConstraintUrlPolicyAndDomain`. |
+
+### §7 caveat vocabulary (per-delegation attenuation, enforced mode)
+
+| Caveat | Spec | C++ | Test | Status | Notes |
+|--------|------|-----|------|--------|-------|
+| `predicate` (deny-wins) | §7.2 | ✅ | ✅ | ✅ | `denied` first, then a non-empty `allowed` acts as a whitelist. `Gov_PredicateCaveatDenyWins`. |
+| `property` (allow-list) | §7.3 | ✅ | ✅ | ✅ | Same evaluation as `predicate` at property-path level; narrows a `shape` caveat to specific properties. `Gov_PropertyCaveatAllowList`. |
+| `subject` / `object` (glob) | §7.4 | ✅ | ✅ | ✅ | `*`-glob against the triple subject IRI / object lexical form. `Gov_SubjectGlobCaveat`, `Gov_ObjectGlobCaveat`. |
+| `rateLimit` (sliding window) | §7.5 | ✅ | ✅ | ✅ | Trailing-window use counter keyed `(zcap.id, author)` via the usage ledger; the ledger records a use on each admit. `Gov_RateLimitCaveat`. |
+| `cardinality` (lifetime cap) | §7.6 | ✅ | ✅ | ✅ | Lifetime use counter keyed `(zcap.id, author)`; REJECT after `max`. `Gov_CardinalityCaveat`. |
+| `authorOnly` | §7.7 | ✅ | ✅ | ✅ | Operation must be authored by the subject's first-introducing author; a subject with no prior author ACCEPTs. `Gov_AuthorOnlyCaveat`. |
+| `shape` (conforms + fail-closed) | §7.8, §9.6 | ✅ | ✅ | ✅ | Delegates conformance to Spec 07 `ShapeService::Conforms` (browser) / an injected lambda (standalone); a conforming write is admitted, a §4.3-violating one rejected, an unresolvable shape fails closed. `Gov_ShapeCaveatConformsAndFailClosed`. |
+| `content` (SPARQL ASK) | §7.9, §9.4 | ✅ | ✅ | ✅ | An ephemeral `ASK` over the candidate triple + its reifier, `$this` → subject IRI; REJECT unless `true`. `Gov_ContentSparqlAskCaveat`. |
+| `credential` | §7.10 | ✅ | ✅ | — | Author must hold every required VC (§4.2 verification). Covered at the standalone + gtest layers, **not** the WPT — see the credential-deferral note below. `Gov_CredentialCaveatRequires`. |
+| §7.1 `appliesToNonTripleOps` | §7.1 | ✅ | ✅ | ✅ | Context-only caveats (`rateLimit`, `cardinality`, `authorOnly`, `credential`) apply to `mountContext` and other non-triple ops; triple-shaped caveats are skipped there. |
+
+### Normative parameters
+
+- **Fixed protocol constants**: §5.3 future bound = **300 s** (`kFutureBoundSeconds`,
+  not configurable so every honest peer agrees); §5.1 default temporal window = **60
+  s** (`kDefaultTemporalWindowSeconds`); §9.3 RECOMMENDED regex timeout = **10 ms**
+  (`kDefaultRegexTimeoutMillis`).
+- **Content length** (§6.2) is counted in UTF-8 code points, not bytes.
+- **VC profile** (§4, Amendment (i)): a VC is JCS-canonical JSON at the URI
+  `"sha256:" + lowercaseHex(SHA-256(body))`, issuer a `did:key`, proof an Ed25519
+  signature over the versioned field projection — the SHA-256 primitive and the
+  Ed25519 verify resolve per build world (`//crypto` + bundled `ed25519` in the
+  browser, `standalone/crypto_sha2.h` + `ed25519` in the harness); the parse, the
+  pre-image bytes, and the verdict are shared.
+- **`zcapId` seam** (Spec 04 §9.3, Amendment (iv)): the `rateLimit`/`cardinality`
+  usage ledger keys on `(ctx.zcap_id, author)`; `ValidationContext::zcap_id` carries
+  the innermost delegation id (empty for a root/non-delegated check). The seam lives
+  in `governance_backend.h` (browser) / `capability_provider.h` (standalone).
+- **Regex divergence** (§9.3): the browser matcher is **RE2** (linear-time — it never
+  returns `kTimeout`); the standalone matcher is **std::regex** on a 10 ms-bounded
+  `std::async` worker. A malformed pattern is `kNoMatch` in both. Both satisfy §9.3
+  (a matcher that cannot complete within the bound is a REJECT); the divergence is in
+  the engine, never in the policy verdict for a well-formed pattern.
+- **Credential deferral at the renderer**: the §11 renderer surface exposes no
+  VC-*issuance* verb (`MakeSignedLivingWebVc`/credential storage are browser-internal),
+  so the credential constraint kind (§4) and `credential` caveat (§7.10) are pinned at
+  the standalone + gtest layers (`Gov_CredentialConstraint*`, `Gov_CredentialCaveatRequires`
+  and their gtest mirrors) rather than the WPT. This is a coverage placement, not a
+  subset — the implementation is complete and exercised against the real crypto stack.
+- Authoritative reference impl: `standalone/constraint_vocabulary_provider.h`
+  (`RegisterConstraintVocabulary`) over the shared `constraint_vocabulary.*`, verified
+  by the 25 `Gov_*` tests; the browser backend
+  (`content/browser/governance/constraint_vocabulary_backend.{h,cc}`) mirrors it
+  against the real graph/identity/governance backends and is installed by
+  `PersonalGraphManager`.
+
+### Amendments
+
+Gaps surfaced while implementing Spec 08 have been **folded back into the drafts on
+`w3c-living-web-proposals` `main`** (commits
+[`3e243ab`](https://github.com/HexaField/w3c-living-web-proposals/commit/3e243ab),
+[`5d2bae6`](https://github.com/HexaField/w3c-living-web-proposals/commit/5d2bae6)), so
+the drafts now fully specify what this branch implements:
+
+- **(i) Living-web credential profile (§4.1).** §4.1 said only that agents "store VCs
+  as content-addressed expressions"; it left the concrete format, the signing scheme,
+  and the resolution path unspecified. The amendment pins the profile: the VC is
+  stored **JCS-canonical inline** at its own `sha256:` content address via
+  `governance://credential_body` (mirroring Spec 07's `shape://definition`), with
+  mandatory content-address integrity; `issuer` is a `did:key` so the signing key
+  needs no external resolution; and `proof.proofValue` is a multibase Ed25519
+  signature over a versioned field projection (per [[CAPABILITY-FRAMEWORK]] §5.2.2) —
+  binding every checked field without a general JSON-LD / LD-Proofs stack.
+- **(ii) Local-state credential revocation (§4.2).** §4.2 said "verify it is not
+  revoked … on resolution failure, REJECT" without saying how revocation is read from
+  a peer's local state. The amendment pins it: a `credentialStatus.id` subject bearing
+  `governance://revoked "true"` revokes the credential; absence means live (a peer that
+  never received a revocation indication treats the credential as live). Adds
+  `governance://credential_body` and `governance://revoked` to the §11 table.
+- **(iii) Content media-type source + glob matching (§6.2).** §6.2 said "REJECT if
+  media type does not match any glob" without saying where the media type comes from,
+  and left `content_allowed_domains` matching (exact vs glob) ambiguous. The amendment
+  pins media type to an RFC 2397 `data:` URL header (default `text/plain`, non-`data:`
+  objects exempt), and specifies that both `content_allowed_domains` (against the URL
+  host) and `content_allow_media_types` are **glob-matched**. Marks
+  `content_allowed_domains` as domain globs in the §11 table.
+- **(iv) `ValidationContext` definition (Spec 04 §9.3).** Both plug-in handler
+  surfaces receive a `ValidationContext`, but the Spec 04 draft never defined the
+  dictionary. The amendment specifies its fields — `graph`/`graphDid`/`graphIri`,
+  `authorDid`, `action`, `isNonTripleOp`, `now` (the single RFC 3339 evaluation
+  instant), and **`zcapId`** (the innermost delegation whose caveat is under
+  evaluation, `""` for a root/non-delegated check) — closing the seam Spec 08 §7.5/§7.6
+  depend on to key their `(zcap.id, author)` counters.
+
+Two implementation facts did **not** require a draft change (the drafts already
+admit them): the §7.8 shape caveat is bound to the Spec 07 `ShapeService::Conforms`
+in the browser (an injected lambda in the harness), both fail-closed per §9.6; and
+`RegisterConstraintVocabulary` is invoked from the `PersonalGraphManager` constructor
+so every realm graph carries the vocabulary without renderer ceremony.
+
+---
+
 ## Build worlds
 
 This repository is an **overlay**, not a full Chromium checkout. Two build worlds

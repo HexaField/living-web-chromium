@@ -199,6 +199,18 @@ class ShapeService {
                                  const std::string& value,
                                  const std::string& author_cred_id);
 
+  // Spec 08 §7.8 shape-caveat seam: does |triple|'s subject conform to the shape
+  // resolved by |shape_iri| (its §7.2 registration name, cross-graph resolution)
+  // against |W|? Evaluates the resolved shape's §4.2 property definitions —
+  // cardinality (minCount/maxCount) and §4.4 datatype — over the subject's
+  // current objects PLUS the candidate |triple| (the write is advisory, not yet
+  // stored). An unresolvable shape returns false (fail-closed, Spec 08 §9.6).
+  // This is the production binding for ConstraintVocabOptions::shape_conforms;
+  // the standalone harness injects an equivalent lambda.
+  bool Conforms(GraphBackend* W,
+                const std::string& shape_iri,
+                const living_web::Triple& triple);
+
  private:
   // A shape resolved to its definition, content address, and source graph.
   struct ResolvedShape {

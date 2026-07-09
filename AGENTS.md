@@ -175,7 +175,7 @@ Spec numbering (current, 10 specs):
 | 05 | Context Sync Protocol | `content/browser/graph_sync/{graph_diff,sync_backend}.*`, `.../graph/{personal_graph_host,personal_graph_manager}.*` (§6 folded), `standalone/sync_provider.h` |
 | 06 | Sync Module Architecture | `content/browser/module_runtime/{module_manifest,module_capabilities,module_runtime_host,module_runtime_backends}.*` + `graph_sync_module.wit`, `standalone/module_runtime_provider.h`; §6.4 `listModules` on `.../graph/personal_graph_manager.*` |
 | 07 | Dynamic Graph Shape Validation | `content/browser/shapes/{shape_definition,shape_service}.*`, `standalone/shape_provider.h`; §5 folded onto `.../graph/personal_graph_host.*` + `.../graph/graph.*`; `graph_backend_manager.*` `LookupHost` (§7 parent resolution) |
-| 08 | Governance Constraint Vocabulary | `content/browser/governance/` (constraint-kind handlers) |
+| 08 | Governance Constraint Vocabulary | `content/browser/governance/{constraint_vocabulary,constraint_vocabulary_backend}.*` (shared core + `RegisterConstraintVocabulary`), `standalone/constraint_vocabulary_provider.h`; `ValidationContext::zcap_id` seam in `governance_backend.*` / `capability_provider.h`; §7.8 bound to `shapes/shape_service.*` `Conforms`; installed in `.../graph/personal_graph_manager.*` ctor |
 | 09 | Default Sync Module | — (planned, CRDT + MLS) |
 | 10 | Graph Flows | — (planned) |
 
@@ -500,6 +500,58 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   port = `content/browser/shapes/shape_service.*` with 16 gtests
   (`tests/shape_service_unittest.cc`); §5 renderer surface pinned by
   `tests/web_platform_tests/graph/personal-graph-shapes.html`.
+
+## Spec 08 specifics (landed)
+
+- **A vocabulary, not a subsystem.** Spec 08 plugs into Spec 04's seams
+  (`ConstraintKindHandler` / `CaveatHandler`). `RegisterConstraintVocabulary(engine,
+  opts)` installs three constraint kinds (`credential` §4, `temporal` §5, `content` §6)
+  and ten caveat types (§7) in one call. Spec 04 already fails closed on unknown
+  kinds/types, so this call is what turns those closed doors into policy. Installed in
+  the `PersonalGraphManager` **constructor** (beside §04/§05/§07), so every realm graph
+  carries it with no renderer ceremony.
+- **Kinds vs caveats bite at different points.** A constraint **kind** is graph-scoped:
+  collected from the scope chain and evaluated on **every** write regardless of mode —
+  `open` mode gates only the `capability`/ZCAP check, so credential/temporal/content
+  deny-win even in an open graph. A **caveat** attenuates one delegation: reached only
+  in `enforced` mode through a capability constraint + a delegation carrying it. This is
+  the key WPT gotcha — constraint-kind tests run in **open** mode; caveat tests need
+  **enforced** mode + a capability constraint + `delegateCapability({…caveats})` +
+  `setActiveIdentity(delegatee)`.
+- **Shared core never hashes, never regexes, never touches the graph.**
+  `content/browser/governance/constraint_vocabulary.*` (namespace
+  `living_web::constraint_vocab`) owns the §11 predicate vocabulary, §7.4 glob, §7.2/§7.3
+  deny-wins, RFC 3339→epoch + §5.3 plausibility, the §6.2 content policy, and the VC
+  parse/pre-image. The regex matcher and SHA-256/Ed25519 are **injected per world**:
+  browser = RE2 (linear-time, never `kTimeout`) + `//crypto`; standalone = `std::regex`
+  on a 10 ms `std::async` worker + `crypto_sha2.h`. A malformed pattern is `kNoMatch`
+  (blocks nothing) in both; verdicts never diverge for a well-formed pattern.
+- **Living-web VC profile (amendment).** A credential is JCS-canonical JSON stored
+  **inline at its own `sha256:` address** via `governance://credential_body` (content-
+  address integrity enforced — body must hash to its address), issuer a `did:key`, proof
+  an Ed25519 `proofValue` over `BuildVcProofPreimage` (versioned field projection, same
+  construction as `zcap.cc`). Revocation is **local-state**: a `credentialStatus.id`
+  subject bearing `governance://revoked "true"` revokes; absence = live. No JSON-LD /
+  LD-Proofs stack.
+- **`zcap_id` seam.** `rateLimit`/`cardinality` key their usage ledger on
+  `(ctx.zcap_id, author)`; `ValidationContext::zcap_id` (added to `governance_backend.*`
+  + `capability_provider.h`) carries the innermost delegation id, `""` for a
+  root/non-delegated check. The ledger records a use on each admit.
+- **§7.8 shape caveat reuses Spec 07.** The browser binds
+  `ConstraintVocabOptions::shape_conforms` to `content::ShapeService::Conforms` (added
+  this spec: resolves the shape by §7.2 name, checks the candidate subject's §4.3
+  cardinality + §4.4 datatype over stored objects **plus** the advisory write); the
+  standalone injects an equivalent lambda. Unresolvable shape → fail-closed (§9.6). The
+  vocabulary never re-implements SHACL.
+- **Credential deferral at the renderer.** No VC-*issuance* verb on the §11 renderer
+  surface, so the credential kind (§4) and `credential` caveat (§7.10) are pinned at the
+  standalone + gtest layers, not the WPT — a coverage placement, not a subset.
+- Authoritative reference impl: `standalone/constraint_vocabulary_provider.h`
+  (`RegisterConstraintVocabulary`) over `constraint_vocabulary.*`, verified by 25 `Gov_*`
+  tests (**186 total, green**); browser backend =
+  `content/browser/governance/constraint_vocabulary_backend.*` with 25 gtests
+  (`tests/constraint_vocabulary_unittest.cc`); renderer surface pinned by
+  `tests/web_platform_tests/graph/governance-constraint-vocabulary.html`.
 
 ## Gotchas
 

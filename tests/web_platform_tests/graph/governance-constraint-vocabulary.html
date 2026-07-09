@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Governance Constraint Vocabulary (Spec 08) — constraint kinds &amp; caveats — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 08 — Governance Constraint Vocabulary
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md
+//
+// The vocabulary layers three standard *constraint kinds* (credential §4,
+// temporal §5, content §6) and ten *caveat types* (§7) onto the Spec 04
+// Capability Framework, registered as plug-in handlers against the realm's
+// GovernanceBackend (PersonalGraphManager wires RegisterConstraintVocabulary at
+// construction). Their verdicts surface through the same §11 renderer gate as
+// Spec 04 — canAddTriple / canPerformAction / constraintsFor — so this file
+// exercises the vocabulary purely through that gate.
+//
+// Two enforcement surfaces, per the framework's §7 algorithm:
+//   * A CONSTRAINT KIND binds to the graph (a governance://has_constraint link
+//     to the graph DID) and governs EVERY write, deny-wins, in ALL enforcement
+//     modes — including the §5.1 default "open" mode (only the framework's own
+//     `capability` constraint is open-mode-exempt). So the constraint-kind tests
+//     install the constraint with ungated open-mode addTriple writes and read the
+//     verdict straight back from canAddTriple, no enforcement needed.
+//   * A CAVEAT rides on a delegated capability and is only evaluated inside the
+//     §7 capability algorithm, which runs only under "enforced" mode. So the
+//     caveat tests mint the root, delegate a createLink capability carrying the
+//     caveat, install a capability constraint, switch to "enforced", and make the
+//     delegatee the active identity (canAddTriple evaluates the active author).
+//
+// The `credential` constraint kind (§4) and `credential` caveat (§7.10) require a
+// stored living-web-profile Verifiable Credential whose Ed25519 proof verifies
+// against a fixed §4.1 pre-image. Issuing/storing such a VC is a browser-internal
+// primitive (MakeSignedLivingWebVc / StoreCredential) that is NOT exposed on the
+// §11 renderer surface — there is no navigator.graph verb that mints one — so the
+// credential path is covered end-to-end at the standalone and browser-gtest
+// layers (constraint_vocabulary_unittest.cc CredentialConstraint* /
+// CredentialCaveatRequires) rather than here. Every other kind and caveat is
+// renderer-expressible and exercised below.
+// ==========================================================================
+
+// The group's sync module is REQUIRED (GROUP-IDENTITY §4.5); any stable urn works.
+const SYNC = 'urn:sync:module:default';
+
+// §11 predicate reference table (drafts/08 §11) — the governance:// predicates a
+// constraint's defining triples are keyed on.
+const GOV = {
+  entryType: 'governance://entry_type',
+  constraint: 'governance://constraint',
+  constraintKind: 'governance://constraint_kind',
+  hasConstraint: 'governance://has_constraint',
+  // content (§6)
+  contentMaxLength: 'governance://content_max_length',
+  contentBlockedPatterns: 'governance://content_blocked_patterns',
+  contentAllowUrls: 'governance://content_allow_urls',
+  contentAllowedDomains: 'governance://content_allowed_domains',
+  contentAppliesTo: 'governance://content_applies_to_predicates',
+  // temporal (§5)
+  temporalMinInterval: 'governance://temporal_min_interval_seconds',
+  temporalMaxCount: 'governance://temporal_max_count_per_window',
+  temporalWindow: 'governance://temporal_window_seconds',
+  temporalAppliesTo: 'governance://temporal_applies_to_predicates',
+};
+
+// A §7.8 shape the shape-caveat resolves by its §7.2 registration name: a single
+// required scalar `body`. A write that supplies `body` conforms; a write to any
+// other predicate leaves the subject short of minCount and does not.
+const NOTE_SHAPE = {
+  targetClass: 'urn:class:Note',
+  properties: [
+    { path: 'urn:p:body', name: 'body', datatype: 'xsd:string', minCount: 1, maxCount: 1 },
+  ],
+  constructor: [
+    { action: 'shape://actions/addLink', subject: 'this', predicate: 'rdf://type', object: 'urn:class:Note' },
+    { action: 'shape://actions/setSingleTarget', subject: 'this', predicate: 'urn:p:body', object: 'body' },
+  ],
+};
+
+// A fresh group in the §5.1 default "open" mode. Its creator holds the group DID's
+// capability sections, so open-mode governance writes are authored by a delegate.
+async function openGroup(t) {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  return group;
+}
+
+// Install a vocabulary constraint of |kind| on |scopeDid| by writing the
+// governance:// triples the constraint collector reads (§3): the entry type, the
+// constraint_kind literal, each (predicate, literal) defining property, and the
+// scope's has_constraint link. In the §5.1 default "open" mode these writes are
+// ungated. Returns the constraint IRI. |props| is an array of [predicate, value].
+async function installKindConstraint(graph, scopeDid, kind, props) {
+  const cid = 'urn:uuid:' + crypto.randomUUID();
+  await graph.addTriple(new Triple(cid, GOV.entryType, GOV.constraint));
+  await graph.addTriple(new Triple(cid, GOV.constraintKind, new LiteralValue(kind)));
+  for (const [p, v] of props)
+    await graph.addTriple(new Triple(cid, p, new LiteralValue(v)));
+  await graph.addTriple(new Triple(scopeDid, GOV.hasConstraint, cid));
+  return cid;
+}
+
+// §4.5.1 a bare capability constraint (the gate the §7 algorithm — and therefore
+// every caveat — runs under). Mirrors graph-capabilities.html.
+async function installCapabilityConstraint(graph, scopeDid) {
+  const cid = 'urn:uuid:' + crypto.randomUUID();
+  await graph.addTriple(new Triple(cid, GOV.entryType, GOV.constraint));
+  await graph.addTriple(new Triple(cid, GOV.constraintKind, new LiteralValue('capability')));
+  await graph.addTriple(new Triple(scopeDid, GOV.hasConstraint, cid));
+  return cid;
+}
+
+// Mint the root, delegate a createLink capability to a fresh identity under
+// |caveats|, install a capability constraint, switch to "enforced", and make the
+// delegatee the active author. Returns { group, delegatee }. Because canAddTriple
+// evaluates the active identity, the delegatee's caveated capability is what the
+// §7 algorithm checks for every subsequent canAddTriple.
+async function enforcedCaveat(t, caveats) {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+  await group.delegateCapability({
+    invoker: delegatee.did, actions: ['createLink'], resource: group.did,
+    caveats });
+  await installCapabilityConstraint(group.graph, group.did);
+  await group.graph.setEnforcementMode('enforced');
+  await navigator.graph.setActiveIdentity(delegatee.did);
+  return { group, delegatee };
+}
+
+// A literal-object write and an IRI-object write.
+function lit(s, p, v) { return new Triple(s, p, new LiteralValue(v)); }
+function iri(s, p, o) { return new Triple(s, p, o); }
+
+// ==========================================================================
+// §11 — a vocabulary constraint is reported by constraintsFor with its kind.
+// ==========================================================================
+
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  const cid = await installKindConstraint(g, group.did, 'content',
+    [[GOV.contentMaxLength, '8'], [GOV.contentAppliesTo, 'urn:p:body']]);
+  const cs = await g.constraintsFor(group.did);
+  const c = cs.find(x => x.id === cid);
+  assert_true(c !== undefined, 'the installed vocabulary constraint MUST be reported');
+  assert_equals(c.kind, 'content', 'constraintsFor() MUST report the §3 kind token');
+  assert_equals(c.scope, group.did,
+    'a vocabulary constraint MUST be scoped to the graph DID');
+  // entry_type + constraint_kind are structural and excluded; the defining
+  // properties are exposed.
+  assert_equals(c.properties[GOV.contentMaxLength], '8',
+    'the constraint MUST expose its §6 defining properties');
+}, '§11 constraintsFor() MUST report a vocabulary constraint with its kind');
+
+// ==========================================================================
+// §6 content constraint — governs every write, deny-wins, in OPEN mode.
+// ==========================================================================
+
+// §6.2 step 3 — max content length.
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  await installKindConstraint(g, group.did, 'content',
+    [[GOV.contentMaxLength, '8'], [GOV.contentAppliesTo, 'urn:p:body']]);
+
+  assert_true((await g.canAddTriple(lit('urn:n:1', 'urn:p:body', 'short'))).allowed,
+    'a within-length value MUST be admitted');
+  const long = await g.canAddTriple(lit('urn:n:2', 'urn:p:body', 'way too long'));
+  assert_false(long.allowed, 'an over-length value MUST be denied (§6.2)');
+  assert_equals(long.constraintKind, 'content',
+    'the denial MUST be attributed to the content constraint kind');
+  assert_true(
+    (await g.canAddTriple(lit('urn:n:3', 'urn:p:other', 'way too long'))).allowed,
+    'a predicate outside applies-to MUST be unaffected (§6.1)');
+}, '§6.2 a content constraint MUST enforce max length in open mode');
+
+// §6.2 step 4 — blocked patterns (RE2 in the browser; §9.3).
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  await installKindConstraint(g, group.did, 'content',
+    [[GOV.contentBlockedPatterns, 'badword|forbidden'],
+     [GOV.contentAppliesTo, 'urn:p:body']]);
+
+  assert_false(
+    (await g.canAddTriple(lit('urn:n:1', 'urn:p:body', 'has a badword in it'))).allowed,
+    'a blocked pattern MUST be denied (§6.2 step 4)');
+  assert_true(
+    (await g.canAddTriple(lit('urn:n:2', 'urn:p:body', 'totally clean text'))).allowed,
+    'clean content MUST be admitted');
+}, '§6.2 a content constraint MUST enforce blocked patterns');
+
+// §6.2 steps 5-6 — URL policy + domain whitelist. Two conflicting policies live in
+// two graphs (a constraint binds to the graph it governs).
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  await installKindConstraint(g, group.did, 'content',
+    [[GOV.contentAllowUrls, 'false'], [GOV.contentAppliesTo, 'urn:p:body']]);
+  assert_false(
+    (await g.canAddTriple(lit('urn:n:1', 'urn:p:body', 'go http://evil.example/x'))).allowed,
+    'a URL under an allow_urls=false policy MUST be denied (§6.2 step 5)');
+  assert_true(
+    (await g.canAddTriple(lit('urn:n:2', 'urn:p:body', 'no link here'))).allowed,
+    'URL-free content MUST be admitted');
+}, '§6.2 a content constraint MAY forbid URLs entirely');
+
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  await installKindConstraint(g, group.did, 'content',
+    [[GOV.contentAllowUrls, 'true'], [GOV.contentAllowedDomains, 'example.com'],
+     [GOV.contentAppliesTo, 'urn:p:body']]);
+  assert_true(
+    (await g.canAddTriple(lit('urn:n:3', 'urn:p:body', 'see https://example.com/a'))).allowed,
+    'a whitelisted domain MUST be admitted (§6.2 step 6)');
+  assert_false(
+    (await g.canAddTriple(lit('urn:n:4', 'urn:p:body', 'see https://evil.example/a'))).allowed,
+    'an off-whitelist domain MUST be denied');
+}, '§6.2 a content constraint MAY whitelist URL domains');
+
+// ==========================================================================
+// §5 temporal constraint — reads the author's own write history, all modes.
+// ==========================================================================
+
+// §5.2.3.3 — minimum interval between writes on the applied predicates. The
+// seed write and the candidate share the active author, so the interval bites.
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  await g.addTriple(lit('urn:e:1', 'urn:p:post', 'first'));  // seeds history ~now
+  await installKindConstraint(g, group.did, 'temporal',
+    [[GOV.temporalMinInterval, '3600'], [GOV.temporalAppliesTo, 'urn:p:post']]);
+
+  const soon = await g.canAddTriple(lit('urn:e:2', 'urn:p:post', 'second'));
+  assert_false(soon.allowed,
+    'a second write inside the min interval MUST be denied (§5.2.3.3)');
+  assert_equals(soon.constraintKind, 'temporal',
+    'the denial MUST be attributed to the temporal constraint kind');
+  assert_true(
+    (await g.canAddTriple(lit('urn:e:3', 'urn:p:other', 'x'))).allowed,
+    'a predicate outside applies-to MUST be out of scope (§5.2.3.1)');
+}, '§5.2.3.3 a temporal constraint MUST enforce a minimum interval');
+
+// §5.2.3.4 — a rolling max count per window.
+promise_test(async t => {
+  const group = await openGroup(t);
+  const g = group.graph;
+  await g.addTriple(lit('urn:e:1', 'urn:p:post', 'a'));
+  await g.addTriple(lit('urn:e:2', 'urn:p:post', 'b'));
+  await installKindConstraint(g, group.did, 'temporal',
+    [[GOV.temporalMaxCount, '2'], [GOV.temporalWindow, '3600'],
+     [GOV.temporalAppliesTo, 'urn:p:post']]);
+
+  const third = await g.canAddTriple(lit('urn:e:3', 'urn:p:post', 'c'));
+  assert_false(third.allowed,
+    'a third write filling the window MUST be denied (§5.2.3.4)');
+  assert_equals(third.constraintKind, 'temporal');
+}, '§5.2.3.4 a temporal constraint MUST enforce a max count per window');
+
+// ==========================================================================
+// §7 caveat types — evaluated inside the §7 capability algorithm (enforced mode).
+// ==========================================================================
+
+// §7.1 predicate — deny-wins.
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'predicate', value: { denied: ['urn:p:secret'] } }]);
+  const g = group.graph;
+  assert_false((await g.canAddTriple(lit('urn:n:1', 'urn:p:secret', 'x'))).allowed,
+    'a denied predicate MUST be rejected (§7.1)');
+  assert_true((await g.canAddTriple(lit('urn:n:2', 'urn:p:ok', 'x'))).allowed,
+    'a non-denied predicate MUST be admitted');
+}, '§7.1 predicate caveat MUST deny listed predicates');
+
+// §7.2 property — allow-list (whitelist).
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'property', value: { allowed: ['urn:p:ok'] } }]);
+  const g = group.graph;
+  assert_true((await g.canAddTriple(lit('urn:n:1', 'urn:p:ok', 'x'))).allowed,
+    'an allow-listed property MUST be admitted (§7.2)');
+  assert_false((await g.canAddTriple(lit('urn:n:2', 'urn:p:other', 'x'))).allowed,
+    'a property outside the allow-list MUST be rejected');
+}, '§7.2 property caveat MUST restrict to an allow-list');
+
+// §7.3 subject — glob.
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'subject', value: { pattern: 'urn:allowed:*' } }]);
+  const g = group.graph;
+  assert_true((await g.canAddTriple(lit('urn:allowed:1', 'urn:p:body', 'x'))).allowed,
+    'a subject matching the glob MUST be admitted (§7.3)');
+  assert_false((await g.canAddTriple(lit('urn:other:1', 'urn:p:body', 'x'))).allowed,
+    'a subject failing the glob MUST be rejected');
+}, '§7.3 subject caveat MUST enforce a subject glob');
+
+// §7.4 object — glob (IRI object).
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'object', value: { pattern: 'https://good.example/*' } }]);
+  const g = group.graph;
+  assert_true(
+    (await g.canAddTriple(iri('urn:n:1', 'urn:p:ref', 'https://good.example/a'))).allowed,
+    'an object IRI matching the glob MUST be admitted (§7.4)');
+  assert_false(
+    (await g.canAddTriple(iri('urn:n:2', 'urn:p:ref', 'https://bad.example/a'))).allowed,
+    'an object IRI failing the glob MUST be rejected');
+}, '§7.4 object caveat MUST enforce an object glob');
+
+// §7.5 rateLimit — sliding window. canAddTriple records a use on each admit, so
+// the third exceeds the window. (The ledger is process-wide and per-delegation.)
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'rateLimit', value: { maxPerWindow: 2, windowSeconds: 3600 } }]);
+  const g = group.graph;
+  assert_true((await g.canAddTriple(lit('urn:n:1', 'urn:p:body', 'a'))).allowed);
+  assert_true((await g.canAddTriple(lit('urn:n:2', 'urn:p:body', 'b'))).allowed);
+  assert_false((await g.canAddTriple(lit('urn:n:3', 'urn:p:body', 'c'))).allowed,
+    'a write beyond the window rate MUST be rejected (§7.5)');
+}, '§7.5 rateLimit caveat MUST bound uses per sliding window');
+
+// §7.6 cardinality — lifetime cap.
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'cardinality', value: { max: 2 } }]);
+  const g = group.graph;
+  assert_true((await g.canAddTriple(lit('urn:n:1', 'urn:p:body', 'a'))).allowed);
+  assert_true((await g.canAddTriple(lit('urn:n:2', 'urn:p:body', 'b'))).allowed);
+  assert_false((await g.canAddTriple(lit('urn:n:3', 'urn:p:body', 'c'))).allowed,
+    'a write beyond the lifetime cap MUST be rejected (§7.6)');
+}, '§7.6 cardinality caveat MUST bound lifetime uses');
+
+// §7.7 authorOnly — only the subject's author of record may extend it.
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  const g = group.graph;
+  // The creator introduces urn:doc:1 in open mode → its author of record.
+  await g.addTriple(lit('urn:doc:1', 'urn:p:body', 'original'));
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+  await group.delegateCapability({
+    invoker: delegatee.did, actions: ['createLink'], resource: group.did,
+    caveats: [{ type: 'authorOnly' }] });
+  await installCapabilityConstraint(g, group.did);
+  await g.setEnforcementMode('enforced');
+  await navigator.graph.setActiveIdentity(delegatee.did);
+
+  assert_false((await g.canAddTriple(lit('urn:doc:1', 'urn:p:extra', 'y'))).allowed,
+    'a non-author extending an existing subject MUST be rejected (§7.7)');
+  assert_true((await g.canAddTriple(lit('urn:doc:2', 'urn:p:body', 'z'))).allowed,
+    'a subject with no prior author of record MUST be admitted (§7.7)');
+}, '§7.7 authorOnly caveat MUST restrict to the subject\'s author of record');
+
+// §7.8 shape — delegates conformance to the Spec 07 shape service (production
+// ShapeService::Conforms). The shape is registered in open mode before enforcing
+// (registration needs updateSHACL under enforcement, which the root lacks).
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: SYNC });
+  t.add_cleanup(() => group.graph.dissolve());
+  const g = group.graph;
+  await g.addShape('Note', NOTE_SHAPE);  // open mode, ungated
+  const delegatee = await navigator.graph.createIdentity('Delegatee');
+  await group.delegateCapability({
+    invoker: delegatee.did, actions: ['createLink'], resource: group.did,
+    caveats: [{ type: 'shape', value: { shapeIri: 'Note' } }] });
+  await installCapabilityConstraint(g, group.did);
+  await g.setEnforcementMode('enforced');
+  await navigator.graph.setActiveIdentity(delegatee.did);
+
+  // Supplies the required `body` → conforms → admitted.
+  assert_true((await g.canAddTriple(lit('urn:note:ok', 'urn:p:body', 'hello'))).allowed,
+    'a write conforming to the shape MUST be admitted (§7.8)');
+  // Writes an unrelated predicate; the subject stays below minCount → rejected.
+  assert_false((await g.canAddTriple(lit('urn:note:bad', 'urn:p:title', 'x'))).allowed,
+    'a write leaving the subject non-conformant MUST be rejected (§7.8)');
+}, '§7.8 shape caveat MUST admit conformant writes and reject non-conformant');
+
+// §9.6 — an unresolvable shape fails closed.
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'shape', value: { shapeIri: 'Ghost' } }]);
+  const g = group.graph;
+  assert_false((await g.canAddTriple(lit('urn:any:1', 'urn:p:body', 'hi'))).allowed,
+    'a shape caveat naming an unregistered shape MUST fail closed (§9.6)');
+}, '§9.6 shape caveat MUST fail closed when the shape is unresolvable');
+
+// §7.9 content — an ephemeral SPARQL ASK over the candidate write.
+promise_test(async t => {
+  const { group } = await enforcedCaveat(t,
+    [{ type: 'content', value: { sparql: 'ASK { $this <urn:p:body> ?o }' } }]);
+  const g = group.graph;
+  assert_true((await g.canAddTriple(lit('urn:x:1', 'urn:p:body', 'hi'))).allowed,
+    'a write satisfying the ASK MUST be admitted (§7.9)');
+  assert_false((await g.canAddTriple(lit('urn:x:1', 'urn:p:other', 'hi'))).allowed,
+    'a write failing the ASK MUST be rejected');
+}, '§7.9 content caveat MUST enforce a SPARQL ASK over the candidate');
+
+// §7.10 credential — see the file header: issuing/storing a living-web VC profile
+// is a browser-internal primitive absent from the §11 renderer surface, so the
+// credential caveat (and the §4 credential constraint kind) are covered at the
+// standalone + browser-gtest layers rather than through navigator.graph here.
+</script>

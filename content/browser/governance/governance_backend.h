@@ -124,6 +124,11 @@ struct ValidationContext {
   std::string action;
   bool is_non_triple_op = false;
   std::string now;  // RFC 3339 evaluation instant
+  // The id of the ZCAP delegation whose caveats are being evaluated. Threaded
+  // through so caveat handlers that key per-delegation state — the Spec 08
+  // rateLimit / cardinality counters, keyed (zcap.id, author) — can identify the
+  // capability. Empty for root-capability / non-delegated evaluation.
+  std::string zcap_id;
 };
 
 // The result a plug-in handler returns.
@@ -414,7 +419,7 @@ class GovernanceBackend {
   bool EvaluateCaveats(const std::string& caveats_raw,
                        const std::optional<living_web::Triple>& triple,
                        const std::string& action, const ValidationContext& ctx,
-                       std::string* reason);
+                       const std::string& zcap_id, std::string* reason);
 
   static std::optional<std::string> ExpiryOf(const std::string& caveats_raw);
 

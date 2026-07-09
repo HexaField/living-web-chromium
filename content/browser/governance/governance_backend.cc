@@ -302,7 +302,7 @@ std::vector<CapabilityInfo> GovernanceBackend::MyCapabilities(
     if (IsRevoked(W, z.id))
       continue;
     std::string reason;
-    if (!EvaluateCaveats(z.caveats, std::nullopt, "", ctx, &reason))
+    if (!EvaluateCaveats(z.caveats, std::nullopt, "", ctx, z.id, &reason))
       continue;
     if (!WalkChain(W, z, 0))
       continue;
@@ -719,7 +719,8 @@ bool GovernanceBackend::RunCapabilityAlgorithm(
       continue;
     }
     std::string cav_reason;
-    if (!EvaluateCaveats(z.caveats, triple, action, ctx, &cav_reason)) {  // 6.4
+    if (!EvaluateCaveats(z.caveats, triple, action, ctx, z.id,
+                         &cav_reason)) {  // 6.4
       *reason = cav_reason;
       continue;
     }
@@ -749,7 +750,8 @@ bool GovernanceBackend::Eligible(GraphBackend* W, const gov_detail::Zcap& z,
 bool GovernanceBackend::EvaluateCaveats(
     const std::string& caveats_raw,
     const std::optional<living_web::Triple>& triple, const std::string& action,
-    const ValidationContext& ctx, std::string* reason) {
+    const ValidationContext& ctx, const std::string& zcap_id,
+    std::string* reason) {
   if (caveats_raw.empty())
     return true;
   std::vector<std::string> elems;
@@ -757,6 +759,11 @@ bool GovernanceBackend::EvaluateCaveats(
     *reason = "caveat_malformed";
     return false;  // fail-closed
   }
+  // Expose the owning delegation's id to per-delegation caveat handlers (the
+  // Spec 08 rateLimit / cardinality counters key on it) without disturbing the
+  // caller's context.
+  ValidationContext local = ctx;
+  local.zcap_id = zcap_id;
   for (const std::string& e : elems) {
     auto type = living_web::JsonStringField(e, "type");
     if (!type) {
@@ -767,7 +774,7 @@ bool GovernanceBackend::EvaluateCaveats(
       auto val = living_web::JsonRawField(e, "value");
       auto exp =
           val ? living_web::JsonStringField(*val, "expiresAt") : std::nullopt;
-      if (!exp || ctx.now >= *exp) {
+      if (!exp || local.now >= *exp) {
         *reason = "caveat_failed:expiry";
         return false;
       }
@@ -778,13 +785,13 @@ bool GovernanceBackend::EvaluateCaveats(
       *reason = "unknown_caveat:" + *type;
       return false;
     }
-    if (ctx.is_non_triple_op && !it->second->appliesToNonTripleOps())
+    if (local.is_non_triple_op && !it->second->appliesToNonTripleOps())
       continue;  // §7.1 skip
     Caveat cav;
     cav.type = *type;
     cav.value_raw = living_web::JsonRawField(e, "value").value_or("");
     cav.raw = e;
-    HandlerResult r = it->second->Evaluate(cav, triple, action, ctx);
+    HandlerResult r = it->second->Evaluate(cav, triple, action, local);
     if (!r.allowed) {
       *reason = "caveat_failed:" + *type;
       return false;
@@ -892,7 +899,8 @@ bool GovernanceBackend::WouldBrickGovernance(
       continue;
     std::string reason;
     if (!EvaluateCaveats(z.caveats, std::nullopt,
-                         living_web::kActionUpdateGovernance, ctx, &reason))
+                         living_web::kActionUpdateGovernance, ctx, z.id,
+                         &reason))
       continue;
     if (!WalkChain(W, z, 0))
       continue;

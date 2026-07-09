@@ -367,6 +367,43 @@ bool ShapeService::RemoveFromShapeCollection(
   return Ok();
 }
 
+// Spec 08 §7.8 — shape-caveat conformance. The production binding wired into
+// ConstraintVocabOptions::shape_conforms; the standalone harness injects an
+// equivalent lambda. Resolves the shape by its §7.2 registration name (local
+// first, then up the accepted participation chain), then checks the candidate
+// triple's subject against the shape's §4.2 property definitions: §4.3
+// cardinality (minCount/maxCount) and §4.4 datatype, evaluated over the
+// subject's currently-stored objects PLUS the advisory candidate object (the
+// write is not yet committed). Fails closed on an unresolvable shape (§9.6).
+bool ShapeService::Conforms(GraphBackend* W,
+                            const std::string& shape_iri,
+                            const living_web::Triple& triple) {
+  ResolvedShape shape;
+  if (!ResolveShape(W, shape_iri, &shape))
+    return false;  // §9.6 unresolvable shape → fail-closed
+  for (const ShapePropertyDef& p : shape.def.properties) {
+    std::vector<std::string> values;
+    for (const ObjectTerm& o :
+         group_detail::QueryObjects(W, triple.subject, p.path))
+      values.push_back(o.is_literal() ? o.literal->lexical : o.iri_or_bnode);
+    if (triple.predicate == p.path) {
+      const ObjectTerm& o = triple.object;
+      values.push_back(o.is_literal() ? o.literal->lexical : o.iri_or_bnode);
+    }
+    if (values.size() < p.min_count)
+      return false;  // §4.3 minCount
+    if (p.max_count && values.size() > *p.max_count)
+      return false;  // §4.3 maxCount
+    if (p.datatype) {
+      const std::string norm = living_web::NormalizeDatatype(*p.datatype);
+      for (const std::string& v : values)
+        if (!living_web::ValidateLexicalForDatatype(v, norm))
+          return false;  // §4.4 datatype
+    }
+  }
+  return true;
+}
+
 // ---- private helpers --------------------------------------------------------
 
 bool ShapeService::CanUpdateShacl(GraphBackend* W,

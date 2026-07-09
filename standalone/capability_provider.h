@@ -111,6 +111,11 @@ struct ValidationContext {
   std::string action;
   bool is_non_triple_op = false;
   std::string now;  // RFC 3339 evaluation instant
+  // The id of the ZCAP delegation whose caveats are being evaluated. Threaded
+  // through so caveat handlers that key per-delegation state — the Spec 08
+  // rateLimit / cardinality counters, keyed (zcap.id, author) — can identify the
+  // capability. Empty for root-capability / non-delegated evaluation.
+  std::string zcap_id;
 };
 
 // The result a plug-in handler returns.
@@ -501,7 +506,7 @@ class GovernanceEngine {
       if (IsRevoked(W, z.id))
         continue;
       std::string reason;
-      if (!EvaluateCaveats(z.caveats, std::nullopt, "", ctx, &reason))
+      if (!EvaluateCaveats(z.caveats, std::nullopt, "", ctx, z.id, &reason))
         continue;
       if (!WalkChain(W, z, 0))
         continue;
@@ -860,7 +865,8 @@ class GovernanceEngine {
         continue;
       }
       std::string cav_reason;
-      if (!EvaluateCaveats(z.caveats, triple, action, ctx, &cav_reason)) {  // 6.4
+      if (!EvaluateCaveats(z.caveats, triple, action, ctx, z.id,
+                           &cav_reason)) {  // 6.4
         *reason = cav_reason;
         continue;
       }
@@ -890,7 +896,7 @@ class GovernanceEngine {
   bool EvaluateCaveats(const std::string& caveats_raw,
                        const std::optional<Triple>& triple,
                        const std::string& action, const ValidationContext& ctx,
-                       std::string* reason) {
+                       const std::string& zcap_id, std::string* reason) {
     if (caveats_raw.empty())
       return true;
     std::vector<std::string> elems;
@@ -898,6 +904,11 @@ class GovernanceEngine {
       *reason = "caveat_malformed";
       return false;  // fail-closed
     }
+    // Expose the owning delegation's id to per-delegation caveat handlers (the
+    // Spec 08 rateLimit / cardinality counters key on it) without disturbing the
+    // caller's context.
+    ValidationContext local = ctx;
+    local.zcap_id = zcap_id;
     for (const std::string& e : elems) {
       auto type = JsonStringField(e, "type");
       if (!type) {
@@ -907,7 +918,7 @@ class GovernanceEngine {
       if (*type == "expiry") {  // §9.2 core caveat — applies to non-triple ops too
         auto val = JsonRawField(e, "value");
         auto exp = val ? JsonStringField(*val, "expiresAt") : std::nullopt;
-        if (!exp || ctx.now >= *exp) {
+        if (!exp || local.now >= *exp) {
           *reason = "caveat_failed:expiry";
           return false;
         }
@@ -918,13 +929,13 @@ class GovernanceEngine {
         *reason = "unknown_caveat:" + *type;
         return false;
       }
-      if (ctx.is_non_triple_op && !it->second->appliesToNonTripleOps())
+      if (local.is_non_triple_op && !it->second->appliesToNonTripleOps())
         continue;  // §7.1 skip
       Caveat cav;
       cav.type = *type;
       cav.value_raw = JsonRawField(e, "value").value_or("");
       cav.raw = e;
-      HandlerResult r = it->second->Evaluate(cav, triple, action, ctx);
+      HandlerResult r = it->second->Evaluate(cav, triple, action, local);
       if (!r.allowed) {
         *reason = "caveat_failed:" + *type;
         return false;
@@ -1033,7 +1044,7 @@ class GovernanceEngine {
         continue;
       std::string reason;
       if (!EvaluateCaveats(z.caveats, std::nullopt, kActionUpdateGovernance, ctx,
-                           &reason))
+                           z.id, &reason))
         continue;
       if (!WalkChain(W, z, 0))
         continue;

@@ -30,15 +30,29 @@
 # backing crypto::SHA256HashString.
 source_set("governance") {
   sources = [
-    # Chromium-independent byte-critical core (namespace living_web), shared
+    # Chromium-independent byte-critical cores (namespace living_web), shared
     # verbatim with the standalone conformance harness so the delegation-proof
     # pre-image and attenuation bytes never diverge between the two build worlds.
     "zcap.cc",
     "zcap.h",
 
+    # Spec 08 Governance Constraint Vocabulary — the pure-decision core (glob /
+    # deny-wins / RFC-3339 / §6.2 content order / VC proof pre-image), shared
+    # byte-for-byte with standalone/constraint_vocabulary_provider.h.
+    "constraint_vocabulary.cc",
+    "constraint_vocabulary.h",
+
     # Spec 04 §4/§13/§15 port + plug-in registry (namespace content).
     "governance_backend.cc",
     "governance_backend.h",
+
+    # Spec 08 browser binding: registers the three constraint kinds and ten
+    # caveat types against GovernanceBackend, resolving graph state through
+    # GraphBackend, hashing with //crypto, verifying Ed25519 with
+    # third_party/ed25519, matching blocked patterns with RE2, and running the
+    # `content` caveat's SPARQL ASK against an ephemeral Oxigraph store.
+    "constraint_vocabulary_backend.cc",
+    "constraint_vocabulary_backend.h",
   ]
 
   deps = [
@@ -50,5 +64,6 @@ source_set("governance") {
     "//mojo/public/cpp/bindings",
     "//mojo/public/mojom/graph",
     "//third_party/boringssl",
+    "//third_party/re2",
   ]
 }

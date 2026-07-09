@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "content/browser/governance/constraint_vocabulary_backend.h"
 
 namespace content {
 
@@ -23,7 +24,24 @@ PersonalGraphManager::PersonalGraphManager(DIDKeyProvider* identity)
       // §6.2: no host-network backing in this branch — module execution (and
       // thus any network import) awaits the Component Model engine. The runtime
       // answers network imports with `internal` when it is null.
-      module_runtime_(&module_graph_, &module_crypto_, /*network=*/nullptr) {}
+      module_runtime_(&module_graph_, &module_crypto_, /*network=*/nullptr) {
+  // Spec 08 — register the Governance Constraint Vocabulary against this realm's
+  // Spec 04 governance backend: the three constraint kinds (credential /
+  // temporal / content) and ten caveat types (§2). The `capability` kind is
+  // built into GovernanceBackend; this call supplies everything else the
+  // framework fails closed on until a handler is registered (§9.3). The §7.5/
+  // §7.6 usage ledger and the §9.3 RE2 matcher default inside the call; the
+  // §7.8 shape caveat delegates conformance to the Spec 07 shape service so the
+  // vocabulary never re-implements SHACL (an unresolvable shape fails closed,
+  // §9.6).
+  ConstraintVocabOptions vocab_opts;
+  vocab_opts.shape_conforms =
+      [this](GraphBackend* g, const std::string& shape_iri,
+             const living_web::Triple& t) {
+        return shapes_.Conforms(g, shape_iri, t);
+      };
+  RegisterConstraintVocabulary(&governance_, vocab_opts);
+}
 
 PersonalGraphManager::~PersonalGraphManager() = default;
 
