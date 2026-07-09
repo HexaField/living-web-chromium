@@ -176,7 +176,7 @@ Spec numbering (current, 10 specs):
 | 06 | Sync Module Architecture | `content/browser/module_runtime/{module_manifest,module_capabilities,module_runtime_host,module_runtime_backends}.*` + `graph_sync_module.wit`, `standalone/module_runtime_provider.h`; §6.4 `listModules` on `.../graph/personal_graph_manager.*` |
 | 07 | Dynamic Graph Shape Validation | `content/browser/shapes/{shape_definition,shape_service}.*`, `standalone/shape_provider.h`; §5 folded onto `.../graph/personal_graph_host.*` + `.../graph/graph.*`; `graph_backend_manager.*` `LookupHost` (§7 parent resolution) |
 | 08 | Governance Constraint Vocabulary | `content/browser/governance/{constraint_vocabulary,constraint_vocabulary_backend}.*` (shared core + `RegisterConstraintVocabulary`), `standalone/constraint_vocabulary_provider.h`; `ValidationContext::zcap_id` seam in `governance_backend.*` / `capability_provider.h`; §7.8 bound to `shapes/shape_service.*` `Conforms`; installed in `.../graph/personal_graph_manager.*` ctor |
-| 09 | Default Sync Module | — (planned, CRDT + MLS) |
+| 09 | Default Sync Module | `content/browser/graph_sync/{cbor,default_sync_module}.*` (shared byte-critical cores) + `{default_sync_backend,default_sync_crypto,mls_engine}.*` (browser port), `standalone/{default_sync_provider,mls_engine}.h`, `third_party/mls_ffi/` (OpenMLS staticlib); folded into the Spec 05 publish path (no new mojom/blink) |
 | 10 | Graph Flows | — (planned) |
 
 `SPEC_COMPLIANCE.md` tracks per-API status. Keep it current as branches land.
@@ -192,8 +192,9 @@ Spec numbering (current, 10 specs):
   regression. The harness can construct negatives (tampered signatures, cross-key verify)
   that read-only WPT interfaces cannot — put those there.
 - **Spec gaps** (genuinely undefined behaviour) are resolved by amending the spec repo
-  (`w3c-living-web-proposals`, branch `spec-amendments`), never by weakening the
-  implementation.
+  (`w3c-living-web-proposals`, pushed direct to `main`), never by weakening the
+  implementation. Each amendment is recorded under `SPEC_COMPLIANCE.md` → Amendments
+  with the specs-repo commit that carries it.
 
 Each spec branch documents its own normative specifics (crypto parameters, error
 behaviour, reference impl) in a section it adds here when it lands, so this file
@@ -552,6 +553,64 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   `content/browser/governance/constraint_vocabulary_backend.*` with 25 gtests
   (`tests/constraint_vocabulary_unittest.cc`); renderer surface pinned by
   `tests/web_platform_tests/graph/governance-constraint-vocabulary.html`.
+
+## Spec 09 specifics (landed)
+
+- **The default module *is* the Spec 05 publish path — no new script surface.**
+  `urn:sync:module:default` (§4.1) is the sync module every group references unless it
+  names another. Its entire ceremony (the §5 CBOR wire frames, the §6.3 per-space RFC
+  9420 MLS group, the §6.3.9 key schedule, the §6.3.10 AES-128-GCM envelope, the §8
+  OR-Set merge) runs in the browser process with **zero renderer visibility** — a page
+  cannot touch a KeyPackage, a Commit, an exporter secret, or a ciphertext. So Spec 09
+  adds **no mojom and no blink**: its renderer-visible face is exactly the Spec 05
+  `publish()` producing a derived encrypted `space://` URI plus `PublishedGraph.moduleHash`.
+  The WPT (`default-sync-module.html`) pins only that projection.
+- **Two shared byte-critical cores, pure-std, no crypto, no Chromium.**
+  `content/browser/graph_sync/cbor.*` (namespace `living_web::cbor`) is the deterministic
+  §5 CBOR codec (canonical map order, strict reject on non-canonical input);
+  `default_sync_module.*` (namespace `living_web::default_sync`) owns the §6.3.9 key
+  schedule, the §6.3.10 frame envelope construction, the §8 OR-Set, `GroupIdFromSpaceUri`
+  (§6.3.1), and `DefaultModuleContentHash` (§4.1, `"sha256-"` + lowercase-hex). Both are
+  `#include`d **verbatim** by the standalone provider and the browser backend, so the wire
+  frames, key schedule, AEAD envelope and OR-Set compute byte-identically in both worlds.
+- **Eight crypto primitives injected per world via the `SyncCrypto` seam.** The cores do
+  **no** crypto. `standalone/default_sync_provider.h::MakeOpenSslSyncCrypto()` binds them to
+  OpenSSL; `content/browser/graph_sync/default_sync_crypto.*::MakeChromiumSyncCrypto()` binds
+  the same eight (SHA-256/512, HMAC-SHA256, HKDF-Expand, X25519, AES-128-GCM seal/open, the
+  did:key→X25519 edwards map) to `//crypto` + BoringSSL. Verdicts and bytes never diverge.
+- **Real RFC 9420 MLS — one staticlib, two wrappers.** The group ceremony is genuine
+  OpenMLS via the Rust staticlib `third_party/mls_ffi/` (cipher suite
+  `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, 0x0001). Like `oxigraph_ffi`, it has **no
+  BUILD.gn** — it is pulled into the `//content` build through its own third_party target,
+  and both build worlds link the **same** staticlib, so every KeyPackage/Commit/Welcome byte
+  is identical. Only the C++ wrapper differs: `standalone/mls_engine.h` throws;
+  `content/browser/graph_sync/mls_engine.*` is exception-free (`bool` + out-params +
+  `last_error()`), mirroring `OxigraphStore`.
+- **The exporter seam (§6.3.9) is the real RFC 9420 §8.5 exporter, not a simulation.**
+  `member.ExportSecret(kSpaceFrameExporterLabel, space_uri, 32)` — label
+  `"lw-sync space frame"`, context = the full `space://…` URI — returns the space traffic
+  secret **directly** from inside OpenMLS; the core then calls `DeriveFrameKeys(sts, crypto)`.
+  `DeriveFrameKeysFromExporter` is the *simulated-exporter* path used only by the standalone
+  known-answer test; the browser backend and the MLS end-to-end tests drive the real
+  `ExportSecret → DeriveFrameKeys` seam.
+- **Per-space backend.** `content/browser/graph_sync/default_sync_backend.*` (namespace
+  `content`) owns one MLS group + one OR-Set per published space, drives seal/open + the §8
+  merge, and derives the §6.3.1 space authority (64-char lowercase-hex SHA-256 group_id) from
+  the graph DID. It is a peer of the Spec 05 `SyncBackend`, co-compiled in the single
+  `source_set("graph_sync")` (Spec 09 sources folded into the Spec 05 target; `deps`
+  unchanged — MLS + Ed25519 staticlibs arrive via their own third_party targets).
+- **Two amendments (specs commit `5a2e94f`).** (i) §6.3.9 — the exporter gloss was replaced
+  with the full RFC 9420 §8.5 two-step form (`MLS-Exporter = ExpandWithLabel(DeriveSecret(
+  exporter_secret, Label), "exported", Hash(Context), Length)`), matching what OpenMLS
+  actually computes. (ii) §4.2 — the capability column now uses the Spec 06 §8 grammar
+  `crypto.commit-sign` / `crypto.signal-sign` / `crypto.verify`; the nonexistent `crypto.sign`
+  token was removed.
+- Authoritative reference impl: `standalone/default_sync_provider.h` +
+  `standalone/mls_engine.h` over `default_sync_module.*` / `cbor.*`, verified by 26 `Sync09_*`
+  tests (**212 total, green**); browser backend =
+  `content/browser/graph_sync/{default_sync_backend,default_sync_crypto,mls_engine}.*` with 15
+  gtests (`tests/default_sync_module_unittest.cc`); renderer projection pinned by
+  `tests/web_platform_tests/graph/default-sync-module.html`.
 
 ## Gotchas
 

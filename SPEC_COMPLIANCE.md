@@ -25,8 +25,8 @@ to this file** and flips its row to ✅.
 | 05 | [Context Sync Protocol](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/05_context-sync-protocol.md) | `Graph.publish()`, `GraphManager.mount()` | `spec-05-sync` | ✅ |
 | 06 | [Sync Module Architecture](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/06_sync-module-architecture.md) | `GraphManager.listModules()`, module runtime | `spec-06-sync-modules` | ✅ |
 | 07 | [Dynamic Graph Shape Validation](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/07_dynamic-graph-shape-validation.md) | `addShape()`, shape instances | `spec-07-shapes` | ✅ |
-| 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `canAddTriple()`, constraints | `spec-08-governance` | 🔲 |
-| 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | CRDT + MLS transport | `spec-09-default-sync` | 🔲 |
+| 08 | [Governance Constraint Vocabulary](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/08_governance-constraint-vocabulary.md) | `canAddTriple()`, constraints | `spec-08-governance` | ✅ |
+| 09 | [Default Sync Module](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md) | CRDT + MLS transport | `spec-09-default-sync` | ✅ |
 | 10 | [Graph Flows](https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/10_graph-flows.md) | Reactive flow bindings | `spec-10-flows` | 🔲 |
 
 ---
@@ -1112,6 +1112,170 @@ admit them): the §7.8 shape caveat is bound to the Spec 07 `ShapeService::Confo
 in the browser (an injected lambda in the harness), both fail-closed per §9.6; and
 `RegisterConstraintVocabulary` is invoked from the `PersonalGraphManager` constructor
 so every realm graph carries the vocabulary without renderer ceremony.
+
+---
+
+## Spec 09 — Default Sync Module ✅
+
+Fully implemented and tested. Spec 09 is the concrete sync module every group
+references by default — `urn:sync:module:default` (§4.1) — so it is the reference
+realisation of the Spec 06 [[SYNC-MODULE]] contract, not a new renderer surface. Its
+whole ceremony (the §5 CBOR wire frames, the §6.3 per-space RFC 9420 MLS group, the
+§6.3.9 key schedule, the §6.3.10 AES-128-GCM frame envelope, and the §8 OR-Set merge)
+runs **inside the browser process**: a page has no script handle on a KeyPackage, an
+MLS Commit, an exporter secret, or a frame's ciphertext. The renderer-visible face of
+Spec 09 is therefore exactly the Spec 05 publish path — creating a group under the
+default module, publishing it, and reading back the derived encrypted `space://` URI,
+the module hash, and the §7.1 peer set — which is pinned by the WPT
+(`tests/web_platform_tests/graph/default-sync-module.html`). The byte-level
+conformance is exercised by the **26 `Sync09_*` blocks** of the standalone harness
+(`living_web_tests`, **212 tests total, all green**) and mirrored by the 15 browser
+gtests (`tests/default_sync_module_unittest.cc` — 11 `DefaultSyncModuleTest.*` over the
+shared core + the BoringSSL seam, 4 `DefaultSyncBackendTest.*` over the module-runtime
+backend).
+
+The MLS ceremony is a **real RFC 9420 group**, delivered by OpenMLS through a thin
+Rust staticlib (`third_party/mls_ffi`, cipher suite
+`MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` / `0x0001`, §6.3.2) exactly as Spec
+02's RDF substrate is delivered by Oxigraph — it is **not** hand-rolled. Both build
+worlds link the *same* staticlib, so the ceremony bytes (KeyPackages, Commits,
+Welcomes, the ratchet tree, and the §6.3.9 exporter output) are identical; only the
+FFI wrapper differs (`standalone/mls_engine.h` throws, the browser
+`content/browser/graph_sync/mls_engine.{h,cc}` is exception-free `bool` + out-params +
+`last_error()`, mirroring `OxigraphStore`). The three real-ceremony blocks
+(`Sync09_MlsTwoMemberExporterAgree`, `…MlsEndToEndFrameExchange`, `…MlsGroupAddRemove`,
+and their gtest mirrors) drive create → add → remove → update against the live
+OpenMLS group and assert two members' exporters agree, a sealed frame round-trips
+between them, and an epoch advance re-keys the space.
+
+The byte-critical decision core is Chromium-independent (namespaces
+`living_web::default_sync` and `living_web::cbor`, pure-std) —
+`content/browser/graph_sync/default_sync_module.{h,cc}` and `cbor.{h,cc}`: the §5
+deterministic CBOR codec, the §6.3.1 `space://` → 32-byte MLS `group_id` derivation
+(`GroupIdFromSpaceUri`), the §4.1 module content hash (`DefaultModuleContentHash`), the
+§6.3.9 key schedule (`DeriveSpaceTrafficSecret` / `DeriveFrameKeys`), the §6.3.10 AEAD
+frame envelope (`SealFrame` / `OpenFrame`), and the §8 OR-Set (`OrSet`) + §9 promotion
+gate (`ShouldPromote`). It performs **no cryptography**: the eight primitives
+(SHA-256/512, HMAC-SHA256, X25519, AES-128-GCM seal/open, Ed25519 verify/sign) are
+injected through the `SyncCrypto` seam, resolved to OpenSSL in the standalone provider
+(`standalone/default_sync_provider.h`, `MakeOpenSslSyncCrypto`) and to `//crypto` +
+BoringSSL in the browser (`content/browser/graph_sync/default_sync_crypto.{h,cc}`,
+`content::MakeChromiumSyncCrypto`). The per-space module-runtime backend
+(`content/browser/graph_sync/default_sync_backend.{h,cc}`) owns each space's MLS
+member + OR-Set, caches the frame keys per epoch (re-deriving via the exporter only on
+an epoch change), and guards Open against a stale epoch.
+
+### §4 module identity & capability manifest
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §4.1 default module identity | §4.1 | ✅ | ✅ | ✅ | `urn:sync:module:default`; every group under it shares one content-addressed module hash, `"sha256-" + lowercaseHex(SHA-256(wasm))` (`DefaultModuleContentHash`). `Sync09_ModuleContentHash`; WPT `§4.1 the default module MUST be a single content-addressed identity`. |
+| §4.2 capability manifest | §4.2 | ✅ | ✅ | ✅ | Declares the Spec 06 §8 tokens `crypto.commit-sign` / `crypto.signal-sign` / `crypto.verify` (+ `graph.read/write`, `network.relay.*`, `network.peer.webrtc`, `storage.module.*`) — see Amendment (ii). Token grammar is the shared `module_capabilities.*` vocabulary. |
+
+### §5 wire protocol (deterministic CBOR codec)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §5 canonical CBOR frames | §5.1 | ✅ | ✅ | ✅ | Deterministic map ordering + strict decode reject on non-canonical input (`living_web::cbor`). `Sync09_CborRoundTrip`, `…CborDeterministicMapOrder`, `…CborStrictReject`. |
+| §5.2 DIFF / §5.4 payload codecs | §5.2, §5.4 | ✅ | ✅ | ✅ | `GraphDiff` / snapshot / SIGNAL payload encode/decode round-trip. `Sync09_DiffPayloadRoundTrip`, `…PayloadCodecs`. |
+| §5.5 SIGNAL frame types | §5.1, §5.5 | ✅ | ✅ | ✅ | Frame-type tokens (`DIFF`/`PULL`/`SNAPSHOT`/`SIGNAL`/`MODULE_UPDATE`/`PEER_HELLO`/`PEER_BYE`). `Sync09_FrameTypeTokens`. |
+
+### §6.3 MLS group ceremony (real RFC 9420, OpenMLS)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §6.3.1 space → group_id | §6.3.1 | ✅ | ✅ | ✅ | The `space://` authority is a 64-char lowercase-hex SHA-256; the MLS `group_id` is exactly those 32 bytes (`GroupIdFromSpaceUri`; malformed URI rejected). `Sync09_GroupIdFromSpaceUri`; WPT `§4.1/§6.3.1 … derived space with a module hash`. |
+| §6.3.2 cipher suite | §6.3.2 | ✅ | ✅ | ✅ | Exactly `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (`0x0001`) — pinned in `third_party/mls_ffi` (`const CIPHERSUITE`). Both build worlds link the one OpenMLS staticlib. |
+| §6.3.3 did:key → X25519 binding | §6.3.3 | ✅ | ✅ | ✅ | The HPKE `encryption_key` is the deterministic Ed25519→X25519 conversion of the leaf DID (SHA-512-clamp private path; Edwards→Montgomery public map). `Sync09_X25519MatchesEdwardsMap` (asserts `X25519(clamp(SHA-512(sk)[0..32)), 9)` equals the Montgomery map of `ed_pk`). |
+| §6.3.6–§6.3.8 create / add / remove / update | §6.3.6–§6.3.8 | ✅ | ✅ | ✅ | Live OpenMLS Commits + Welcomes; only a current member may Add; a Remove/Update advances the epoch and re-keys. `Sync09_MlsGroupAddRemove`; gtest `DefaultSyncBackendTest.FoundAddSealOpenRotate`. |
+
+### §6.3.9 / §6.3.10 key schedule & frame envelope
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §6.3.9 space traffic secret via MLS exporter | §6.3.9 | ✅ | ✅ | ✅ | `space_traffic_secret = MLS-Exporter("lw-sync space frame", spaceUri, 32)` — the real RFC 9420 §8.5 two-step exporter, computed inside OpenMLS (`group.export_secret`); the core then runs `DeriveFrameKeys`. Two members' exporters agree byte-for-byte. Amendment (i); `Sync09_MlsTwoMemberExporterAgree`, `…HkdfExpandKnownAnswer` (RFC 5869 A.1), `…FrameKeysDeterministic`. |
+| §6.3.9 frame key/nonce derivation | §6.3.9 | ✅ | ✅ | ✅ | `frame_key = ExpandWithLabel(sts,"key","",16)`, `frame_nonce = ExpandWithLabel(sts,"nonce","",12)`; per-space, re-derived on epoch change, cached per epoch in the backend. `Sync09_FrameNonce`, gtest `DefaultSyncModuleTest.FrameKeysDeterministic`. |
+| §6.3.10 AEAD frame envelope | §6.3.10 | ✅ | ✅ | ✅ | AES-128-GCM over the CBOR body; `epoch`+`seq` bound into the AAD; per-epoch monotonic `seq`; a frame from any other epoch is discarded (`epoch_mismatch`). `Sync09_FrameSealOpenRoundTrip`, `…OpenFrameRoundTrip`, `…FrameAadStable`, `…EncryptedFrameCodec`, `…MlsEndToEndFrameExchange`; gtest `DefaultSyncModuleTest.FrameSealOpenRoundTrip`. |
+| §6.1 relay fan-out (encrypted) | §6.1 | ✅ | ✅ | ✅ | Subscribe/deliver over a relay; a relay sees only ciphertext. `Sync09_RelaySubscribeDeliver`, `…EncryptedExchangeThroughRelay`. |
+
+### §8 merge / §9 snapshot promotion
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §8.1 OR-Set CRDT | §8.1 | ✅ | ✅ | ✅ | Add/remove with per-element unique tags; commutative + idempotent DIFF merge; concurrent add/remove converges. `Sync09_OrSetAddRemove`, `…OrSetConverges`; gtest `DefaultSyncModuleTest.OrSetConverges`, `DefaultSyncBackendTest.MergeDiffAddRemove`. |
+| §8.2–§8.4 causal order & tie-break | §8.2, §8.4 | ✅ | ✅ | ✅ | Chain-root identity and the deterministic concurrent-transition tie-break. `Sync09_ChainRoot`, `…FlowTieBreak`. |
+| §9.2 snapshot threshold | §9.2 | ✅ | ✅ | ✅ | `ShouldPromote(diffs_since_snapshot, threshold)`; default `kDefaultSnapshotThreshold = 1000`. `Sync09_SnapshotThreshold`; gtest `DefaultSyncModuleTest.SnapshotThreshold`. |
+
+### §7.1 renderer peer surface (via Spec 05)
+
+| Behaviour | Spec | C++ | Test | Status | Notes |
+|-----------|------|-----|------|--------|-------|
+| §7.1 empty peer set at publish | §7.1 | ✅ | — | ✅ | A freshly published default-module space has `peers()` / `onlinePeers()` empty and reports a `GraphSyncState` token. WPT `§7.1 … MUST start with an empty peer set`. |
+| §5.5/§6.3.10 signalling gated on epoch key | §5.5, §6.3.10 | ✅ | — | ✅ | `broadcast()` / `sendSignal()` reject `InvalidStateError` before publish (no epoch key) and resolve after (no-op with no peers). WPT `§5.5/§6.3.10 default-module signalling …`. |
+| §6.3.1 DID-less graph rejected | §6.3.1 | ✅ | — | ✅ | A DID-less Spec 02 graph has no space authority, so `publish()` rejects `InvalidStateError`. WPT `§6.3.1 … reject a DID-less graph`. |
+| §6.4 realm space inventory | §6.4 | ✅ | — | ✅ | The published space appears in `listSpaces()` carrying the default module hash; a stable inventory read. WPT `§6.4 …`, `§4.1 … stable inventory read`. |
+
+### Normative parameters
+
+- **Module identity** (§4.1): `urn:sync:module:default`; content hash
+  `"sha256-" + lowercaseHex(SHA-256(wasm))` (`DefaultModuleContentHash`).
+- **Cipher suite** (§6.3.2): `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (`0x0001`)
+  — DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM / SHA-256 / Ed25519. A
+  non-`0x0001` MLS object MUST be rejected. Pinned once in `third_party/mls_ffi`.
+- **Exporter seam** (§6.3.9, Amendment (i)):
+  `space_traffic_secret = MLS-Exporter("lw-sync space frame", spaceUriBytes, 32)`, the
+  RFC 9420 §8.5 exporter (`ExpandWithLabel(DeriveSecret(exporter_secret, Label),
+  "exported", Hash(Context), Length)`) computed inside OpenMLS; the shared core then
+  derives `frame_key`(16)/`frame_nonce`(12) via `ExpandWithLabel`. The exporter label
+  is the shared constant `kSpaceFrameExporterLabel`; the context is the full
+  `space://…` URI string.
+- **Crypto seam divergence**: the eight `SyncCrypto` primitives resolve to OpenSSL in
+  the harness (`MakeOpenSslSyncCrypto`) and to `//crypto` + BoringSSL in the browser
+  (`MakeChromiumSyncCrypto`: `crypto::SHA256HashString`, BoringSSL SHA-512 / HMAC /
+  `X25519` / `EVP_AEAD` AES-128-GCM, bundled `ed25519`). The key schedule and AEAD
+  envelope compute byte-identically because only the primitives differ, never the
+  wiring — the shared core owns every concatenation, label, and length.
+- **MLS ceremony divergence**: none in bytes — both worlds link the one OpenMLS
+  staticlib (`third_party/mls_ffi`), so KeyPackages/Commits/Welcomes/exporter outputs
+  are identical; only the C++ wrapper differs (throwing vs. `bool`+`last_error()`).
+- **Snapshot threshold** (§9.2): `kDefaultSnapshotThreshold = 1000` diffs per graph.
+- **Renderer coverage placement**: the browser-internal ceremony (KeyPackage, Commit,
+  exporter, ciphertext) has no script surface, so it is pinned at the standalone +
+  gtest layers; the WPT pins only the Spec 05 publish projection (space URI, module
+  hash, peer set, signalling gate). This is coverage placement, not a subset — the
+  ceremony is complete and exercised against the real OpenMLS + BoringSSL stack.
+- Authoritative reference impl: `standalone/default_sync_provider.h`
+  (`MakeOpenSslSyncCrypto`) + `standalone/mls_engine.h` over the shared
+  `default_sync_module.*` / `cbor.*`, verified by the 26 `Sync09_*` tests; the browser
+  backend (`content/browser/graph_sync/default_sync_backend.{h,cc}` +
+  `default_sync_crypto.{h,cc}` + `mls_engine.{h,cc}`) mirrors it against `//crypto` +
+  BoringSSL + the same OpenMLS staticlib.
+
+### Amendments
+
+Gaps surfaced while implementing Spec 09 have been **folded back into the draft on
+`w3c-living-web-proposals` `main`** (commit
+[`5a2e94f`](https://github.com/HexaField/w3c-living-web-proposals/commit/5a2e94f)), so
+the draft now fully specifies what this branch implements:
+
+- **(i) RFC 9420 §8.5 exporter form (§6.3.9).** The draft's inline gloss of
+  `MLS-Exporter` collapsed the exporter to a single
+  `ExpandWithLabel(exporter_secret, Label, Hash(Context), Length)`. That is not the
+  RFC 9420 §8.5 exporter: the real form first derives a per-`Label` secret
+  (`DeriveSecret(exporter_secret, Label)`) and only then expands it under the **fixed
+  `"exported"` string** over `Hash(Context)`. Because the module delegates the exporter
+  to OpenMLS (which computes the true two-step form), the simplified gloss would have
+  led an independent implementer to a different `space_traffic_secret` and broken
+  interop. The amendment pins the full two-step definition, with `DeriveSecret(Secret,
+  Label) = ExpandWithLabel(Secret, Label, "", KDF.Nh)`.
+- **(ii) Capability manifest tokens (§4.2).** §4.2 still listed the obsolete
+  `crypto.sign`, which does not exist in the [[SYNC-MODULE]] §8 capability grammar that
+  Spec 06 established and this repo implements (`module_capabilities.*`). The module
+  signs two distinct things — commit bundles for authored `DIFF`s (per
+  [[CONTEXT-SYNC]] §5.2.2) and `SIGNAL` frame envelopes — so the amendment replaces the
+  single `crypto.sign` row with the two grammar-correct tokens `crypto.commit-sign` and
+  `crypto.signal-sign`, keeping `crypto.verify`. This aligns Spec 09's manifest with
+  Spec 06 §8 and with the WIT host imports (`graph_sync_module.wit`).
 
 ---
 

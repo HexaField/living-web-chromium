@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Default Sync Module (Spec 09) — the default module identity &amp; encrypted-space surface — WPT</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// ==========================================================================
+// Spec 09 — Default Sync Module
+// https://github.com/HexaField/w3c-living-web-proposals/blob/main/drafts/09_default-sync-module.md
+//
+// Spec 09 is the sync module every group references by default
+// (urn:sync:module:default, §4.1): a WebAssembly component whose §5 CBOR wire
+// frames, §6.3 per-space RFC 9420 MLS group, §6.3.9 key schedule and §6.3.10
+// AES-128-GCM frame envelope run entirely in the browser process. None of that
+// ceremony has a script surface — a page cannot touch a KeyPackage, an MLS
+// Commit, an exporter secret or a frame's ciphertext — so the renderer-visible
+// face of Spec 09 is exactly the default module *identity* flowing through the
+// Spec 05 publish path: creating a group under the default module, publishing
+// it, and observing the derived encrypted `space://` URI, the module hash, and
+// the §7.1 peer surface. This WPT pins that projection. The byte-level
+// conformance (the deterministic CBOR codec, the §6.3.3 did:key→X25519 binding,
+// the §6.3.9 MLS-Exporter key schedule, the §6.3.10 AEAD envelope, the §8 OR-Set
+// merge, and a real create/add/remove/update MLS ceremony driving the exporter
+// seam) is exercised by the content_unittests port (default_sync_module_unittest
+// .cc) and the standalone conformance harness against the same shared cores.
+// ==========================================================================
+
+// §4.1 — the default sync module's stable identity. A group MUST carry a sync
+// module (GROUP-IDENTITY §4.5); the default one is this urn.
+const DEFAULT_SYNC = 'urn:sync:module:default';
+
+// The §5.5 sync-state lifecycle tokens (GraphSyncState), reused from Spec 05.
+const SYNC_STATES = [
+  'idle', 'resolving', 'connecting', 'syncing', 'synced', 'error',
+];
+
+// A tiny BufferSource for the §5.5 SIGNAL frames (payload bytes are opaque).
+function payload() {
+  return new Uint8Array([9, 0, 9]);
+}
+
+// §4.1 — a group created under the default module publishes to a derived
+// encrypted space; PublishedGraph.moduleHash is the module's content identity
+// and spaceUri is the §6.3.1 space:// authority the MLS group_id is taken from.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+
+  const pub = await group.graph.publish();
+  assert_equals(pub.graphDid, group.did,
+    'PublishedGraph.graphDid MUST be the group DID');
+  assert_true(pub.spaceUri.startsWith('space://'),
+    'the default module MUST publish to a derived space:// URI (§6.3.1/§7.3)');
+  // §6.3.1 — the space authority is a 64-char lowercase-hex SHA-256 (the MLS
+  // group_id is exactly those 32 bytes).
+  const authority = pub.spaceUri.slice('space://'.length);
+  assert_true(/^[0-9a-f]{64}$/.test(authority),
+    'the space authority MUST be 64 lowercase-hex chars (§6.3.1 group_id)');
+  assert_equals(typeof pub.moduleHash, 'string',
+    'PublishedGraph.moduleHash MUST be the default module content identity (§4.1)');
+  assert_greater_than(pub.moduleHash.length, 0,
+    'the default module hash MUST be non-empty (§4.1)');
+}, '§4.1/§6.3.1 the default module MUST publish to a derived space with a module hash');
+
+// §4.1 — the default module is a single content-addressed identity: two groups
+// published under it report the *same* module hash.
+
+promise_test(async t => {
+  const a = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  t.add_cleanup(() => a.graph.unpublish());
+  const b = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  t.add_cleanup(() => b.graph.unpublish());
+  const pa = await a.graph.publish();
+  const pb = await b.graph.publish();
+  assert_equals(pb.moduleHash, pa.moduleHash,
+    'every group under urn:sync:module:default MUST share one module hash (§4.1)');
+  // Distinct groups derive distinct spaces (the authority folds in the graph DID).
+  assert_not_equals(pb.spaceUri, pa.spaceUri,
+    'distinct groups MUST derive distinct space:// URIs (§7.3)');
+}, '§4.1 the default module MUST be a single content-addressed identity');
+
+// §6.4 — the published space appears in the realm inventory carrying the default
+// module hash (the browser tracks one encrypted space per published group).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  const pub = await group.graph.publish();
+
+  const spaces = await navigator.graph.listSpaces();
+  assert_true(Array.isArray(spaces),
+    'listSpaces() MUST resolve with a sequence (§6.4)');
+  const entry = spaces.find(s => s.spaceUri === pub.spaceUri);
+  assert_true(entry !== undefined,
+    'the published default-module space MUST appear in listSpaces() (§6.4)');
+  assert_equals(entry.moduleHash, pub.moduleHash,
+    'the space inventory MUST record the default module hash (§4.1/§6.4)');
+}, '§6.4 the default-module space MUST appear in the realm inventory with its hash');
+
+// §7.1 — a freshly published default-module space has discovered no peers yet:
+// peer discovery (PEER_HELLO/PEER_BYE, §5.7) starts empty.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+  assert_array_equals(await group.graph.peers(), [],
+    'a freshly published space MUST have no known peers (§7.1)');
+  assert_array_equals(await group.graph.onlinePeers(), [],
+    'a freshly published space MUST have no online peers (§7.1)');
+  assert_true(SYNC_STATES.includes(await group.graph.syncState()),
+    'syncState() MUST report a GraphSyncState token once published');
+}, '§7.1 a published default-module space MUST start with an empty peer set');
+
+// §5.5 / §6.3.10 — once published, the default module has a transport, so a
+// SIGNAL frame seals and sends without rejecting (it is a no-op with no peers).
+// Before publish there is no MLS group, so signalling rejects with
+// InvalidStateError (a frame cannot be sealed without an epoch key).
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  const peer = await navigator.graph.createIdentity('Peer');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    group.graph.broadcast(payload()),
+    'broadcast() before publish MUST reject with InvalidStateError (§6.3.10)');
+
+  t.add_cleanup(() => group.graph.unpublish());
+  await group.graph.publish();
+  // Now an epoch key exists: SIGNAL frames seal and route (no-ops with no peers).
+  await group.graph.broadcast(payload());
+  await group.graph.sendSignal(peer.did, payload());
+}, '§5.5/§6.3.10 default-module signalling MUST reject before publish, resolve after');
+
+// §6.3.1 — the default module needs a space authority, which is derived from the
+// graph DID; a DID-less Spec 02 graph has no authority, so publish() rejects.
+
+promise_test(async t => {
+  const graph = await navigator.graph.create({ displayName: 'Plain' });
+  t.add_cleanup(() => graph.dissolve());
+  assert_equals(graph.did, null, 'a plain graph MUST have no DID');
+  await promise_rejects_dom(t, 'InvalidStateError',
+    graph.publish(),
+    'a DID-less graph has no space authority for the default module (§6.3.1)');
+}, '§6.3.1 the default module MUST reject a DID-less graph with InvalidStateError');
+
+// §4.1 — the derived space and module hash are a stable read: publishing, then
+// re-reading the inventory, yields the same space URI and module hash.
+
+promise_test(async t => {
+  const group = await navigator.graph.createGroup({ syncModule: DEFAULT_SYNC });
+  t.add_cleanup(() => group.graph.unpublish());
+  const pub = await group.graph.publish();
+
+  const first = (await navigator.graph.listSpaces())
+    .find(s => s.spaceUri === pub.spaceUri);
+  const second = (await navigator.graph.listSpaces())
+    .find(s => s.spaceUri === pub.spaceUri);
+  assert_true(first !== undefined && second !== undefined,
+    'the published space MUST be a stable inventory read (§6.4)');
+  assert_equals(second.moduleHash, first.moduleHash,
+    'the default module hash MUST be stable across reads (§4.1)');
+}, '§4.1 the default-module space and hash MUST be a stable inventory read');
+</script>
