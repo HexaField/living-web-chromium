@@ -191,6 +191,13 @@ class GraphBackend {
   // last_error() on a store error.
   bool LoadVerifiedNquads(const std::string& nquads);
 
+  // Serialises the whole store (data triples + their reifier triples) as RDF 1.2
+  // N-Quads. Used by the Spec 03 fork path (GroupBackendManager::ForkGroup,
+  // §4.8 step 2) to copy a parent group's full, verifiable history into the
+  // child before the parent identity is stripped. Returns false and sets
+  // last_error() on a store error.
+  bool DumpNquads(std::string* out);
+
  private:
   // The stable identifier the §3.2.1 signature binds to: the DID if set, else id.
   std::string GraphIdentifier() const { return did_.value_or(id_); }

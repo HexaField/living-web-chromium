@@ -570,6 +570,11 @@ class Graph {
 
  private:
   friend class GraphManager;
+  // Spec 03 §4.2/§4.8: the group service binds a did:graph identifier onto a
+  // host graph (Groupify) and forks a groupified graph by copying its store and
+  // stripping the parent identity. Both operations set did_ and read/replace
+  // store_ directly on graphs the caller already owns.
+  friend class GroupManager;
 
   // The stable identifier the §3.2.1 signature binds to: the DID if set, else id.
   std::string GraphIdentifier() const { return did_.value_or(id_); }

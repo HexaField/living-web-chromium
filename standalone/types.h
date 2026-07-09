@@ -17,8 +17,14 @@ namespace living_web {
 
 // ---- Spec 01: Decentralised Identity ----
 
-// A did:key credential: an Ed25519 keypair plus its algorithmically-derived
-// did:key URI and metadata (§3, §4.1).
+// A DID credential: an Ed25519 keypair plus its algorithmically-derived DID URI
+// and metadata (§3, §4.1). |method| is the DID method whose identifier |did|
+// carries: "key" for did:key (Spec 01) or "graph" for did:graph (Spec 03). The
+// keypair encoding is identical across methods, so a did:graph group's initial
+// key is stored as an ordinary DIDKeyPair with method = "graph". |method_id| is
+// the verification-method id (DID URL) this key is referenced by inside its DID
+// document: "<did>#<publicKeyMultibase>" (Spec 03 §4.4). It is empty for keys
+// that are not (yet) a DID-document verification method.
 struct DIDKeyPair {
   std::string id;
   std::string did;
@@ -28,6 +34,8 @@ struct DIDKeyPair {
   bool is_locked = false;
   std::vector<uint8_t> public_key;
   std::vector<uint8_t> private_key;
+  std::string method = "key";
+  std::string method_id;
 };
 
 // Result of sign()/signCapability() (§6.1, §6.3, §6.4). The proof is carried as

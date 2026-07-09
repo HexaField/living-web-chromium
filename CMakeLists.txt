@@ -48,13 +48,17 @@ add_custom_target(oxigraph_ffi_build DEPENDS ${OXIGRAPH_FFI_LIB})
 # backend, so the final link needs libstdc++ and these system libraries.
 set(OXIGRAPH_FFI_SYSTEM_LIBS stdc++ gcc_s util rt pthread m dl c)
 
-# Spec 01 — Decentralised Identity + Spec 02 — Personal Linked Data Graphs.
+# Spec 01 — Decentralised Identity + Spec 02 — Personal Linked Data Graphs +
+# Spec 03 — Decentralised Group Identity.
 #
 # The Chromium-independent cores shared by the browser-process services and the
-# standalone harness: the did:key codec + JCS (Spec 01), and the RDF 1.2 term
-# serialisation, Oxigraph RAII wrapper, and SPARQL Results decoder (Spec 02).
+# standalone harness: the did:key codec + JCS (Spec 01); the RDF 1.2 term
+# serialisation, Oxigraph RAII wrapper, and SPARQL Results decoder (Spec 02);
+# and the did:graph codec + DID-document model (Spec 03), which reuses the
+# did:key codec for the byte-level Ed25519 multibase work.
 add_library(living_web STATIC
     content/browser/did/did_key_codec.cc
+    content/browser/did/did_graph.cc
     content/browser/did/jcs.cc
     content/browser/graph/rdf_serialization.cc
     content/browser/graph/oxigraph_store.cc

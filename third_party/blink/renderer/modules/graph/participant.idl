@@ -1,0 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Participant — a direct or transitive member of a group. Decentralised Group
+// Identity spec §8.1. Returned from Group.participants() /
+// Group.transitiveParticipants().
+
+dictionary Participant {
+  required USVString did;       // participant IRI or did:graph
+  required boolean isGroup;     // true iff the participant is itself a did:graph
+  required DOMString joinedAt;  // RFC 3339; from the accepts_participation reifier
+  DOMString name;               // group://name of the participant, when resolvable
+};

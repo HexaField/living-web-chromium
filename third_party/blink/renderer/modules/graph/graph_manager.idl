@@ -16,4 +16,21 @@ interface GraphManager {
   // OPTIONAL and omitted here. getAsSnapshot()/fromSnapshot() of a format absent
   // from this list reject with "NotSupportedError".
   static readonly attribute FrozenArray<SnapshotFormat> supportedSnapshotFormats;
+
+  // Decentralised Group Identity §8.2. A "group" is a groupified Graph plus a
+  // did:graph signing identity.
+  //
+  // createGroup mints a fresh host graph and groupifies it; forkGroup mints a
+  // new identity over a copy of a parent's state; openGroup materialises a
+  // handle over an already-mounted group; listGroups enumerates them.
+  [CallWith=ScriptState, NewObject] Promise<Group> createGroup(GroupCreationOptions options);
+  // §8.2.2 groupify — AMENDED from the spec's `groupify(USVString graphIri, …)`
+  // to take the live Graph object. The host keys graphs by a stable internal id,
+  // not the content-address IRI (which advances on every write, including
+  // groupification itself); passing the Graph the caller already holds hands the
+  // browser that stable id and avoids a lookup race. See SPEC_COMPLIANCE.md.
+  [CallWith=ScriptState, NewObject] Promise<Group> groupify(Graph graph, GroupifyOptions options);
+  [CallWith=ScriptState, NewObject] Promise<Group> forkGroup(USVString parentIriOrDid, ForkOptions options);
+  [CallWith=ScriptState, NewObject] Promise<Group> openGroup(USVString iriOrDid);
+  [CallWith=ScriptState, NewObject] Promise<sequence<Group>> listGroups();
 };

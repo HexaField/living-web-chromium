@@ -53,6 +53,12 @@ std::unique_ptr<DIDKeyPair> DIDKeyProvider::CreateKey(
   // did:key:z || base58btc(0xed01 || pub). public_key is always 32 bytes, so
   // DeriveDidKeyEd25519 never fails here.
   key->did = *living_web::did_key::DeriveDidKeyEd25519(key->public_key);
+  key->method = "key";
+  // The did:key verification-method id is the DID plus the key's own
+  // publicKeyMultibase fragment (Spec 01 §5.3.1, Spec 03 §4.4).
+  key->method_id =
+      key->did + "#" +
+      *living_web::did_key::Ed25519PublicKeyMultibase(key->public_key);
 
   LOG(INFO) << "Created DID credential: " << key->did
             << " (" << display_name << ")";
@@ -65,6 +71,17 @@ std::unique_ptr<DIDKeyPair> DIDKeyProvider::CreateKey(
     active_credential_id_ = id;
 
   return std::make_unique<DIDKeyPair>(*credentials_[id]);
+}
+
+const DIDKeyPair* DIDKeyProvider::AdoptCredential(
+    std::unique_ptr<DIDKeyPair> key) {
+  if (!key || key->id.empty())
+    return nullptr;
+  std::string id = key->id;
+  credentials_[id] = std::move(key);
+  if (active_credential_id_.empty())
+    active_credential_id_ = id;
+  return GetCredential(id);
 }
 
 std::vector<const DIDKeyPair*> DIDKeyProvider::ListCredentials() const {

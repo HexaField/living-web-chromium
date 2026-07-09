@@ -23,3 +23,42 @@ source_set("did") {
     "//third_party/boringssl",
   ]
 }
+
+# Spec 03 — Decentralised Group Identity: the browser-process group service.
+#
+# A group is a groupified Spec 02 graph (§4.2), so this code bridges the identity
+# layer (":did") and the graph layer ("//content/browser/graph"): it mints a
+# did:graph over a host GraphBackend, writes/reads the DID document as triples in
+# that graph, and adapts the Spec 03 graph.mojom GroupManager/GroupHost surface to
+# the port. It is a SEPARATE source_set (not folded into ":did") because it
+# depends on the graph layer, which already depends on ":did" — a single combined
+# target would form a dependency cycle. The did:graph codec + DID-document model
+# (did_graph.*) is Chromium-independent and shared verbatim with the standalone
+# conformance harness so the triples written, signed, and projected never diverge.
+source_set("group") {
+  sources = [
+    # Chromium-independent core (namespace living_web), shared with the
+    # standalone harness.
+    "did_graph.cc",
+    "did_graph.h",
+
+    # Spec 03 §8.1/§8.2 port + Mojo hosts (namespace content).
+    "group_backend.cc",
+    "group_backend.h",
+    "group_backend_manager.cc",
+    "group_backend_manager.h",
+    "group_host.cc",
+    "group_host.h",
+    "group_service.cc",
+    "group_service.h",
+  ]
+
+  deps = [
+    ":did",
+    "//base",
+    "//content/browser/graph",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/mojom/graph",
+    "//third_party/boringssl",
+  ]
+}

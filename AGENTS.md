@@ -170,7 +170,7 @@ Spec numbering (current, 10 specs):
 |---|------|-------|
 | 01 | Decentralised Identity | `content/browser/did/`, `.../graph/did_credential.*`, `signed_content.*`, `content_proof.*` |
 | 02 | Personal Linked Data Graphs | `.../graph/{graph,graph_manager,triple,literal_value,reifier,graph_snapshot,graph_triple_event}.*`, `content/browser/graph/` |
-| 03 | Decentralised Group Identity | — (planned) |
+| 03 | Decentralised Group Identity | `content/browser/did/{did_graph,group_backend,group_backend_manager,group_host,group_service}.*`, `.../graph/group.*` |
 | 04 | Graph Capability Framework | `content/browser/graph_governance/` (ZCAP) |
 | 05 | Context Sync Protocol | `.../graph/shared_graph*`, `content/browser/graph_sync/` |
 | 06 | Sync Module Architecture | — (planned) |
@@ -261,6 +261,63 @@ stays the authoritative per-spec cheat-sheet as branches merge.
   pins the `rdfc-1.0` triple-term canonicalisation profile.
 - Authoritative reference impl: `standalone/graph_provider.h` over the shared core, verified
   by 22 `Graph_*` tests in `standalone/living_web_tests.cc`.
+
+## Spec 03 specifics (landed)
+
+- **A group is a groupified Spec 02 Graph.** Groupification (§4.2) is a one-way bootstrap:
+  mint a fresh Ed25519 keypair, derive a `did:graph` from it, and write the binding triple +
+  seed DID document + `group://syncModule` as ordinary triples into the host graph. The DID
+  document **is** triples (`did://*`, `group://*`) in the host graph — no separate wire
+  format: adding a delegate is authoring `did://verificationMethod` + section triples,
+  resolving the DID is projecting them back (`group_detail::ProjectDidDocument`). Re-groupify
+  → `InvalidStateError`; `syncModule` REQUIRED → `SyntaxError`.
+- **did:graph codec** (§4.1): `did:graph:z` + base58btc(`0xed01` ‖ 32-byte Ed25519 pubkey).
+  Reuses the Spec 01 did:key multibase machinery byte-for-byte; only the method prefix
+  differs, so a group's initial key is an ordinary `DIDKeyPair` with `method = "graph"`.
+  Shared codec + DID-document model = `content/browser/did/did_graph.*` (namespace
+  `living_web`), compiled by both build worlds.
+- **Verification-method id** (§4.4): `<did> + "#" + <publicKeyMultibase>` — self-certifying,
+  reconstructible from the key alone (`group_detail::MethodId`). Each method carries
+  `type`/`controller`/`publicKeyMultibase`; the controller is always the group DID.
+- **Four capability sections** (§5.1): `capabilityInvocation`, `capabilityDelegation`,
+  `assertionMethod`, `authentication`. The creator key holds all four, so a **group of one**
+  (§11) is the same structure as an individual identity at cardinality one; `resolve()`
+  returns a one-verification-method DID document.
+- **Authorship rules** (§5.4, §6.2): governed writes are gated on the *acting* delegate
+  holding the required section — delegate management and accepting participation need
+  `capabilityDelegation`; `signGraph` needs `assertionMethod`. Failure → `NotAllowedError`.
+  The acting credential defaults to the group's own initial key; `setActingCredential` hands
+  off to another held delegate. A write is authored by temporarily making the acting key the
+  provider's active credential (`ScopedActive` RAII), so the reifier signature (Spec 02
+  §3.2.1) records the delegate as author.
+- **Brick guards** (§5.4): the group MUST always retain ≥1 `capabilityDelegation` method —
+  removing / revoking the last one → `InvalidStateError`.
+- **Participation ≠ signing authority** (§7). Participation lives in
+  `context://accepts_participation` / `context://participates_in` triples, kept structurally
+  separate from the DID-document delegate sections. `transitiveParticipants` descends into
+  participating sub-groups (cycle-safe, depth cap 16 per §6.3/§13.7) and flattens to
+  individuals — group membership is not transitive for authority.
+- **signGraph** (§5.4): signs `{ graphDid, graphIri, timestamp }` with the acting credential
+  via the Spec 01 `sign()` path, yielding an `Ed25519Signature2020` proof (multibase
+  base58btc). A target not locally mounted is signed as an opaque IRI with `graphDid: null`.
+- **Forking** (§4.8): mints a fresh identity over a full N-Quads copy of the parent
+  (`DumpNquads`/`LoadNquads`, so inherited history stays verifiable), strips the parent
+  identity from the copy, records `group://forkedFrom`/`forkedAtRevision`, and (default)
+  announces `group://forkedTo` on the parent. The root-capability mint (§4.8 step 5) and the
+  constraint-kind superset check (§4.8.1 → `NotSupportedError`) belong to Spec 04 / Spec 08.
+- **Errors** map to DOMException names: missing `syncModule` → `SyntaxError`; re-groupify /
+  brick / deactivated-state → `InvalidStateError`; missing section authority →
+  `NotAllowedError`; unknown DID/IRI on open/fork → `NotFoundError`.
+- **Normative detail folded into draft 03** (on `main`, see `SPEC_COMPLIANCE.md`): (i) §4.4 a
+  verification-method id fragment MUST be the method's own `publicKeyMultibase` (the `#key-*`
+  labels in examples are non-normative mnemonics); (ii) §4.3/§8.2.2 `groupify` takes the live
+  `Graph`, not a `graph://` IRI — the content-address IRI advances on every write including
+  the bootstrap itself, so the DID (not the IRI) is the durable group key and an IRI-keyed
+  lookup can race the bootstrap write.
+- Authoritative reference impl: `standalone/group_provider.h` over
+  `content/browser/did/did_graph.*`, verified by 15 `Group_*` tests in
+  `standalone/living_web_tests.cc`; browser port = `content/browser/did/{group_backend,
+  group_backend_manager,group_host,group_service}.*`, renderer = `.../graph/group.*`.
 
 ## Gotchas
 

@@ -40,6 +40,11 @@ class PersonalGraphManager : public graph::mojom::PersonalGraphManager {
   void BindReceiver(
       mojo::PendingReceiver<graph::mojom::PersonalGraphManager> receiver);
 
+  // The realm's graph store, shared with the Spec 03 GroupService so groups and
+  // personal graphs resolve against one dataset (§7.2 named-graph resolution,
+  // §4.7 local group resolution). The borrower must not outlive this manager.
+  GraphBackendManager* backends() { return &backends_; }
+
   // graph::mojom::PersonalGraphManager:
   void Create(const std::optional<std::string>& display_name,
               mojo::PendingReceiver<graph::mojom::PersonalGraphHost> receiver,

@@ -258,3 +258,222 @@ interface PersonalGraphManager {
                pending_receiver<PersonalGraphHost> receiver)
       => (GraphInfo? info, string? error);
 };
+
+// ============================================================
+// Spec 03 — Decentralised Group Identity
+//
+// A "group" is a Graph (Spec 02) that has been *groupified* (§4.2): a fresh
+// Ed25519 keypair is minted, a did:graph is derived from it, and the binding +
+// seed DID-document triples are written into the host graph. The group's DID
+// document *is* triples in the host graph, so there is no separate wire format —
+// managing a delegate is authoring did://* triples and resolving the DID is
+// projecting them back. Every did:graph private key lives in the browser
+// identity backend, so group-authored writes are signed there, never in the
+// renderer. Signing authority (DID-document delegates, §5/§7.2) and
+// participation (context://participates_in / accepts_participation, §6.2/§7.1)
+// are kept structurally separate exactly as §7 requires.
+//
+// The renderer-facing navigator.graph surface (blink GraphManager gains
+// createGroup/groupify/forkGroup/openGroup/groups; blink Group) is backed by
+// these browser-process interfaces.
+// ============================================================
+
+// §5.1 the four capability sections a verification method may be referenced
+// from. There is deliberately no aggregate/threshold section — a signature by
+// any current method in the relevant section is a signature by the DID.
+enum DIDCapabilitySection {
+  kCapabilityInvocation,
+  kCapabilityDelegation,
+  kAssertionMethod,
+  kAuthentication,
+};
+
+// §4.4 a DID-document verification method, as supplied to addSigner/addDelegate.
+struct DIDDocumentMethod {
+  string id;                    // "<did>#<publicKeyMultibase>"
+  string type;                  // "Ed25519VerificationKey2020"
+  string controller;            // the group DID
+  string public_key_multibase;  // "z6Mk..."
+};
+
+// §4.4 a resolved verification method plus the sections that currently reference
+// it (the projection of the group's did://* membership triples).
+struct VerificationMethodInfo {
+  string id;
+  string type;
+  string controller;
+  string public_key_multibase;
+  array<DIDCapabilitySection> sections;
+};
+
+// §4.4 / §4.7 a projected did:graph DID document. |document_json| is the
+// [[DID-CORE]] JSON-LD projection resolve() returns; the structured fields let
+// the renderer answer signers()/isSigner() without reparsing it.
+struct DidDocumentInfo {
+  string id;
+  array<VerificationMethodInfo> verification_method;
+  array<string> capability_invocation;   // verification-method ids
+  array<string> capability_delegation;
+  array<string> assertion_method;
+  array<string> authentication;
+  bool deactivated;
+  string trust_level;                    // "local" for a local mount (§4.7)
+  string document_json;
+};
+
+// §8.1 Participant — a direct or transitive member of a group.
+struct ParticipantInfo {
+  string did;         // participant IRI or did:graph
+  bool is_group;      // true iff a did:graph
+  string joined_at;   // RFC 3339, from the accepts_participation reifier
+  string? name;       // group://name of the participant, when locally resolvable
+};
+
+// The attributes needed to construct a renderer-side Group (§8.1). The browser
+// returns one when a group is created, forked, groupified, or opened, alongside
+// the bound GroupHost and (for a freshly materialised host graph) the
+// PersonalGraphHost the Group's `graph` attribute wraps.
+struct GroupInfo {
+  string did;             // did:graph:...
+  GraphInfo graph;        // the underlying, groupified host graph (§3.3)
+  string? name;
+  string? description;
+  string? created;        // RFC 3339
+  string? creator;        // DID URI of the creating agent (§4.2)
+};
+
+// §8.2 GroupCreationOptions. |sync_module| is REQUIRED (§4.5).
+struct GroupCreationOptions {
+  string sync_module;
+  string? display_name;
+  string? description;
+  array<string> initial_delegates;  // extra capabilityInvocation delegate DIDs
+  string? participates_in;          // parent IRI or did:graph to join (§7.1)
+};
+
+// §8.2 GroupifyOptions. |sync_module| is REQUIRED (§4.5).
+struct GroupifyOptions {
+  string sync_module;
+  string? display_name;
+  string? description;
+  array<string> initial_delegates;
+};
+
+// §8.2 ForkOptions. |sync_module| is REQUIRED (MAY equal the parent's, §4.8.1).
+struct ForkOptions {
+  string sync_module;
+  string? fork_revision;            // defaults to the parent's current IRI
+  bool announce_fork;               // write group://forkedTo on the parent (§4.8)
+  array<string> initial_delegates;
+  string? display_name;
+  string? description;
+};
+
+// GroupHost — the browser-process host for a single group (§5/§6/§7/§8.1). One
+// receiver is bound per Group handed to a renderer, over the same backend as the
+// group's PersonalGraphHost. Governed mutations are authored by the group's
+// current "acting" delegate (SetActingCredential, defaulting to the group's own
+// initial key, which holds all four sections so a group-of-one works out of the
+// box, §11). Every fallible method returns a DOMException name in |error| (null
+// on success): "NotAllowedError" when the acting credential lacks the required
+// section delegate (§5.4/§6.2), "InvalidStateError" for a brick-state guard
+// (§5.4) or a failed assertion, "NotFoundError" for an unresolved target.
+interface GroupHost {
+  // §8.1 SetActingCredential: choose which delegate key authors subsequent
+  // governed writes and signs assertions. |credential_id| empty restores the
+  // group's own initial key.
+  SetActingCredential(string credential_id) => ();
+
+  // ---- participation (§6.2, §7.1, §8.1.1-8.1.3) ----
+
+  // §8.1.1 invite: accept |participant| into the group (capabilityDelegation
+  // authorship, §6.2).
+  Invite(string participant) => (string? error);
+  // §8.1.2 revokeParticipation: remove the acceptance (capabilityDelegation).
+  RevokeParticipation(string participant) => (string? error);
+  HasParticipant(string participant) => (bool has);
+  // §8.1.3 participants: the direct participant set.
+  Participants() => (array<ParticipantInfo> participants);
+  // §8.1.3 transitiveParticipants: every individual reachable by descending into
+  // participating sub-groups, cycle-safe with a depth cap of 16 (§6.3/§13.7).
+  TransitiveParticipants() => (array<ParticipantInfo> participants);
+  // §8.1 parentGroups: the locally-mounted groups this group participates in.
+  ParentGroups() => (array<string> parent_dids);
+  // §8.1 childGroups: the participants that are themselves locally-mounted groups.
+  ChildGroups() => (array<string> child_dids);
+
+  // ---- signing authority / delegate management (§5, §7.2, §8.1.4) ----
+
+  // §8.1 signers: the DID-document verification methods and their section
+  // memberships (the renderer filters by section for signers(section)).
+  Signers() => (array<VerificationMethodInfo> methods);
+  // §8.1.4 / §5.4 addSigner (== addDelegate).
+  AddSigner(DIDDocumentMethod method, array<DIDCapabilitySection> sections)
+      => (string? error);
+  // §8.1.4 / §5.4 removeSigner (== removeDelegate); "InvalidStateError" if it is
+  // the sole capabilityDelegation member (§5.4 brick-state guard).
+  RemoveSigner(string method_id) => (string? error);
+  // §5.4 grantSection.
+  GrantSection(string method_id, DIDCapabilitySection section)
+      => (string? error);
+  // §5.4 revokeSection; "InvalidStateError" if |section| is capabilityDelegation
+  // and |method_id| is its only member (brick-state guard).
+  RevokeSection(string method_id, DIDCapabilitySection section)
+      => (string? error);
+  // §8.1 isSigner: whether |delegate_did|'s key is currently a signer, and in
+  // which sections (empty when not a signer).
+  IsSigner(string delegate_did)
+      => (bool is_signer, array<DIDCapabilitySection> sections);
+
+  // ---- assertion + resolution + deactivation (§5.4, §4.7, §4.9) ----
+
+  // §5.4 signGraph over a target graph IRI or did:graph (assertionMethod
+  // delegate). Reuses the Spec 01 SignedContent proof shape.
+  SignGraph(string target) => (SignedContent? result, string? error);
+  // §4.7 resolve (local): the group's current DID document.
+  Resolve() => (DidDocumentInfo? document, string? error);
+  // §4.9 deactivate (capabilityDelegation).
+  Deactivate() => (string? error);
+};
+
+// GroupManager — the browser-process host for the navigator.graph group surface
+// (§8.2). Per-realm; mints and materialises groups over the same graph backends
+// as PersonalGraphManager. createGroup/forkGroup/openGroup each mint a fresh
+// host-graph PersonalGraphHost pipe (the Group's `graph`) plus a GroupHost pipe;
+// groupify reuses the caller's existing graph (identified by its internal id) and
+// only binds a GroupHost. Failures return a DOMException name in |error|.
+interface GroupManager {
+  // §8.2 createGroup: allocate a fresh host graph and groupify it.
+  CreateGroup(GroupCreationOptions options,
+              pending_receiver<GroupHost> group_receiver,
+              pending_receiver<PersonalGraphHost> graph_receiver)
+      => (GroupInfo? info, string? error);
+
+  // §8.2 groupify: turn an existing, caller-owned graph (named by its internal
+  // id) into a group. "InvalidStateError" if it is already a group (§4.2 is
+  // one-way) or the id is unknown.
+  Groupify(string graph_id,
+           GroupifyOptions options,
+           pending_receiver<GroupHost> group_receiver)
+      => (GroupInfo? info, string? error);
+
+  // §8.2 forkGroup (§4.8): mint a fresh identity, copy the parent's graph state,
+  // strip the parent identity, and write the child seed. |parent| is a did:graph
+  // or a current IRI of a locally-mounted group.
+  ForkGroup(string parent,
+            ForkOptions options,
+            pending_receiver<GroupHost> group_receiver,
+            pending_receiver<PersonalGraphHost> graph_receiver)
+      => (GroupInfo? info, string? error);
+
+  // §8.2 openGroup: a handle over an already-known group named by did:graph or
+  // current IRI. "NotFoundError" when it is not locally mounted (§4.7).
+  OpenGroup(string iri_or_did,
+            pending_receiver<GroupHost> group_receiver,
+            pending_receiver<PersonalGraphHost> graph_receiver)
+      => (GroupInfo? info, string? error);
+
+  // §8.2 groups: the did:graph of every group this realm currently mounts. The
+  // renderer materialises each into a Group via openGroup.
+  ListGroups() => (array<string> dids);
+};
